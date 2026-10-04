@@ -281,6 +281,33 @@ def test_existing_patient_referral_is_kept_when_booking_sends_another(
     assert booked["appointment_number"] not in other_refs
 
 
+def test_only_hospital_admin_can_edit_a_referral(client, auth_headers, db_session, seed_data):
+    from app.utils.auth import create_access_token
+
+    created = client.post("/api/referrals", json={
+        "name": f"Edit Gate {uuid.uuid4().hex[:6]}",
+        "op_commission_pct": 10,
+    }, headers=auth_headers)
+    assert created.status_code == 200, created.text
+    referral_id = created.json()["id"]
+
+    reception = {"Authorization": f"Bearer {create_access_token(data={'sub': 'testreceptionist'})}"}
+    blocked = client.put(f"/api/referrals/{referral_id}", json={"name": "Changed"}, headers=reception)
+    assert blocked.status_code == 403
+
+    kept = client.get("/api/referrals/all", headers=auth_headers)
+    row = next(item for item in kept.json() if item["id"] == referral_id)
+    assert row["name"].startswith("Edit Gate")
+
+    updated = client.put(
+        f"/api/referrals/{referral_id}",
+        json={"op_commission_pct": 12},
+        headers=auth_headers,
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["op_commission_pct"] == 12
+
+
 def test_referral_rejects_commission_rate_above_100(client, auth_headers, db_session, seed_data):
     created = client.post("/api/referrals", json={
         "name": f"Rate Check {uuid.uuid4().hex[:6]}",

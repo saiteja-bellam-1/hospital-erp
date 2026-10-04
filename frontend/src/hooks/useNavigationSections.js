@@ -36,6 +36,11 @@ export function canAccessLabAdminDashboard(roles) {
   return normalized.some((r) => LAB_ADMIN_DASHBOARD_ROLES.includes(r));
 }
 
+/** Selling rates on a lab test list. Lab technicians and reception do not see them. */
+export function canSeeLabTestRates(roles) {
+  return canAccessLabAdminDashboard(roles);
+}
+
 /** Overview + queue. Catalog pages still require canAccessLabAdminDashboard. */
 export function canAccessLabModule(roles) {
   const normalized = normalizeUserRoles(roles);

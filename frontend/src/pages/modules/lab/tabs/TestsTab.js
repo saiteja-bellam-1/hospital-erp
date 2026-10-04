@@ -10,12 +10,16 @@ import { Textarea } from '../../../../components/ui/textarea';
 import { Badge } from '../../../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../../../components/ui/dialog';
 import { Plus, Edit2, Trash2, Search, RefreshCw, Settings2, Loader2, Upload, Download, TestTube } from 'lucide-react';
+import { useAuth } from '../../../../contexts/AuthContext';
+import { canSeeLabTestRates, normalizeUserRoles } from '../../../../hooks/useNavigationSections';
 import { useLabFeedback } from '../useLabFeedback';
 import LabTestImportDialog from '../LabTestImportDialog';
 import { testPrice } from '../../../../utils/labPricing';
 
 export default function TestsTab() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const showRates = canSeeLabTestRates(normalizeUserRoles(user));
   const { showFeedback, confirm, FeedbackToast, ConfirmDialogEl } = useLabFeedback();
   const [categories, setCategories] = useState([]);
   const [sampleTypes, setSampleTypes] = useState([]);
@@ -274,9 +278,13 @@ export default function TestsTab() {
                     </div>
                     <div className="flex items-center gap-3 text-sm text-gray-500 mt-1 flex-wrap">
                       <span>{test.category_name}</span>
-                      <span>|</span>
-                      <span>A Rs. {testPrice(test, (test.rates || []).find((r) => r.code === 'A')?.rate_card_id)}</span>
-                      <span>B Rs. {testPrice(test, (test.rates || []).find((r) => r.code === 'B')?.rate_card_id)}</span>
+                      {showRates && (
+                        <>
+                          <span>|</span>
+                          <span>A Rs. {testPrice(test, (test.rates || []).find((r) => r.code === 'A')?.rate_card_id)}</span>
+                          <span>B Rs. {testPrice(test, (test.rates || []).find((r) => r.code === 'B')?.rate_card_id)}</span>
+                        </>
+                      )}
                       {test.default_fulfillment === 'send_out' && (
                         <Badge variant="outline" className="text-xs">Send-out{test.default_partner_name ? ` · ${test.default_partner_name}` : ''}</Badge>
                       )}

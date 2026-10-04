@@ -11,12 +11,16 @@ import {
   Package, Search, TestTube, RefreshCw, ShoppingCart, Loader2, Printer, Receipt
 } from 'lucide-react';
 import axios from 'axios';
+import { useAuth } from '../../../contexts/AuthContext';
+import { canSeeLabTestRates, normalizeUserRoles } from '../../../hooks/useNavigationSections';
 import PatientSearchPicker from '../../../components/PatientSearchPicker';
 import ReferralSelectWithCreate from '../../../components/ReferralSelectWithCreate';
 import { patientReferralName } from '../../../utils/patientReferral';
 
 const ReceptionPackagesPage = () => {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const showLabRates = canSeeLabTestRates(normalizeUserRoles(user));
   const [packages, setPackages] = useState([]);
   const [packageCategories, setPackageCategories] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -247,7 +251,7 @@ const ReceptionPackagesPage = () => {
                           <TestTube className="h-3 w-3 text-gray-400" />
                           {t.name}
                         </span>
-                        <span className="text-gray-400 text-xs">Rs. {t.cost}</span>
+                        {showLabRates && <span className="text-gray-400 text-xs">Rs. {t.cost}</span>}
                       </div>
                     ))}
                   </div>
@@ -255,15 +259,17 @@ const ReceptionPackagesPage = () => {
 
                 {/* Pricing */}
                 <div className="bg-gray-50 rounded-lg p-3 mb-3">
-                  <div className="flex justify-between text-sm text-gray-500">
-                    <span>Individual Total</span>
-                    <span className="line-through">Rs. {pkg.actual_price}</span>
-                  </div>
+                  {showLabRates && (
+                    <div className="flex justify-between text-sm text-gray-500">
+                      <span>Individual Total</span>
+                      <span className="line-through">Rs. {pkg.actual_price}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between font-bold text-lg mt-1">
                     <span>Package Price</span>
                     <span className="text-blue-600">Rs. {pkg.package_price}</span>
                   </div>
-                  {pkg.discount_percentage > 0 && (
+                  {showLabRates && pkg.discount_percentage > 0 && (
                     <p className="text-xs text-green-600 mt-1">
                       You save Rs. {(pkg.actual_price - pkg.package_price).toFixed(0)}
                     </p>
@@ -296,7 +302,9 @@ const ReceptionPackagesPage = () => {
                     <p className="text-xs text-gray-500">{selectedPackage.tests.length} tests included</p>
                   </div>
                   <div className="text-right">
-                    <p className="text-xs text-gray-400 line-through">Rs. {selectedPackage.actual_price}</p>
+                    {showLabRates && (
+                      <p className="text-xs text-gray-400 line-through">Rs. {selectedPackage.actual_price}</p>
+                    )}
                     <p className="text-lg font-bold text-blue-600">Rs. {selectedPackage.package_price}</p>
                   </div>
                 </div>
@@ -357,11 +365,13 @@ const ReceptionPackagesPage = () => {
 
               {/* Total */}
               <div className="bg-gray-50 p-3 rounded-lg space-y-1.5">
-                <div className="flex justify-between text-sm">
-                  <span>Actual Price</span>
-                  <span className="line-through text-gray-400">Rs. {selectedPackage.actual_price}</span>
-                </div>
-                {packageSavings > 0 && (
+                {showLabRates && (
+                  <div className="flex justify-between text-sm">
+                    <span>Actual Price</span>
+                    <span className="line-through text-gray-400">Rs. {selectedPackage.actual_price}</span>
+                  </div>
+                )}
+                {showLabRates && packageSavings > 0 && (
                   <div className="flex justify-between text-sm text-green-600">
                     <span>Package Discount</span>
                     <span>- Rs. {packageSavings.toFixed(2)}</span>

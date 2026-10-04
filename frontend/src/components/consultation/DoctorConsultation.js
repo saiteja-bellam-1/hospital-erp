@@ -18,9 +18,13 @@ import {
   CheckCircle,
   Printer
 } from 'lucide-react';
+import { useAuth } from '../../contexts/AuthContext';
+import { canSeeLabTestRates, normalizeUserRoles } from '../../hooks/useNavigationSections';
 import { defaultRateCardId, testPrice } from '../../utils/labPricing';
 
 const DoctorConsultation = ({ consultation, onUpdate }) => {
+  const { user } = useAuth();
+  const showLabRates = canSeeLabTestRates(normalizeUserRoles(user));
   const [activeTab, setActiveTab] = useState('consultation');
   const [labRecommendations, setLabRecommendations] = useState([]);
   const [selectedTests, setSelectedTests] = useState([]);
@@ -291,17 +295,19 @@ const DoctorConsultation = ({ consultation, onUpdate }) => {
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-4">
-                    <div className="max-w-xs">
-                      <Label>Rate</Label>
-                      <Select value={rateCardId || '_none'} onValueChange={(v) => setRateCardId(v === '_none' ? '' : v)}>
-                        <SelectTrigger><SelectValue placeholder="Rate" /></SelectTrigger>
-                        <SelectContent>
-                          {rateCards.map((c) => (
-                            <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
+                    {showLabRates && (
+                      <div className="max-w-xs">
+                        <Label>Rate</Label>
+                        <Select value={rateCardId || '_none'} onValueChange={(v) => setRateCardId(v === '_none' ? '' : v)}>
+                          <SelectTrigger><SelectValue placeholder="Rate" /></SelectTrigger>
+                          <SelectContent>
+                            {rateCards.map((c) => (
+                              <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
                     <div className="max-h-60 overflow-y-auto space-y-2">
                       {availableTests.map((test) => (
                         <div
@@ -331,9 +337,11 @@ const DoctorConsultation = ({ consultation, onUpdate }) => {
                                 </p>
                               )}
                             </div>
-                            <div className="text-right">
-                              <p className="font-semibold text-green-600">₹{testPrice(test, rateCardId)}</p>
-                            </div>
+                            {showLabRates && (
+                              <div className="text-right">
+                                <p className="font-semibold text-green-600">₹{testPrice(test, rateCardId)}</p>
+                              </div>
+                            )}
                           </div>
                         </div>
                       ))}
@@ -380,7 +388,9 @@ const DoctorConsultation = ({ consultation, onUpdate }) => {
                             <Badge className={getStatusColor(order.status)}>
                               {order.status}
                             </Badge>
-                            <p className="text-sm text-green-600 mt-1">₹{order.test_cost}</p>
+                            {showLabRates && (
+                              <p className="text-sm text-green-600 mt-1">₹{order.test_cost}</p>
+                            )}
                           </div>
                         </div>
                       ))}
@@ -423,7 +433,9 @@ const DoctorConsultation = ({ consultation, onUpdate }) => {
                             </p>
                           </div>
                           <div className="text-right ml-4">
-                            <p className="font-semibold text-green-600">₹{rec.cost}</p>
+                            {showLabRates && (
+                              <p className="font-semibold text-green-600">₹{rec.cost}</p>
+                            )}
                             <Button
                               size="sm"
                               variant="outline"

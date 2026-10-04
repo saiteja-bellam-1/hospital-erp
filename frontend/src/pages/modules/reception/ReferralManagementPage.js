@@ -8,6 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../../components/ui/dialog';
 import { Textarea } from '../../../components/ui/textarea';
 import { useToast } from '../../../hooks/use-toast';
+import { useAuth } from '../../../contexts/AuthContext';
+import { normalizeUserRoles } from '../../../hooks/useNavigationSections';
 import axios from 'axios';
 import {
   Users, Plus, Search, Edit2, Trash2, Phone, MapPin, Eye, Loader2,
@@ -69,6 +71,8 @@ function BillSection({ title, icon: Icon, rows, emptyLabel, formatCurrency, form
 
 const ReferralManagementPage = () => {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const canEditReferral = normalizeUserRoles(user).some((role) => role === 'hospital_admin' || role === 'super_admin');
   const token = localStorage.getItem('token');
   const headers = { Authorization: `Bearer ${token}` };
 
@@ -91,8 +95,6 @@ const ReferralManagementPage = () => {
   const [showCommForm, setShowCommForm] = useState(false);
   const [commForm, setCommForm] = useState({ amount: '', payment_method: 'cash', notes: '' });
   const [commSaving, setCommSaving] = useState(false);
-  const [rates, setRates] = useState({ op: '0', lab: '0', ip: '0', pharmacy: '0' });
-  const [ratesSaving, setRatesSaving] = useState(false);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { fetchReferrals(); }, []);
@@ -199,13 +201,6 @@ const ReferralManagementPage = () => {
     try {
       const res = await axios.get(`/api/referrals/${id}/details`, { headers });
       setDetails(res.data);
-      const r = res.data.referral || {};
-      setRates({
-        op: String(r.op_commission_pct ?? 0),
-        lab: String(r.lab_commission_pct ?? 0),
-        ip: String(r.ip_commission_pct ?? 0),
-        pharmacy: String(r.pharmacy_commission_pct ?? 0),
-      });
     } catch {
       setSelectedReferral(null);
       toast({ variant: 'destructive', title: 'Error', description: 'Failed to load details' });
@@ -216,31 +211,6 @@ const ReferralManagementPage = () => {
     setSelectedReferral(ref);
     setDetails(null);
     fetchDetails(ref.id);
-  };
-
-  const saveRates = async () => {
-    const op = parseRate(rates.op);
-    const lab = parseRate(rates.lab);
-    const ip = parseRate(rates.ip);
-    const pharmacy = parseRate(rates.pharmacy);
-    if ([op, lab, ip, pharmacy].some((n) => n === null)) {
-      toast({ variant: 'destructive', title: 'Invalid rate', description: 'Commission percents must be between 0 and 100.' });
-      return;
-    }
-    setRatesSaving(true);
-    try {
-      await axios.put(`/api/referrals/${selectedReferral.id}`, {
-        op_commission_pct: op,
-        lab_commission_pct: lab,
-        ip_commission_pct: ip,
-        pharmacy_commission_pct: pharmacy,
-      }, { headers });
-      toast({ title: 'Commission rates saved' });
-      fetchDetails(selectedReferral.id);
-      fetchReferrals();
-    } catch (err) {
-      toast({ variant: 'destructive', title: 'Error', description: errorMessage(err, 'Failed to save rates') });
-    } finally { setRatesSaving(false); }
   };
 
   const openPayDialog = () => {
@@ -327,33 +297,6 @@ const ReferralManagementPage = () => {
         <p className="text-sm text-gray-500">
           Bills are included for patients registered with this referral. Lab tests and pharmacy sales already on an inpatient bill are counted under IP only.
         </p>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Commission rates</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {[
-                ['op', 'OP %'],
-                ['lab', 'Lab %'],
-                ['ip', 'IP %'],
-                ['pharmacy', 'Pharmacy %'],
-              ].map(([key, label]) => (
-                <div key={key}>
-                  <Label>{label}</Label>
-                  <Input type="number" min="0" max="100" step="0.01" value={rates[key]}
-                    onChange={(e) => setRates({ ...rates, [key]: e.target.value })} />
-                </div>
-              ))}
-            </div>
-            <div className="flex justify-end">
-              <Button size="sm" onClick={saveRates} disabled={ratesSaving}>
-                {ratesSaving && <Loader2 className="h-4 w-4 mr-1 animate-spin" />} Save rates
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           {serviceCards.map((card) => (
@@ -516,9 +459,11 @@ const ReferralManagementPage = () => {
                 <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openDetails(ref)}>
                   <Eye className="h-3 w-3 mr-1" /> View
                 </Button>
-                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openForm(ref)}>
-                  <Edit2 className="h-3 w-3 mr-1" /> Edit
-                </Button>
+                {canEditReferral && (
+                  <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openForm(ref)}>
+                    <Edit2 className="h-3 w-3 mr-1" /> Edit
+                  </Button>
+                )}
                 {ref.is_active ? (
                   <Button size="sm" variant="ghost" className="h-7 text-xs text-red-500" onClick={() => deleteReferral(ref.id)}>
                     <Trash2 className="h-3 w-3 mr-1" /> Deactivate

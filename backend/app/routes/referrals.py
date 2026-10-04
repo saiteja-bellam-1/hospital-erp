@@ -77,6 +77,7 @@ class CommissionCreate(BaseModel):
 
 
 ALLOWED_ROLES = ['receptionist', 'hospital_admin', 'super_admin']
+ADMIN_ROLES = ['hospital_admin', 'super_admin']
 
 
 @router.get("", response_model=List[ReferralResponse])
@@ -143,6 +144,11 @@ async def update_referral(
     if not any(r in current_user.role_names for r in ALLOWED_ROLES):
         raise HTTPException(status_code=403, detail="Not authorized")
 
+    changes = data.model_dump(exclude_unset=True)
+    edits_details = any(key != "is_active" for key in changes)
+    if edits_details and not any(r in current_user.role_names for r in ADMIN_ROLES):
+        raise HTTPException(status_code=403, detail="Only a hospital admin can edit a referral")
+
     referral = db.query(Referral).filter(
         Referral.id == referral_id,
         Referral.hospital_id == current_user.hospital_id
@@ -150,7 +156,7 @@ async def update_referral(
     if not referral:
         raise HTTPException(status_code=404, detail="Referral not found")
 
-    for key, val in data.dict(exclude_unset=True).items():
+    for key, val in changes.items():
         setattr(referral, key, val)
 
     db.commit()

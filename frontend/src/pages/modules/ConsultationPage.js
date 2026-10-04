@@ -14,6 +14,8 @@ import {
   ChevronRight, ChevronDown, History, XCircle
 } from 'lucide-react';
 import { format } from 'date-fns';
+import { useAuth } from '../../contexts/AuthContext';
+import { canSeeLabTestRates, normalizeUserRoles } from '../../hooks/useNavigationSections';
 import { defaultRateCardId, testPrice } from '../../utils/labPricing';
 import { FREQUENCY_OPTIONS } from '../../utils/prescriptionSchedule';
 import MedicineLookupInput from '../../components/inpatient/MedicineLookupInput';
@@ -26,6 +28,8 @@ import {
 } from '../../hooks/useConfiguredVitalFields';
 
 const ConsultationPage = () => {
+  const { user } = useAuth();
+  const showLabRates = canSeeLabTestRates(normalizeUserRoles(user));
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const appointmentId = searchParams.get('appointmentId');
@@ -1036,17 +1040,19 @@ const ConsultationPage = () => {
                 </div>
               )}
 
-              <div className="max-w-xs">
-                <Label>Rate</Label>
-                <Select value={labRateCardId || '_none'} onValueChange={(v) => setLabRateCardId(v === '_none' ? '' : v)}>
-                  <SelectTrigger><SelectValue placeholder="Rate" /></SelectTrigger>
-                  <SelectContent>
-                    {labRateCards.map((c) => (
-                      <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              {showLabRates && (
+                <div className="max-w-xs">
+                  <Label>Rate</Label>
+                  <Select value={labRateCardId || '_none'} onValueChange={(v) => setLabRateCardId(v === '_none' ? '' : v)}>
+                    <SelectTrigger><SelectValue placeholder="Rate" /></SelectTrigger>
+                    <SelectContent>
+                      {labRateCards.map((c) => (
+                        <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
               <div className="border rounded-lg max-h-[250px] overflow-y-auto">
                 {filteredLabTests.length === 0 ? (
                   <p className="text-center text-gray-500 py-6 text-sm">No tests available.</p>
@@ -1058,7 +1064,7 @@ const ConsultationPage = () => {
                     <div>
                       <span className="font-medium text-sm">{test.name}</span>
                       <Badge variant="outline" className="text-xs ml-2">{test.test_code}</Badge>
-                      <div className="text-xs text-gray-500">{test.category_name} | Rs. {testPrice(test, labRateCardId)}{test.sample_type && ` | ${test.sample_type}`}</div>
+                      <div className="text-xs text-gray-500">{test.category_name}{showLabRates ? ` | Rs. ${testPrice(test, labRateCardId)}` : ''}{test.sample_type && ` | ${test.sample_type}`}</div>
                     </div>
                   </div>
                 ))}

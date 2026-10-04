@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../componen
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import { useToast } from '../../hooks/use-toast';
 import { defaultRateCardId, testPrice } from '../../utils/labPricing';
+import { canSeeLabTestRates } from '../../hooks/useNavigationSections';
 import { useAuth } from '../../contexts/AuthContext';
 import { printPdfFromUrl } from '../../utils/printPdf';
 import { errorDetail } from '../../utils/apiErrors';
@@ -140,6 +141,7 @@ const InpatientModule = () => {
   const isAdminLike = useMemo(() => userRoles.some(r => ['super_admin', 'hospital_admin', 'inpatient_admin'].includes(r)), [userRoles]);
   const isDoctorRole = useMemo(() => userRoles.includes('doctor'), [userRoles]);
   const isNurseRole = useMemo(() => userRoles.includes('nurse'), [userRoles]);
+  const showLabRates = useMemo(() => canSeeLabTestRates(userRoles), [userRoles]);
 
   // Effective permission map (module → permission keys) loaded from backend.
   // Used to gate UI elements so users only see actions they can actually perform.
@@ -8892,17 +8894,19 @@ const InpatientModule = () => {
                 </SelectContent>
               </Select>
             </div>
-            <div>
-              <Label>Rate</Label>
-              <Select value={labRateCardId || '_none'} onValueChange={(v) => setLabRateCardId(v === '_none' ? '' : v)}>
-                <SelectTrigger><SelectValue placeholder="Rate" /></SelectTrigger>
-                <SelectContent>
-                  {labRateCards.map((c) => (
-                    <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            {showLabRates && (
+              <div>
+                <Label>Rate</Label>
+                <Select value={labRateCardId || '_none'} onValueChange={(v) => setLabRateCardId(v === '_none' ? '' : v)}>
+                  <SelectTrigger><SelectValue placeholder="Rate" /></SelectTrigger>
+                  <SelectContent>
+                    {labRateCards.map((c) => (
+                      <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div>
               <Label>Search Tests</Label>
               <Input placeholder="Search by test name or code..." value={labTestSearch}
@@ -8920,7 +8924,9 @@ const InpatientModule = () => {
                         {t.test_code && <span className="text-xs text-gray-400 ml-1">({t.test_code})</span>}
                       </div>
                     </div>
-                    <span className="text-sm text-gray-600">₹{testPrice(t, labRateCardId).toFixed(2)}</span>
+                    {showLabRates && (
+                      <span className="text-sm text-gray-600">₹{testPrice(t, labRateCardId).toFixed(2)}</span>
+                    )}
                   </label>
                 ))}
               {availableLabTests.length === 0 && (
@@ -8929,9 +8935,10 @@ const InpatientModule = () => {
             </div>
             {labOrderForm.test_ids.length > 0 && (
               <p className="text-sm font-medium">
-                Selected: {labOrderForm.test_ids.length} test(s) — Total: ₹{availableLabTests
+                Selected: {labOrderForm.test_ids.length} test(s)
+                {showLabRates ? ` — Total: ₹${availableLabTests
                   .filter(t => labOrderForm.test_ids.includes(t.id))
-                  .reduce((sum, t) => sum + testPrice(t, labRateCardId), 0).toFixed(2)}
+                  .reduce((sum, t) => sum + testPrice(t, labRateCardId), 0).toFixed(2)}` : ''}
               </p>
             )}
             <div>

@@ -9,10 +9,14 @@ import { Search, X, TestTube, Loader2, Plus, Printer } from 'lucide-react';
 import { printPdfFromUrl } from '../utils/printPdf';
 import PatientSearchPicker from './PatientSearchPicker';
 import ReferralSelectWithCreate from './ReferralSelectWithCreate';
+import { useAuth } from '../contexts/AuthContext';
+import { canSeeLabTestRates, normalizeUserRoles } from '../hooks/useNavigationSections';
 import { defaultRateCardId, testPrice } from '../utils/labPricing';
 import { patientReferralName } from '../utils/patientReferral';
 
 const LabTestBookingDialog = ({ open, onClose, patient = null, referralList, onReferralsChange }) => {
+  const { user } = useAuth();
+  const showRates = canSeeLabTestRates(normalizeUserRoles(user));
   const token = localStorage.getItem('token');
   const [loading, setLoading] = useState(false);
 
@@ -261,12 +265,14 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList, onR
                         {test.default_fulfillment === 'send_out' && (
                           <p className="text-xs text-amber-700">
                             Sent to {test.default_partner_name || 'partner lab'}
-                            {test.default_partner_cost != null ? ` · their charge ₹${Number(test.default_partner_cost).toFixed(2)}` : ''}
+                            {showRates && test.default_partner_cost != null ? ` · their charge ₹${Number(test.default_partner_cost).toFixed(2)}` : ''}
                           </p>
                         )}
                       </div>
                     </div>
-                    <span className="text-sm font-semibold">₹{testPrice(test, rateCardId)}</span>
+                    {showRates && (
+                      <span className="text-sm font-semibold">₹{testPrice(test, rateCardId)}</span>
+                    )}
                   </div>
                 );
               })}
@@ -276,7 +282,7 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList, onR
                 {selectedTests.map(t => (
                   <Badge key={t.id} variant="secondary" className="flex items-center gap-1 cursor-pointer"
                     onClick={() => toggleTest(t)}>
-                    {t.name} — ₹{testPrice(t, rateCardId)}
+                    {t.name}{showRates ? ` — ₹${testPrice(t, rateCardId)}` : ''}
                     {t.default_fulfillment === 'send_out' && t.default_partner_name ? ` · ${t.default_partner_name}` : ''}
                     <X className="h-3 w-3" />
                   </Badge>
@@ -285,17 +291,19 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList, onR
             )}
           </div>
 
-          <div className="max-w-xs">
-            <Label>Rate</Label>
-            <Select value={rateCardId || '_none'} onValueChange={(v) => setRateCardId(v === '_none' ? '' : v)}>
-              <SelectTrigger><SelectValue placeholder="Rate" /></SelectTrigger>
-              <SelectContent>
-                {rateCards.map((c) => (
-                  <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          {showRates && (
+            <div className="max-w-xs">
+              <Label>Rate</Label>
+              <Select value={rateCardId || '_none'} onValueChange={(v) => setRateCardId(v === '_none' ? '' : v)}>
+                <SelectTrigger><SelectValue placeholder="Rate" /></SelectTrigger>
+                <SelectContent>
+                  {rateCards.map((c) => (
+                    <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <div>
