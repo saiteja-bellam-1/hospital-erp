@@ -1259,6 +1259,7 @@ export default function PurchaseEntry() {
                           wideMenu
                           className="[&_input]:h-10 [&_input]:text-base [&_button]:h-10 [&_.font-medium]:text-base"
                           onSelect={applyMedicineToForm}
+                          notFoundMessage="ITEM NOT FOUND"
                           onCreateNew={(q) => openMedicineCreate({
                             name: q || '',
                             medicine_code: q || '',

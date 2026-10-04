@@ -292,6 +292,11 @@ NEW_COLUMNS = [
     ("bills", "payer_share_amount", "FLOAT"),
     ("bills", "payer_approval_status", "VARCHAR(20)"),
     ("bills", "payer_approval_ref", "VARCHAR(100)"),
+    # Referral payout rates (percent of bill value), by service
+    ("referrals", "op_commission_pct", "FLOAT DEFAULT 0"),
+    ("referrals", "lab_commission_pct", "FLOAT DEFAULT 0"),
+    ("referrals", "ip_commission_pct", "FLOAT DEFAULT 0"),
+    ("referrals", "pharmacy_commission_pct", "FLOAT DEFAULT 0"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.

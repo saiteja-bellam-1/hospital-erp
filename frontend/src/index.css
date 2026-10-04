@@ -6,23 +6,24 @@
 
 @layer base {
   :root {
-    --background: 220 20% 97%;
-    --foreground: 220 30% 12%;
+    /* Light chrome, KT blue brand */
+    --background: 30 20% 98%;
+    --foreground: 220 15% 12%;
 
     --card: 0 0% 100%;
-    --card-foreground: 220 30% 12%;
+    --card-foreground: 220 15% 12%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 220 30% 12%;
+    --popover-foreground: 220 15% 12%;
 
     --primary: 209 62% 42%;
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 220 16% 93%;
-    --secondary-foreground: 220 30% 12%;
+    --secondary: 30 10% 94%;
+    --secondary-foreground: 220 15% 12%;
 
-    --muted: 220 16% 93%;
-    --muted-foreground: 220 10% 46%;
+    --muted: 30 10% 94%;
+    --muted-foreground: 220 8% 42%;
 
     --accent: 209 62% 95%;
     --accent-foreground: 209 62% 32%;
@@ -30,22 +31,22 @@
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 220 16% 90%;
-    --input: 220 16% 90%;
+    --border: 30 8% 90%;
+    --input: 30 8% 88%;
     --ring: 209 62% 42%;
 
-    --radius: 0.625rem;
+    --radius: 0.5rem;
 
-    /* Sidebar theme */
-    --sidebar-bg: 218 40% 15%;
-    --sidebar-fg: 220 20% 80%;
+    /* Light navigation */
+    --sidebar-bg: 0 0% 100%;
+    --sidebar-fg: 220 12% 24%;
     --sidebar-active: 209 62% 42%;
-    --sidebar-hover: 218 30% 20%;
-    --sidebar-border: 218 30% 22%;
-    --sidebar-muted: 220 15% 55%;
+    --sidebar-hover: 209 45% 96%;
+    --sidebar-border: 30 8% 90%;
+    --sidebar-muted: 220 6% 46%;
 
     /* Semantic status colors */
-    --success: 152 60% 40%;
+    --success: 152 60% 36%;
     --success-foreground: 0 0% 100%;
     --warning: 38 92% 50%;
     --warning-foreground: 0 0% 100%;
@@ -125,25 +126,8 @@
   background: hsl(var(--sidebar-muted));
 }
 
-/* Active nav indicator animation */
 .nav-item-active {
   position: relative;
-}
-.nav-item-active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 4px;
-  bottom: 4px;
-  width: 3px;
-  background: hsl(var(--sidebar-active));
-  border-radius: 0 3px 3px 0;
-  animation: slideIn 0.2s ease-out;
-}
-
-@keyframes slideIn {
-  from { transform: scaleY(0); }
-  to { transform: scaleY(1); }
 }
 
 /* Header nav — keep all modules on the bar; scroll instead of a More menu */
@@ -162,7 +146,6 @@
   border-radius: 4px;
 }
 
-/* Header nav active — match sidebar active chip on dark chrome */
 .header-nav-link-active {
   color: #fff;
   position: relative;

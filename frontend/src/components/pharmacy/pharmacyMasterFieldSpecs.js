@@ -48,15 +48,17 @@ export const PHARMACY_MASTER_FIELD_SPECS = {
     fields: [
       { key: 'code', label: 'HSN Code', required: true },
       { key: 'description', label: 'Description', type: 'textarea' },
-      { key: 'sgst_pct', label: 'SGST %', type: 'number', default: '' },
-      { key: 'cgst_pct', label: 'CGST %', type: 'number', default: '' },
       {
-        key: 'igst_pct',
-        label: 'IGST %',
+        key: 'gst_pct',
+        label: 'GST %',
         type: 'number',
-        default: '',
-        hint: 'Auto-filled as SGST + CGST; you can edit to override.',
+        required: true,
+        formOnly: true,
+        hint: 'SGST and CGST are each half of this rate. IGST equals this rate.',
       },
+      { key: 'sgst_pct', label: 'SGST %', type: 'number', auto: true, hint: 'Auto: GST ÷ 2' },
+      { key: 'cgst_pct', label: 'CGST %', type: 'number', auto: true, hint: 'Auto: GST ÷ 2' },
+      { key: 'igst_pct', label: 'IGST %', type: 'number', auto: true, hint: 'Auto: same as GST %' },
       { key: 'is_active', label: 'Active', type: 'bool', default: true },
     ],
   },
@@ -71,6 +73,7 @@ export function blankFromMasterFields(fields) {
 export function payloadFromMasterForm(form, fields) {
   const payload = { is_active: true };
   fields.forEach((f) => {
+    if (f.formOnly) return;
     const raw = form[f.key];
     if (f.type === 'number') {
       payload[f.key] = raw === '' || raw == null ? 0 : parseFloat(raw);

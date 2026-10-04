@@ -31,14 +31,20 @@ def _seed_masters(client, headers):
         headers=headers,
     )
     assert cat.status_code == 201, cat.text
-    return sup.json()["id"], hsn.json()["id"], cat.json()["id"]
+    company = client.post(
+        "/api/pharmacy/companies",
+        json={"name": "Paginate Company", "is_active": True},
+        headers=headers,
+    )
+    assert company.status_code == 201, company.text
+    return sup.json()["id"], hsn.json()["id"], cat.json()["id"], company.json()["id"]
 
 
 def test_sale_invoice_pdf_with_25_items(client, auth_headers):
   """A 25-line sale should produce a multi-page A5 landscape PDF."""
   H = auth_headers
   today = str(date.today())
-  supplier_id, hsn_id, cat_id = _seed_masters(client, H)
+  supplier_id, hsn_id, cat_id, company_id = _seed_masters(client, H)
 
   medicine_ids = []
   for i in range(1, 26):
@@ -48,6 +54,7 @@ def test_sale_invoice_pdf_with_25_items(client, auth_headers):
               "medicine_code": f"PG-{i:02d}",
               "name": f"Paginate Med {i:02d}",
               "category_id": cat_id,
+              "company_id": company_id,
               "hsn_id": hsn_id,
               "dosage_form": "tablet",
               "strength": "500mg",

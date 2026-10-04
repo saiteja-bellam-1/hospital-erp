@@ -13,6 +13,7 @@ Section B adds catalog + master data CRUD.
 from typing import List, Optional
 
 import io
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -326,6 +327,58 @@ def _ensure_active_or_404(obj, what: str):
         raise HTTPException(status_code=404, detail=f"{what} not found")
 
 
+def _medicine_code_taken(
+    db: Session,
+    hospital_id: int,
+    medicine_code: str,
+    *,
+    exclude_id: Optional[int] = None,
+) -> bool:
+    code = (medicine_code or "").strip()
+    if not code:
+        return False
+    q = db.query(Medicine.id).filter(
+        Medicine.hospital_id == hospital_id,
+        Medicine.is_active == True,  # noqa: E712
+        sa_func.lower(Medicine.medicine_code) == code.lower(),
+    )
+    if exclude_id is not None:
+        q = q.filter(Medicine.id != exclude_id)
+    return q.first() is not None
+
+
+def _code_from_medicine_name(name: str) -> str:
+    """Item code from the medicine name: uppercase letters and digits, max 20."""
+    base = re.sub(r"[^A-Za-z0-9]", "", (name or "").upper())[:20]
+    return base or "ITEM"
+
+
+def _allocate_medicine_code(
+    db: Session,
+    hospital_id: int,
+    requested: Optional[str],
+    name: str,
+    *,
+    exclude_id: Optional[int] = None,
+) -> str:
+    """Use the requested code, or build one from the name. Auto codes gain a suffix if taken."""
+    requested = (requested or "").strip()[:20]
+    derived = _code_from_medicine_name(name)
+    auto = (not requested) or (requested.upper() == derived.upper())
+    candidate = requested or derived
+    if not _medicine_code_taken(db, hospital_id, candidate, exclude_id=exclude_id):
+        return candidate
+    if not auto:
+        raise HTTPException(status_code=400, detail="Medicine code already exists")
+    base = derived or "ITEM"
+    for n in range(2, 1000):
+        suffix = str(n)
+        cand = (base[: max(1, 20 - len(suffix))] + suffix)[:20]
+        if not _medicine_code_taken(db, hospital_id, cand, exclude_id=exclude_id):
+            return cand
+    raise HTTPException(status_code=400, detail="Could not generate a unique item code")
+
+
 def _ensure_unique_medicine_code(
     db: Session,
     hospital_id: int,
@@ -337,15 +390,30 @@ def _ensure_unique_medicine_code(
     code = (medicine_code or "").strip()
     if not code:
         raise HTTPException(status_code=400, detail="Medicine code is required")
-    q = db.query(Medicine).filter(
-        Medicine.hospital_id == hospital_id,
-        Medicine.is_active == True,  # noqa: E712
-        sa_func.lower(Medicine.medicine_code) == code.lower(),
-    )
-    if exclude_id is not None:
-        q = q.filter(Medicine.id != exclude_id)
-    if q.first():
+    if _medicine_code_taken(db, hospital_id, code, exclude_id=exclude_id):
         raise HTTPException(status_code=400, detail="Medicine code already exists")
+
+
+def _ensure_medicine_company(db: Session, hospital_id: int, company_id: Optional[int]) -> None:
+    if not company_id:
+        raise HTTPException(status_code=400, detail="Company is required")
+    row = db.query(PharmacyCompany).filter(
+        PharmacyCompany.id == company_id,
+        PharmacyCompany.hospital_id == hospital_id,
+    ).first()
+    if not row or row.is_active is False:
+        raise HTTPException(status_code=400, detail="Invalid company")
+
+
+def _ensure_optional_category(db: Session, hospital_id: int, category_id: Optional[int]) -> None:
+    if category_id is None:
+        return
+    row = db.query(MedicineCategory).filter(
+        MedicineCategory.id == category_id,
+        MedicineCategory.hospital_id == hospital_id,
+    ).first()
+    if not row:
+        raise HTTPException(status_code=400, detail="Invalid category")
 
 
 def _assign_medicine_barcode(
@@ -679,11 +747,11 @@ _register_master_crud(
 # ============================================================================
 
 class MedicineIn(BaseModel):
-    medicine_code: str = Field(..., min_length=1, max_length=20)
+    medicine_code: Optional[str] = Field(None, max_length=20)
     name: str = Field(..., min_length=1, max_length=200)
     generic_name: Optional[str] = None
     manufacturer: Optional[str] = None  # legacy free-text
-    category_id: int
+    category_id: Optional[int] = None
     dosage_form: Optional[str] = None
     strength: Optional[str] = None
     unit_price: float = 0.0  # legacy alias of rate_a
@@ -722,8 +790,8 @@ class MedicineIn(BaseModel):
     strip_conversion_factor: int = Field(1, ge=1)
     rate_unit: str = Field("tablet", pattern="^(tablet|strip)$")
 
-    # Master FKs
-    company_id: Optional[int] = None
+    # Master FKs — company is required on create/update; category is optional.
+    company_id: int
     rack_id: Optional[int] = None
     salt_id: Optional[int] = None
     uom_id: Optional[int] = None
@@ -747,12 +815,14 @@ class MedicineIn(BaseModel):
     @classmethod
     def _trim_medicine_code(cls, v):
         if v is None:
-            return v
-        return str(v).strip()
+            return None
+        s = str(v).strip()
+        return s or None
 
 
 class MedicineOut(MedicineIn):
     id: int
+    company_id: Optional[int] = None  # legacy rows may predate the required company
     company_name: Optional[str] = None
     barcode_source: Optional[str] = None
 
@@ -996,7 +1066,8 @@ class UnmappedMedicineOut(BaseModel):
 
 class MapUnmappedMedicineIn(BaseModel):
     rate_a: float = Field(..., gt=0)
-    category_id: int
+    category_id: Optional[int] = None
+    company_id: Optional[int] = None
     generic_name: Optional[str] = None
     strength: Optional[str] = None
     dosage_form: Optional[str] = None
@@ -1048,13 +1119,6 @@ def map_unmapped_medicine(
     if not stub or not is_free_text_medicine(stub):
         raise HTTPException(status_code=404, detail="Unmapped medicine not found")
 
-    cat = db.query(MedicineCategory).filter(
-        MedicineCategory.id == data.category_id,
-        MedicineCategory.hospital_id == current_user.hospital_id,
-    ).first()
-    if not cat:
-        raise HTTPException(status_code=400, detail="Invalid category")
-
     if data.merge_into_medicine_id:
         target = db.query(Medicine).filter(
             Medicine.id == data.merge_into_medicine_id,
@@ -1075,7 +1139,11 @@ def map_unmapped_medicine(
                f"Merged free-text stub #{stub.id} into {target.name}")
         return target
 
-    stub.category_id = data.category_id
+    _ensure_medicine_company(db, current_user.hospital_id, data.company_id)
+    _ensure_optional_category(db, current_user.hospital_id, data.category_id)
+    stub.company_id = data.company_id
+    if data.category_id is not None:
+        stub.category_id = data.category_id
     stub.rate_a = data.rate_a
     stub.unit_price = data.rate_a
     stub.generic_name = data.generic_name
@@ -1192,9 +1260,13 @@ def create_medicine(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "manage_medicines")),
 ):
-    _ensure_unique_medicine_code(db, current_user.hospital_id, data.medicine_code)
+    _ensure_medicine_company(db, current_user.hospital_id, data.company_id)
+    _ensure_optional_category(db, current_user.hospital_id, data.category_id)
 
     payload = data.model_dump()
+    payload["medicine_code"] = _allocate_medicine_code(
+        db, current_user.hospital_id, data.medicine_code, data.name,
+    )
     barcode_input = payload.pop("barcode", None)
     row = Medicine(
         hospital_id=current_user.hospital_id,
@@ -1222,10 +1294,17 @@ def update_medicine(
         Medicine.id == mid, Medicine.hospital_id == current_user.hospital_id,
     ).first()
     _ensure_active_or_404(row, "Medicine")
-    _ensure_unique_medicine_code(
-        db, current_user.hospital_id, data.medicine_code, exclude_id=mid,
-    )
+    _ensure_medicine_company(db, current_user.hospital_id, data.company_id)
+    _ensure_optional_category(db, current_user.hospital_id, data.category_id)
     payload = data.model_dump()
+    if not (data.medicine_code or "").strip():
+        payload["medicine_code"] = _allocate_medicine_code(
+            db, current_user.hospital_id, None, data.name, exclude_id=mid,
+        )
+    else:
+        _ensure_unique_medicine_code(
+            db, current_user.hospital_id, data.medicine_code, exclude_id=mid,
+        )
     barcode_input = payload.pop("barcode", None)
     for k, v in payload.items():
         setattr(row, k, v)
@@ -3991,6 +4070,36 @@ def _pick_fifo_batches(db: Session, *, medicine_id: int, qty_needed: float, hosp
     return picks
 
 
+def _medicine_is_scheduled(med: Optional[Medicine]) -> bool:
+    """Schedule H/H1, narcotic, tramadol, and other controlled drugs."""
+    if not med:
+        return False
+    return any((
+        getattr(med, "is_schedule_h", False),
+        getattr(med, "is_schedule_h1", False),
+        getattr(med, "is_narcotic", False),
+        getattr(med, "is_tramadol", False),
+        getattr(med, "is_controlled", False),
+    ))
+
+
+def _require_doctor_for_scheduled_items(db: Session, hospital_id: int, items, doctor_name: Optional[str]) -> None:
+    ids = [it.medicine_id for it in items if getattr(it, "medicine_id", None)]
+    if not ids:
+        return
+    meds = db.query(Medicine).filter(
+        Medicine.id.in_(ids),
+        Medicine.hospital_id == hospital_id,
+    ).all()
+    scheduled = [m for m in meds if _medicine_is_scheduled(m)]
+    if scheduled and not (doctor_name or "").strip():
+        names = ", ".join(m.name for m in scheduled[:3])
+        raise HTTPException(
+            status_code=400,
+            detail=f"Doctor name is required for scheduled drugs ({names})",
+        )
+
+
 def _medicine_schedule_label(med: Optional[Medicine]) -> str:
     if not med:
         return ""
@@ -4572,6 +4681,9 @@ def create_sale(
     _hosp = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
     tax_on_free = bool(getattr(_hosp, "pharmacy_tax_on_free", False))
 
+    _require_doctor_for_scheduled_items(
+        db, current_user.hospital_id, data.items, data.doctor_name,
+    )
     billing_mode = data.billing_mode or "cash_at_pharmacy"
     ip_admission_id = _resolve_sale_admission(db, current_user, data.patient_ip_id, billing_mode)
     linked_rx = _validate_pos_prescription(db, current_user, data)
@@ -4644,6 +4756,9 @@ def edit_sale(
         raise HTTPException(status_code=400, detail="Reason is required to edit a sale")
     if not data.items:
         raise HTTPException(status_code=400, detail="Cannot leave sale empty")
+    _require_doctor_for_scheduled_items(
+        db, current_user.hospital_id, data.items, data.doctor_name,
+    )
 
     sale_store_id = sale.store_id or resolve_store_id(db, current_user, data.store_id)
     if data.store_id is not None and data.store_id != sale_store_id:

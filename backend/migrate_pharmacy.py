@@ -119,11 +119,59 @@ NEW_COLUMNS = [
 ]
 
 
+def _relax_medicines_category_nullable(conn):
+    """Category is optional on item creation. SQLite needs a table rebuild to drop NOT NULL."""
+    import re
+    from sqlalchemy import text
+
+    info = conn.execute(text("PRAGMA table_info(medicines)")).fetchall()
+    if not info:
+        return
+    cat = next((r for r in info if r[1] == "category_id"), None)
+    if not cat or cat[3] == 0:
+        print("  medicines.category_id already nullable")
+        return
+    row = conn.execute(text(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='medicines'"
+    )).fetchone()
+    if not row or not row[0]:
+        print("  medicines DDL missing — skipped category nullability")
+        return
+    new_sql, n = re.subn(
+        r"(\bcategory_id\b\s+\w+)\s+NOT\s+NULL",
+        r"\1",
+        row[0],
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    if n != 1:
+        raise RuntimeError("Could not relax medicines.category_id — unexpected DDL")
+    new_sql = re.sub(
+        r"CREATE\s+TABLE\s+(?:\"medicines\"|medicines)\b",
+        "CREATE TABLE medicines__new",
+        new_sql,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    indexes = conn.execute(text(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='medicines' AND sql IS NOT NULL"
+    )).fetchall()
+    print("  Making medicines.category_id nullable...")
+    conn.execute(text("PRAGMA foreign_keys=OFF"))
+    conn.execute(text(new_sql))
+    cols = ", ".join(r[1] for r in info)
+    conn.execute(text(f"INSERT INTO medicines__new ({cols}) SELECT {cols} FROM medicines"))
+    conn.execute(text("DROP TABLE medicines"))
+    conn.execute(text("ALTER TABLE medicines__new RENAME TO medicines"))
+    for (idx_sql,) in indexes:
+        if idx_sql:
+            conn.execute(text(idx_sql))
+    conn.execute(text("PRAGMA foreign_keys=ON"))
+    print("  medicines.category_id is now nullable")
+
+
 def migrate():
     from sqlalchemy import text
-    if not NEW_COLUMNS:
-        print("  Pharmacy: no column additions pending")
-        return
     with engine.connect() as conn:
         for table, col, col_type in NEW_COLUMNS:
             # Skip silently if the parent table doesn't exist yet (create_all
@@ -145,6 +193,8 @@ def migrate():
                 print(f"  Added column: {table}.{col}")
             else:
                 print(f"  Already exists: {table}.{col}")
+        _relax_medicines_category_nullable(conn)
+        conn.commit()
 
 
 if __name__ == "__main__":

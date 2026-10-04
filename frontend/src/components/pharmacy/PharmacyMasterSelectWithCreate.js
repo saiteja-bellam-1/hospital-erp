@@ -107,8 +107,7 @@ export default function PharmacyMasterSelectWithCreate({
       setSupplierDialogOpen(true);
       return;
     }
-    const blank = blankFromMasterFields(fields);
-    setForm(path === 'hsn' ? patchHsnForm(blank, 'sgst_pct', blank.sgst_pct ?? '') : blank);
+    setForm(blankFromMasterFields(fields));
     setDialogOpen(true);
   };
 
@@ -117,6 +116,13 @@ export default function PharmacyMasterSelectWithCreate({
     for (const f of fields) {
       if (!f.required) continue;
       if (f.type === 'bool') continue;
+      if (f.type === 'number') {
+        if (form[f.key] === '' || form[f.key] == null || Number.isNaN(Number(form[f.key]))) {
+          toast({ variant: 'destructive', title: `${f.label} is required` });
+          return;
+        }
+        continue;
+      }
       if (!String(form[f.key] ?? '').trim()) {
         toast({ variant: 'destructive', title: `${f.label} is required` });
         return;
@@ -232,7 +238,11 @@ export default function PharmacyMasterSelectWithCreate({
                         id={`pharm-master-${path}-${f.key}`}
                         type={f.type === 'number' ? 'number' : 'text'}
                         step={f.type === 'number' ? '0.01' : undefined}
-                        value={form[f.key] ?? ''}
+                        readOnly={!!f.auto}
+                        className={f.auto ? 'bg-slate-50' : undefined}
+                        value={f.auto || f.key === 'gst_pct'
+                          ? (form[f.key] === '' || form[f.key] == null ? '' : String(form[f.key]))
+                          : (form[f.key] ?? '')}
                         onChange={(e) => patchForm(f.key, e.target.value)}
                       />
                     )}

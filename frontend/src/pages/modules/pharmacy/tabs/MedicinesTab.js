@@ -18,6 +18,8 @@ import { usePharmacyMedicineMasters } from '../../../../hooks/usePharmacyMedicin
 import MedicineFormFields, {
   EMPTY_MEDICINE_FORM,
   MEDICINE_FORM_STEPS,
+  medicineBasicBlockReason,
+  medicineCodeFromName,
   medicineStepCanProceed,
   prepareMedicinePayload,
 } from '../../../../components/pharmacy/MedicineFormFields';
@@ -85,7 +87,7 @@ export default function MedicinesTab() {
 
   const handleNext = () => {
     if (!medicineStepCanProceed(form, activeStep)) {
-      toast({ variant: 'destructive', title: 'Code, name, and category are required' });
+      toast({ variant: 'destructive', title: medicineBasicBlockReason(form) || 'Name and company are required' });
       return;
     }
     setActiveStep((s) => Math.min(s + 1, MEDICINE_FORM_STEPS.length - 1));
@@ -93,12 +95,13 @@ export default function MedicinesTab() {
 
   const save = async () => {
     if (!medicineStepCanProceed(form, 0)) {
-      toast({ variant: 'destructive', title: 'Code, name, and category are required' });
+      toast({ variant: 'destructive', title: medicineBasicBlockReason(form) || 'Name and company are required' });
       setActiveStep(0);
       return;
     }
     const code = (form.medicine_code || '').trim().toLowerCase();
-    const codeTaken = rows.some(
+    const autoCode = medicineCodeFromName(form.name).toLowerCase();
+    const codeTaken = code !== autoCode && rows.some(
       (m) => m.is_active && m.medicine_code?.trim().toLowerCase() === code
         && (!editing || m.id !== editing.id),
     );

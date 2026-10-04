@@ -518,10 +518,10 @@ const DashboardShell = () => {
           <>
             <div className="fixed inset-0" onClick={() => setShowSupportPopup(false)} />
             <div className="absolute bottom-16 right-0 w-80 bg-white rounded-2xl shadow-2xl border border-gray-200 overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-200">
-              <div className="bg-blue-600 px-5 py-4 flex items-center justify-between">
+              <div className="bg-primary px-5 py-4 flex items-center justify-between">
                 <div>
                   <h3 className="text-white font-semibold text-sm">Support Contact</h3>
-                  <p className="text-blue-200 text-xs mt-0.5">We're here to help</p>
+                  <p className="text-white/70 text-xs mt-0.5">We're here to help</p>
                 </div>
                 <button onClick={() => setShowSupportPopup(false)} className="text-white/70 hover:text-white">
                   <XIcon className="h-4 w-4" />
@@ -536,11 +536,11 @@ const DashboardShell = () => {
                     <p className="font-semibold text-sm text-gray-900">KT Health Soft</p>
                     <div className="flex items-center gap-2">
                       <Phone className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
-                      <a href="tel:+919876543210" className="text-xs text-blue-600 font-medium hover:underline">+91 98765 43210</a>
+                      <a href="tel:+919876543210" className="text-xs text-primary font-medium hover:underline">+91 98765 43210</a>
                     </div>
                     <div className="flex items-center gap-2">
                       <Mail className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
-                      <a href="mailto:support@kthealthsoft.com" className="text-xs text-blue-600 font-medium hover:underline">support@kthealthsoft.com</a>
+                      <a href="mailto:support@kthealthsoft.com" className="text-xs text-primary font-medium hover:underline">support@kthealthsoft.com</a>
                     </div>
                   </div>
                 </div>
@@ -565,12 +565,12 @@ const DashboardShell = () => {
                 {networkInfo?.ips?.length > 0 && (
                   <div className="space-y-2.5">
                     <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Network Access</p>
-                    <div className="bg-blue-50 rounded-xl p-3.5 space-y-1.5">
+                    <div className="bg-accent rounded-xl p-3.5 space-y-1.5">
                       <p className="text-xs text-gray-500 mb-2">Other devices on this network can open the app at:</p>
                       {networkInfo.ips.map(ip => (
                         <div key={ip} className="flex items-center gap-2">
-                          <Wifi className="h-3.5 w-3.5 text-blue-500 flex-shrink-0" />
-                          <code className="text-xs font-mono font-semibold text-blue-700 select-all">
+                          <Wifi className="h-3.5 w-3.5 text-primary flex-shrink-0" />
+                          <code className="text-xs font-mono font-semibold text-primary select-all">
                             http://{ip}:{networkInfo.port}
                           </code>
                         </div>
@@ -594,7 +594,7 @@ const DashboardShell = () => {
           className={`h-14 w-14 rounded-full shadow-lg flex items-center justify-center transition-all duration-200 ${
             showSupportPopup
               ? 'bg-gray-600 hover:bg-gray-700 rotate-0'
-              : 'bg-blue-600 hover:bg-blue-700 hover:scale-105'
+              : 'bg-primary hover:bg-primary/90 hover:scale-105'
           }`}
         >
           {showSupportPopup
