@@ -277,6 +277,7 @@ class PatientService:
                 'primary_phone': patient.primary_phone,
                 'emergency_contact_phone': patient.emergency_contact_phone,
                 'address': patient.address,
+                'referred_by': patient.referred_by,
                 'is_active': patient.is_active,
                 'created_at': patient.created_at,
                 'last_appointment_date': last_appointment_date,

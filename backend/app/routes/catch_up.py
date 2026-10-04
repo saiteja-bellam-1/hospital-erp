@@ -173,6 +173,9 @@ async def catch_up_consultation(
     if not doctor:
         raise HTTPException(status_code=404, detail="Doctor not found")
 
+    from app.services.patient_referral import apply_patient_referral
+    referral_name = apply_patient_referral(patient, data.referred_by)
+
     total = round(float(data.consultation_fee) + float(data.registration_fee or 0), 2)
     service_dt = date_to_datetime(data.service_date)
     payment_dt = date_to_datetime(data.payment_date)
@@ -192,7 +195,7 @@ async def catch_up_consultation(
         payment_method=data.payment_method,
         payment_date=payment_dt,
         final_amount=total,
-        referred_by=data.referred_by,
+        referred_by=referral_name,
         checked_out_at=service_dt,
     )
     db.add(apt)
@@ -230,7 +233,7 @@ async def catch_up_consultation(
         payment_method=data.payment_method,
         reference_id=apt.id,
         notes=data.reason,
-        referred_by=data.referred_by,
+        referred_by=referral_name,
     )
     db.commit()
     log_catch_up(
@@ -302,6 +305,10 @@ class LabCatchUp(CatchUpDates):
     doctor_id: Optional[int] = None
     referred_by: Optional[str] = None
     notes: Optional[str] = None
+    rate_card_id: Optional[int] = None
+    fulfillment: Optional[str] = Field(None, pattern="^(in_house|send_out)$")
+    partner_id: Optional[int] = None
+    partner_cost: Optional[float] = Field(None, ge=0)
 
 
 @router.post("/lab")
@@ -313,6 +320,8 @@ async def catch_up_lab(
     assert_catch_up_dates(data.service_date, data.payment_date)
     hospital = get_hospital(db, current_user)
     patient = get_patient(db, data.patient_id, hospital.id)
+    from app.services.patient_referral import apply_patient_referral
+    referral_name = apply_patient_referral(patient, data.referred_by)
 
     tests = db.query(LabTest).filter(LabTest.id.in_(data.test_ids)).all()
     by_id = {t.id: t for t in tests}
@@ -328,9 +337,17 @@ async def catch_up_lab(
     items = []
     total = 0.0
 
+    from app.services.lab_rates import resolve_order_pricing
     for tid in data.test_ids:
         test = by_id[tid]
-        amount = float(test.cost or 0)
+        pricing = resolve_order_pricing(
+            db, hospital.id, test,
+            rate_card_id=data.rate_card_id,
+            fulfillment=data.fulfillment,
+            partner_id=data.partner_id,
+            partner_cost=data.partner_cost,
+        )
+        amount = pricing["amount"]
         total += amount
         order = PatientLabOrder(
             order_number=f"LAB-{str(uuid.uuid4())[:8].upper()}",
@@ -347,10 +364,17 @@ async def catch_up_lab(
             payment_status="paid",
             payment_method=data.payment_method,
             payment_date=payment_dt,
-            referred_by=data.referred_by,
+            referred_by=referral_name,
             notes=data.notes,
             lab_bill_group_id=group_id,
             lab_bill_number=bill_number_label,
+            rate_card_id=pricing["rate_card_id"],
+            fulfillment=pricing["fulfillment"],
+            partner_id=pricing["partner_id"],
+            partner_cost=pricing["partner_cost"],
+            partner_status=pricing["partner_status"],
+            bill_to=pricing["bill_to"],
+            partner_settlement_status=pricing["partner_settlement_status"],
         )
         db.add(order)
         db.flush()
@@ -376,7 +400,7 @@ async def catch_up_lab(
         payment_method=data.payment_method,
         reference_id=order_ids[0] if order_ids else None,
         notes=data.reason,
-        referred_by=data.referred_by,
+        referred_by=referral_name,
     )
     db.commit()
     order_summaries = []
@@ -425,10 +449,17 @@ async def catch_up_lab_preview(
     missing = [tid for tid in data.test_ids if tid not in by_id]
     if missing:
         raise HTTPException(status_code=400, detail=f"Unknown lab test ids: {missing}")
+    from app.services.lab_rates import resolve_order_pricing
     items = []
     for tid in data.test_ids:
         test = by_id[tid]
-        amount = float(test.cost or 0)
+        amount = resolve_order_pricing(
+            db, hospital.id, test,
+            rate_card_id=data.rate_card_id,
+            fulfillment=data.fulfillment,
+            partner_id=data.partner_id,
+            partner_cost=data.partner_cost,
+        )["amount"]
         items.append({
             "item_type": "lab_test",
             "item_name": test.name,
@@ -1093,6 +1124,8 @@ async def catch_up_misc_bill(
     assert_catch_up_dates(data.service_date, data.payment_date)
     hospital = get_hospital(db, current_user)
     patient = get_patient(db, data.patient_id, hospital.id)
+    from app.services.patient_referral import apply_patient_referral
+    referral_name = apply_patient_referral(patient, data.referred_by)
 
     items = []
     for li in data.items:
@@ -1117,7 +1150,7 @@ async def catch_up_misc_bill(
         payment_date=data.payment_date,
         payment_method=data.payment_method,
         notes=data.reason or data.notes,
-        referred_by=data.referred_by,
+        referred_by=referral_name,
     )
     db.commit()
     log_catch_up(

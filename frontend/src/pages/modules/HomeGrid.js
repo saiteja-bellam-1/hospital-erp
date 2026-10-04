@@ -65,11 +65,11 @@ const HomeGrid = ({ enabledModules, pwaInstallPrompt, onOpenSupport }) => {
   };
 
   const toolsItems = [
-    { text: 'Stats Dashboard', icon: <LayoutDashboard className="h-5 w-5" />, onClick: () => navigate('/dashboard') },
-    { text: 'Help & Docs', icon: <BookOpen className="h-5 w-5" />, onClick: () => navigate('/help/docs') },
-    { text: 'Add to Desktop', icon: <Monitor className="h-5 w-5" />, onClick: handleAddToDesktop },
-    { text: 'Support', icon: <Headphones className="h-5 w-5" />, onClick: () => onOpenSupport && onOpenSupport() },
-    { text: 'Log out', icon: <LogOut className="h-5 w-5" />, onClick: logout, danger: true },
+    { text: 'Stats Dashboard', icon: <LayoutDashboard className="h-4 w-4" />, onClick: () => navigate('/dashboard') },
+    { text: 'Help & Docs', icon: <BookOpen className="h-4 w-4" />, onClick: () => navigate('/help/docs') },
+    { text: 'Add to Desktop', icon: <Monitor className="h-4 w-4" />, onClick: handleAddToDesktop },
+    { text: 'Support', icon: <Headphones className="h-4 w-4" />, onClick: () => onOpenSupport && onOpenSupport() },
+    { text: 'Log out', icon: <LogOut className="h-4 w-4" />, onClick: logout, danger: true },
   ];
 
   const Card = ({ icon, label, onClick, danger, colorKey }) => {
@@ -78,15 +78,16 @@ const HomeGrid = ({ enabledModules, pwaInstallPrompt, onOpenSupport }) => {
       <button
         type="button"
         onClick={onClick}
-        className="group flex flex-col items-center justify-start gap-2.5 rounded-2xl px-2 py-3 min-h-[108px] transition-all duration-150 hover:-translate-y-0.5 hover:bg-white hover:shadow-md"
+        title={label}
+        className="group flex flex-col items-center justify-start gap-1 rounded-lg px-0.5 py-1.5 transition-colors duration-150 hover:bg-white hover:shadow-sm"
       >
         <span
-          className="flex items-center justify-center h-14 w-14 rounded-2xl text-white shadow-sm transition-transform duration-150 group-hover:scale-105"
+          className="flex items-center justify-center h-9 w-9 rounded-lg text-white shadow-sm transition-transform duration-150 group-hover:scale-105"
           style={{ background: color }}
         >
           {icon}
         </span>
-        <span className="text-[13px] font-medium text-center leading-tight text-gray-800">
+        <span className="text-[11px] font-medium text-center leading-tight text-gray-700 line-clamp-2 w-full">
           {label}
         </span>
       </button>
@@ -95,32 +96,33 @@ const HomeGrid = ({ enabledModules, pwaInstallPrompt, onOpenSupport }) => {
 
   const renderIcon = (item) => {
     if (!item?.icon) return null;
-    return React.cloneElement(item.icon, { className: 'h-6 w-6' });
+    return React.cloneElement(item.icon, { className: 'h-4 w-4' });
   };
 
   const firstName = user?.full_name ? user.full_name.split(' ')[0] : '';
 
-  return (
-    <div className="w-full py-10 lg:py-14">
-      <p className="text-sm font-semibold tracking-wide text-primary">
-        {hospitalName || 'KT HEALTH ERP'}
-      </p>
-      <h1 className="mt-2 text-3xl lg:text-4xl font-bold tracking-tight text-gray-900">
-        {firstName ? `Welcome, ${firstName}` : 'Welcome'}
-      </h1>
-      <p className="mt-2 text-base text-gray-500 max-w-xl">
-        Every module you can open is here. Pick one and get to work.
-      </p>
+  const tileGridClass = 'grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-x-1 gap-y-0.5';
 
-      <div className="mt-10 space-y-8">
+  return (
+    <div className="w-full px-2 py-2 sm:px-3">
+      <div className="flex items-baseline justify-between gap-3 px-1 pb-2 mb-2 border-b border-gray-200/80">
+        <h1 className="text-base font-semibold tracking-tight text-gray-900 truncate">
+          {firstName ? `Welcome, ${firstName}` : 'Welcome'}
+        </h1>
+        <p className="text-xs font-medium text-primary truncate shrink-0">
+          {hospitalName || 'KT HEALTH ERP'}
+        </p>
+      </div>
+
+      <div className="space-y-2.5">
         {visibleSections.map((section, idx) => (
           <section key={section.label || `s-${idx}`}>
             {section.label && (
-              <h2 className="text-sm font-semibold text-gray-500 mb-3 px-2">
+              <h2 className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-0.5 px-1">
                 {section.label}
               </h2>
             )}
-            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-1">
+            <div className={tileGridClass}>
               {section.items.map(item => (
                 <Card
                   key={item.path}
@@ -135,8 +137,8 @@ const HomeGrid = ({ enabledModules, pwaInstallPrompt, onOpenSupport }) => {
         ))}
 
         <section>
-          <h2 className="text-sm font-semibold text-gray-500 mb-3 px-2">Tools</h2>
-          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-1">
+          <h2 className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-0.5 px-1">Tools</h2>
+          <div className={tileGridClass}>
             {toolsItems.map(item => (
               <Card
                 key={item.text}

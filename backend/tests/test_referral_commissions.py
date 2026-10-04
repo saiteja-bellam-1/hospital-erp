@@ -1,4 +1,4 @@
-"""Referral payouts follow the referral saved on the patient at registration."""
+"""Referral payouts follow the single referral saved on the patient."""
 import uuid
 from datetime import date, datetime
 
@@ -210,10 +210,75 @@ def test_referral_payout_uses_patient_referral_across_op_lab_ip_pharmacy(
     assert summary["total_commission_paid"] == 100
     assert summary["commission_balance"] == 242.5
     assert len(body["consultations"]) == 1
+    assert body["consultations"][0]["reference"] == f"OP-{suffix}"
     assert len(body["lab_orders"]) == 1
     assert len(body["inpatient_bills"]) == 2
     assert len(body["pharmacy_sales"]) == 1
     assert body["pharmacy_sales"][0]["amount"] == 250
+
+
+def _book(client, headers, patient, doctor_id, referred_by):
+    res = client.post("/api/appointments/", headers=headers, json={
+        "patient_id": patient.patient_id,
+        "doctor_id": doctor_id,
+        "appointment_date": "2026-07-29",
+        "payment_status": "pending",
+        "referred_by": referred_by,
+        "override_availability": True,
+        "override_reason": "referral test",
+    })
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+def test_blank_patient_referral_is_saved_from_the_booking(
+    client, auth_headers, db_session, seed_data
+):
+    suffix = uuid.uuid4().hex[:8]
+    ref_name = f"Dr Blank {suffix}"
+    referral = Referral(name=ref_name, hospital_id=seed_data["hospital_id"], op_commission_pct=10)
+    db_session.add(referral)
+    patient = _patient(db_session, seed_data, "Chitra", None)
+    db_session.commit()
+
+    booked = _book(client, auth_headers, patient, seed_data["doctor_user_id"], ref_name)
+    assert booked["referred_by"] == ref_name
+
+    db_session.refresh(patient)
+    assert patient.referred_by == ref_name
+
+    details = client.get(f"/api/referrals/{referral.id}/details", headers=auth_headers)
+    assert details.status_code == 200, details.text
+    references = {row["reference"] for row in details.json()["consultations"]}
+    assert booked["appointment_number"] in references
+
+
+def test_existing_patient_referral_is_kept_when_booking_sends_another(
+    client, auth_headers, db_session, seed_data
+):
+    suffix = uuid.uuid4().hex[:8]
+    saved_name = f"Dr Saved {suffix}"
+    other_name = f"Dr Other {suffix}"
+    saved = Referral(name=saved_name, hospital_id=seed_data["hospital_id"], op_commission_pct=10)
+    other = Referral(name=other_name, hospital_id=seed_data["hospital_id"], op_commission_pct=10)
+    db_session.add_all([saved, other])
+    patient = _patient(db_session, seed_data, "Deepa", saved_name)
+    db_session.commit()
+
+    booked = _book(client, auth_headers, patient, seed_data["doctor_user_id"], other_name)
+    assert booked["referred_by"] == saved_name
+
+    db_session.refresh(patient)
+    assert patient.referred_by == saved_name
+
+    saved_details = client.get(f"/api/referrals/{saved.id}/details", headers=auth_headers)
+    other_details = client.get(f"/api/referrals/{other.id}/details", headers=auth_headers)
+    assert saved_details.status_code == 200
+    assert other_details.status_code == 200
+    saved_refs = {row["reference"] for row in saved_details.json()["consultations"]}
+    other_refs = {row["reference"] for row in other_details.json()["consultations"]}
+    assert booked["appointment_number"] in saved_refs
+    assert booked["appointment_number"] not in other_refs
 
 
 def test_referral_rejects_commission_rate_above_100(client, auth_headers, db_session, seed_data):

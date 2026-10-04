@@ -297,6 +297,20 @@ NEW_COLUMNS = [
     ("referrals", "lab_commission_pct", "FLOAT DEFAULT 0"),
     ("referrals", "ip_commission_pct", "FLOAT DEFAULT 0"),
     ("referrals", "pharmacy_commission_pct", "FLOAT DEFAULT 0"),
+    # Lab rate cards (A/B) and third-party fulfillment
+    ("lab_tests", "default_fulfillment", "VARCHAR(20) DEFAULT 'in_house'"),
+    ("lab_tests", "default_partner_id", "INTEGER REFERENCES lab_partners(id)"),
+    ("lab_tests", "default_partner_cost", "FLOAT"),
+    ("patient_lab_orders", "rate_card_id", "INTEGER REFERENCES lab_rate_cards(id)"),
+    ("patient_lab_orders", "fulfillment", "VARCHAR(20) DEFAULT 'in_house'"),
+    ("patient_lab_orders", "partner_id", "INTEGER REFERENCES lab_partners(id)"),
+    ("patient_lab_orders", "partner_cost", "FLOAT"),
+    ("patient_lab_orders", "partner_status", "VARCHAR(30)"),
+    ("patient_lab_orders", "partner_reference", "VARCHAR(100)"),
+    ("patient_lab_orders", "bill_to", "VARCHAR(20) DEFAULT 'patient'"),
+    ("patient_lab_orders", "partner_settlement_status", "VARCHAR(20)"),
+    ("patient_lab_orders", "partner_invoice_ref", "VARCHAR(100)"),
+    ("patient_lab_orders", "partner_settled_at", "DATETIME"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.
@@ -517,7 +531,78 @@ def migrate():
     except Exception as e:
         print(f"  Note (mrn backfill): {e}")
 
+    try:
+        backfill_patient_referrals()
+    except Exception as e:
+        print(f"  Note (referral backfill): {e}")
+
     print("Migration complete.")
+
+
+def backfill_patient_referrals():
+    """Copy a booking referral onto patients who were registered without one.
+
+    A patient keeps a single referral. When registration left it blank and a
+    later appointment, lab order, or bill recorded one, that name becomes the
+    patient's referral. Blank orders are then stamped with the patient referral
+    so bills and revenue stay on the same referrer.
+    """
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("SELECT referred_by FROM patients LIMIT 0"))
+            conn.execute(text("SELECT referred_by FROM appointments LIMIT 0"))
+        except Exception:
+            return
+
+        blank_patients = conn.execute(text("""
+            SELECT id FROM patients
+            WHERE referred_by IS NULL OR trim(referred_by) = ''
+        """)).fetchall()
+        for (pid,) in blank_patients:
+            name = conn.execute(text("""
+                SELECT referred_by FROM (
+                    SELECT trim(referred_by) AS referred_by,
+                           COALESCE(created_at, '9999-12-31') AS ts
+                    FROM appointments
+                    WHERE patient_id = :pid
+                      AND referred_by IS NOT NULL AND trim(referred_by) != ''
+                    UNION ALL
+                    SELECT trim(referred_by), COALESCE(order_date, '9999-12-31')
+                    FROM patient_lab_orders
+                    WHERE patient_id = :pid
+                      AND referred_by IS NOT NULL AND trim(referred_by) != ''
+                    UNION ALL
+                    SELECT trim(referred_by), COALESCE(bill_date, '9999-12-31')
+                    FROM bills
+                    WHERE patient_id = :pid
+                      AND referred_by IS NOT NULL AND trim(referred_by) != ''
+                )
+                ORDER BY ts ASC
+                LIMIT 1
+            """), {"pid": pid}).scalar()
+            if name:
+                conn.execute(text("""
+                    UPDATE patients
+                    SET referred_by = :name
+                    WHERE id = :pid
+                      AND (referred_by IS NULL OR trim(referred_by) = '')
+                """), {"name": str(name)[:100], "pid": pid})
+
+        for table in ("appointments", "patient_lab_orders", "bills"):
+            conn.execute(text(f"""
+                UPDATE {table}
+                SET referred_by = (
+                    SELECT trim(p.referred_by) FROM patients p
+                    WHERE p.id = {table}.patient_id
+                )
+                WHERE (referred_by IS NULL OR trim(referred_by) = '')
+                  AND patient_id IN (
+                    SELECT id FROM patients
+                    WHERE referred_by IS NOT NULL AND trim(referred_by) != ''
+                  )
+            """))
+        conn.commit()
 
 
 def backfill_patient_mrns():

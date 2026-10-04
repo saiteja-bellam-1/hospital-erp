@@ -521,12 +521,16 @@ if os.path.isdir(_frontend_dir):
     if os.path.isdir(_static_dir):
         app.mount("/static", StaticFiles(directory=_static_dir), name="frontend_static")
 
-    # SPA catch-all: serve index.html for non-API routes
-    @app.get("/{full_path:path}")
+    # SPA catch-all: serve index.html for non-API routes.
+    # Registered for every method so a missing API path returns 404 instead of
+    # 405 from a GET-only catch-all (Starlette matches the path before the handler runs).
+    @app.api_route(
+        "/{full_path:path}",
+        methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    )
     async def serve_spa(request: Request, full_path: str):
-        # Don't intercept API routes or uploads
         if full_path.startswith("api/") or full_path.startswith("uploads/"):
-            raise HTTPException(status_code=404)
+            raise HTTPException(status_code=404, detail="Not found")
 
         # Try to serve the exact file first (e.g., favicon.ico, manifest.json)
         file_path = os.path.join(_frontend_dir, full_path)

@@ -484,10 +484,10 @@ def _build_patient_prescription_fields(patient: Patient, db: Optional[Session] =
 
 
 def _resolve_referred_by(patient: Patient, appointment: Optional[Appointment] = None) -> str:
+    if patient and (patient.referred_by or "").strip():
+        return patient.referred_by.strip()
     if appointment and appointment.referred_by:
         return appointment.referred_by.strip()
-    if patient.referred_by:
-        return patient.referred_by.strip()
     return ''
 
 

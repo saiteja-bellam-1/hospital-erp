@@ -9,6 +9,8 @@ import { Search, X, TestTube, Loader2, Plus, Printer } from 'lucide-react';
 import { printPdfFromUrl } from '../utils/printPdf';
 import PatientSearchPicker from './PatientSearchPicker';
 import ReferralSelectWithCreate from './ReferralSelectWithCreate';
+import { defaultRateCardId, testPrice } from '../utils/labPricing';
+import { patientReferralName } from '../utils/patientReferral';
 
 const LabTestBookingDialog = ({ open, onClose, patient = null, referralList, onReferralsChange }) => {
   const token = localStorage.getItem('token');
@@ -20,6 +22,8 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList, onR
   const [testSearch, setTestSearch] = useState('');
   const [selectedTests, setSelectedTests] = useState([]);
 
+  const [rateCards, setRateCards] = useState([]);
+  const [rateCardId, setRateCardId] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [discount, setDiscount] = useState('');
   const [doctors, setDoctors] = useState([]);
@@ -39,11 +43,12 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList, onR
       setDiscount(0);
       setPaymentMethod('cash');
       setDoctorId('');
-      setReferredBy('');
+      setReferredBy(patientReferralName(patient));
       setBillPdfUrl(null);
       setShowBillPreview(false);
       fetchDoctors();
       fetchTests();
+      fetchRateCards();
     }
   }, [open, patient]);
 
@@ -51,6 +56,17 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList, onR
     try {
       const res = await fetch('/api/lab/tests', { headers: { Authorization: `Bearer ${token}` } });
       if (res.ok) setTests(await res.json());
+    } catch {}
+  };
+
+  const fetchRateCards = async () => {
+    try {
+      const cardsRes = await fetch('/api/lab/rate-cards', { headers: { Authorization: `Bearer ${token}` } });
+      if (cardsRes.ok) {
+        const cards = await cardsRes.json();
+        setRateCards(cards);
+        setRateCardId(defaultRateCardId(cards));
+      }
     } catch {}
   };
 
@@ -71,7 +87,7 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList, onR
     }
   };
 
-  const subtotal = selectedTests.reduce((sum, t) => sum + (t.cost || 0), 0);
+  const subtotal = selectedTests.reduce((sum, t) => sum + testPrice(t, rateCardId), 0);
   const total = Math.max(subtotal - (parseFloat(discount) || 0), 0);
 
   const handleSubmit = async (force = false) => {
@@ -111,6 +127,7 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList, onR
           referred_by: referredBy || null,
           discount_amount: parseFloat(discount) || 0,
           force: force,
+          rate_card_id: rateCardId ? parseInt(rateCardId, 10) : null,
         }),
       });
       if (res.ok) {
@@ -211,7 +228,10 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList, onR
           ) : (
             <PatientSearchPicker
               value={selectedPatient}
-              onChange={setSelectedPatient}
+              onChange={(next) => {
+                setSelectedPatient(next);
+                setReferredBy(patientReferralName(next));
+              }}
               label="Search Patient"
               required
             />
@@ -238,9 +258,15 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList, onR
                       <div>
                         <p className="text-sm font-medium">{test.name}</p>
                         <p className="text-xs text-gray-400">{test.test_code} | {test.sample_type || 'N/A'}</p>
+                        {test.default_fulfillment === 'send_out' && (
+                          <p className="text-xs text-amber-700">
+                            Sent to {test.default_partner_name || 'partner lab'}
+                            {test.default_partner_cost != null ? ` · their charge ₹${Number(test.default_partner_cost).toFixed(2)}` : ''}
+                          </p>
+                        )}
                       </div>
                     </div>
-                    <span className="text-sm font-semibold">₹{test.cost || 0}</span>
+                    <span className="text-sm font-semibold">₹{testPrice(test, rateCardId)}</span>
                   </div>
                 );
               })}
@@ -250,12 +276,25 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList, onR
                 {selectedTests.map(t => (
                   <Badge key={t.id} variant="secondary" className="flex items-center gap-1 cursor-pointer"
                     onClick={() => toggleTest(t)}>
-                    {t.name} — ₹{t.cost || 0}
+                    {t.name} — ₹{testPrice(t, rateCardId)}
+                    {t.default_fulfillment === 'send_out' && t.default_partner_name ? ` · ${t.default_partner_name}` : ''}
                     <X className="h-3 w-3" />
                   </Badge>
                 ))}
               </div>
             )}
+          </div>
+
+          <div className="max-w-xs">
+            <Label>Rate</Label>
+            <Select value={rateCardId || '_none'} onValueChange={(v) => setRateCardId(v === '_none' ? '' : v)}>
+              <SelectTrigger><SelectValue placeholder="Rate" /></SelectTrigger>
+              <SelectContent>
+                {rateCards.map((c) => (
+                  <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -292,6 +331,7 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList, onR
           <ReferralSelectWithCreate
             value={referredBy}
             onValueChange={setReferredBy}
+            locked={!!patientReferralName(selectedPatient)}
             referrals={referralList}
             onReferralsChange={onReferralsChange}
           />

@@ -5441,9 +5441,14 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
     # individual lab test as covered or billed when the package uses granular
     # inclusion (lab_coverage_mode == "selected"). `included_in_package` is
     # filled in by the package overlay block below.
+    from sqlalchemy import or_ as _lab_or
     lab_q = db.query(PatientLabOrder).filter(
         PatientLabOrder.admission_id == admission.id,
         PatientLabOrder.status != "cancelled",
+        _lab_or(
+            PatientLabOrder.bill_to.is_(None),
+            PatientLabOrder.bill_to == "patient",
+        ),
     )
     if unbilled_only:
         lab_q = lab_q.filter(PatientLabOrder.inpatient_bill_id.is_(None))
@@ -7625,7 +7630,24 @@ async def get_available_lab_tests(
         LabTest.is_active == True
     ).order_by(LabTest.name).all()
 
-    return [{"id": t.id, "name": t.name, "test_code": t.test_code, "cost": t.cost or 0.0, "category": t.category} for t in tests]
+    from app.services.lab_rates import ensure_rate_cards, rates_for_test, persist_new_rate_cards
+    cards = ensure_rate_cards(db, current_user.hospital_id)
+    payload = []
+    for t in tests:
+        rates = rates_for_test(db, t, cards)
+        rate_a = next((r for r in rates if r["code"] == "A"), None)
+        payload.append({
+            "id": t.id,
+            "name": t.name,
+            "test_code": t.test_code,
+            "cost": rate_a["amount"] if rate_a else (t.cost or 0.0),
+            "rates": rates,
+            "default_fulfillment": t.default_fulfillment or "in_house",
+            "default_partner_id": t.default_partner_id,
+            "category": t.category,
+        })
+    persist_new_rate_cards(db)
+    return payload
 
 
 @router.get("/admissions/{admission_id}/medicines-lookup")

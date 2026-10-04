@@ -205,6 +205,7 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
       add(items, make('Categories', Tags, '/dashboard/lab/categories'));
       add(items, make('Sample Types', Droplets, '/dashboard/lab/sample-types'));
       add(items, make('Packages', Package, '/dashboard/lab/packages'));
+      add(items, make('Partner Labs', Building2, '/dashboard/lab/partners'));
     }
     if (items.length > 0) sections.push({ label: 'Laboratory', items });
   }

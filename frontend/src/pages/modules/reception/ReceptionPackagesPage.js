@@ -13,6 +13,7 @@ import {
 import axios from 'axios';
 import PatientSearchPicker from '../../../components/PatientSearchPicker';
 import ReferralSelectWithCreate from '../../../components/ReferralSelectWithCreate';
+import { patientReferralName } from '../../../utils/patientReferral';
 
 const ReceptionPackagesPage = () => {
   const { toast } = useToast();
@@ -303,7 +304,10 @@ const ReceptionPackagesPage = () => {
 
               <PatientSearchPicker
                 value={selectedPatient}
-                onChange={setSelectedPatient}
+                onChange={(next) => {
+                  setSelectedPatient(next);
+                  setReferredBy(patientReferralName(next));
+                }}
                 label="Patient"
                 required
               />
@@ -340,6 +344,7 @@ const ReceptionPackagesPage = () => {
                 <ReferralSelectWithCreate
                   value={referredBy}
                   onValueChange={setReferredBy}
+                  locked={!!patientReferralName(selectedPatient)}
                   referrals={referralList}
                   onReferralsChange={setReferralList}
                 />

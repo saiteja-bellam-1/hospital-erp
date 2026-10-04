@@ -9,6 +9,7 @@ import TestsTab from './lab/tabs/TestsTab';
 import CategoriesTab from './lab/tabs/CategoriesTab';
 import SampleTypesTab from './lab/tabs/SampleTypesTab';
 import PackagesTab from './lab/tabs/PackagesTab';
+import PartnersTab from './lab/tabs/PartnersTab';
 
 export const LAB_PAGE_META = {
   '': { title: 'Dashboard', blurb: "Today's pipeline and lab operations" },
@@ -16,6 +17,7 @@ export const LAB_PAGE_META = {
   'categories': { title: 'Categories', blurb: 'Test category master' },
   'sample-types': { title: 'Sample Types', blurb: 'Blood, urine, serum, and other sample types' },
   'packages': { title: 'Packages', blurb: 'Bundle tests into discounted packages' },
+  'partners': { title: 'Partner Labs', blurb: 'Rates, send-out payables, and samples received from other labs' },
 };
 
 function labPathKey(pathname) {
@@ -79,6 +81,7 @@ const LabModule = () => (
           <Route path="categories" element={<CategoriesTab />} />
           <Route path="sample-types" element={<SampleTypesTab />} />
           <Route path="packages" element={<PackagesTab />} />
+          <Route path="partners" element={<PartnersTab />} />
         </Route>
       </Route>
 

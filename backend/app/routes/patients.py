@@ -95,6 +95,7 @@ class PatientSearchResponse(BaseModel):
     mandal: Optional[str] = None
     district: Optional[str] = None
     address: Optional[str]
+    referred_by: Optional[str] = None
     is_active: bool
     created_at: datetime
     last_appointment_date: Optional[datetime]
@@ -704,7 +705,7 @@ def _patient_file_label_payload(
             )
         if apt:
             order_no = apt.appointment_number or ""
-            if apt.referred_by:
+            if not ref_name and apt.referred_by:
                 ref_name = apt.referred_by.strip()
             resolved_payment = resolved_payment or getattr(apt, "payment_method", None)
             resolved_bill_dt = apt.appointment_date or apt.created_at
@@ -730,7 +731,7 @@ def _patient_file_label_payload(
             )
         if order:
             order_no = order.order_number or order_no
-            if order.referred_by:
+            if not ref_name and order.referred_by:
                 ref_name = order.referred_by.strip()
             resolved_bill_dt = order.order_date or resolved_bill_dt
 

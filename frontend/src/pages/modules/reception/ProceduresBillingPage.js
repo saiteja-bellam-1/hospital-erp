@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import PatientSearchPicker from '../../../components/PatientSearchPicker';
 import ReferralSelectWithCreate from '../../../components/ReferralSelectWithCreate';
+import { patientReferralName } from '../../../utils/patientReferral';
 
 const fmt = (n) => `₹${Number(n || 0).toFixed(2)}`;
 
@@ -250,7 +251,10 @@ const ProceduresBillingPage = () => {
                 <div className="md:col-span-2">
                   <PatientSearchPicker
                     value={patient}
-                    onChange={setPatient}
+                    onChange={(next) => {
+                      setPatient(next);
+                      setReferredBy(patientReferralName(next));
+                    }}
                     label="Patient"
                     required
                     compact
@@ -259,6 +263,7 @@ const ProceduresBillingPage = () => {
                 <ReferralSelectWithCreate
                   value={referredBy}
                   onValueChange={setReferredBy}
+                  locked={!!patientReferralName(patient)}
                   referrals={referrals}
                   onReferralsChange={setReferrals}
                   label="Referred by"

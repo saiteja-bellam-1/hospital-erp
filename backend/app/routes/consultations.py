@@ -273,6 +273,10 @@ class LabOrderCreate(BaseModel):
     priority: str = Field(default="normal", pattern="^(normal|urgent|stat)$")
     force: bool = False
     notes: Optional[str] = None
+    rate_card_id: Optional[int] = None
+    fulfillment: Optional[str] = Field(None, pattern="^(in_house|send_out)$")
+    partner_id: Optional[int] = None
+    partner_cost: Optional[float] = Field(None, ge=0)
 
 class LabOrderResponse(BaseModel):
     id: int
@@ -610,7 +614,14 @@ async def create_consultation_lab_orders(
         if not lab_test:
             raise HTTPException(status_code=404, detail=f"Lab test {test_id} not found")
         
-        # Create lab order
+        from app.services.lab_rates import resolve_order_pricing
+        pricing = resolve_order_pricing(
+            db, current_user.hospital_id, lab_test,
+            rate_card_id=lab_order_data.rate_card_id,
+            fulfillment=lab_order_data.fulfillment,
+            partner_id=lab_order_data.partner_id,
+            partner_cost=lab_order_data.partner_cost,
+        )
         lab_order = PatientLabOrder(
             order_number=generate_lab_order_number(),
             patient_id=consultation.patient_id,
@@ -621,8 +632,8 @@ async def create_consultation_lab_orders(
             priority=lab_order_data.priority,
             notes=lab_order_data.notes,
             status="ordered",
-            amount=lab_test.cost or 0.0,
-            payment_status="pending"
+            payment_status="pending",
+            **pricing,
         )
         
         db.add(lab_order)
@@ -635,7 +646,7 @@ async def create_consultation_lab_orders(
             test_id=lab_test.id,
             test_name=lab_test.name,
             test_code=lab_test.test_code,
-            test_cost=lab_test.cost,
+            test_cost=lab_order.amount or 0.0,
             priority=lab_order.priority,
             status=lab_order.status,
             notes=lab_order.notes,
@@ -682,14 +693,14 @@ async def get_consultation_lab_orders(
             test_id=lab_test.id,
             test_name=lab_test.name,
             test_code=lab_test.test_code,
-            test_cost=lab_test.cost,
+            test_cost=lab_order.amount or 0.0,
             priority=lab_order.priority,
             status=lab_order.status,
             notes=lab_order.notes,
             order_date=lab_order.order_date
         )
         lab_orders.append(order_response)
-        total_cost += lab_test.cost
+        total_cost += lab_order.amount or 0.0
     
     return ConsultationLabOrdersResponse(
         consultation_id=consultation_id,
@@ -801,19 +812,24 @@ async def get_available_lab_tests(
         query = query.filter(LabTest.category_id == category_id)
     
     lab_tests = query.order_by(LabTest.name).all()
-    
-    return [
-        {
+    from app.services.lab_rates import ensure_rate_cards, rates_for_test, persist_new_rate_cards
+    cards = ensure_rate_cards(db, current_user.hospital_id)
+    payload = []
+    for test in lab_tests:
+        rates = rates_for_test(db, test, cards)
+        rate_a = next((r for r in rates if r["code"] == "A"), None)
+        payload.append({
             "id": test.id,
             "name": test.name,
             "test_code": test.test_code,
-            "cost": test.cost,
+            "cost": rate_a["amount"] if rate_a else test.cost,
+            "rates": rates,
             "sample_type": test.sample_type,
             "preparation_instructions": test.preparation_instructions,
-            "category_id": test.category_id
-        }
-        for test in lab_tests
-    ]
+            "category_id": test.category_id,
+        })
+    persist_new_rate_cards(db)
+    return payload
 
 @router.get("/{consultation_id}/test-recommendations", response_model=TestRecommendationsResponse)
 async def get_consultation_test_recommendations(

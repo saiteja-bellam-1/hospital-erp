@@ -24,7 +24,8 @@ from app.models.permissions import HospitalSettings
 from app.models.lab import (
     SampleType, LabTestCategory, LabTest, LabTestParameter,
     PatientLabOrder, LabReport, LabReportTemplate,
-    LabTestPackageCategory, LabTestPackage, LabTestPackageItem
+    LabTestPackageCategory, LabTestPackage, LabTestPackageItem,
+    LabRateCard, LabPartner, LabTestRate,
 )
 from app.utils.dependencies import get_current_user, require_permission
 from app.utils.auth import Modules
@@ -197,16 +198,27 @@ class ParameterResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class TestRateInfo(BaseModel):
+    rate_card_id: int
+    code: str
+    name: str
+    amount: float
+    is_default: bool = False
+
 class TestCreate(BaseModel):
     test_code: str = Field(..., max_length=20)
     name: str = Field(..., max_length=200)
     description: Optional[str] = None
     category_id: int
     cost: float = Field(..., ge=0)
+    rate_b: Optional[float] = Field(None, ge=0)
     sample_type: Optional[str] = None  # Legacy free-text
     sample_type_id: Optional[int] = None
     method: Optional[str] = None
     preparation_instructions: Optional[str] = None
+    default_fulfillment: Optional[str] = Field(None, pattern="^(in_house|send_out)$")
+    default_partner_id: Optional[int] = None
+    default_partner_cost: Optional[float] = Field(None, ge=0)
     parameters: Optional[List[ParameterCreate]] = None
 
 class TestUpdate(BaseModel):
@@ -215,11 +227,15 @@ class TestUpdate(BaseModel):
     description: Optional[str] = None
     category_id: Optional[int] = None
     cost: Optional[float] = None
+    rate_b: Optional[float] = Field(None, ge=0)
     sample_type: Optional[str] = None  # Legacy free-text
     sample_type_id: Optional[int] = None
     method: Optional[str] = None
     preparation_instructions: Optional[str] = None
     is_active: Optional[bool] = None
+    default_fulfillment: Optional[str] = Field(None, pattern="^(in_house|send_out)$")
+    default_partner_id: Optional[int] = None
+    default_partner_cost: Optional[float] = Field(None, ge=0)
 
 class TestResponse(BaseModel):
     id: int
@@ -229,12 +245,17 @@ class TestResponse(BaseModel):
     category_id: int
     category_name: Optional[str] = None
     cost: float
+    rates: List[TestRateInfo] = []
     sample_type: Optional[str]
     sample_type_id: Optional[int] = None
     sample_type_name: Optional[str] = None
     method: Optional[str]
     preparation_instructions: Optional[str]
     is_active: bool
+    default_fulfillment: str = "in_house"
+    default_partner_id: Optional[int] = None
+    default_partner_name: Optional[str] = None
+    default_partner_cost: Optional[float] = None
     parameters: List[ParameterResponse] = []
     class Config:
         from_attributes = True
@@ -247,6 +268,11 @@ class OrderCreate(BaseModel):
     priority: str = Field(default="normal", pattern="^(normal|urgent|stat)$")
     force: bool = False
     notes: Optional[str] = None
+    rate_card_id: Optional[int] = None
+    fulfillment: Optional[str] = Field(None, pattern="^(in_house|send_out)$")
+    partner_id: Optional[int] = None
+    partner_cost: Optional[float] = Field(None, ge=0)
+    partner_reference: Optional[str] = Field(None, max_length=100)
 
 class OrderCancelRequest(BaseModel):
     reason: Optional[str] = Field(None, max_length=500)
@@ -288,6 +314,18 @@ class OrderResponse(BaseModel):
     cancelled_reason: Optional[str] = None
     cancelled_at: Optional[datetime] = None
     cancelled_by_name: Optional[str] = None
+    rate_card_id: Optional[int] = None
+    rate_code: Optional[str] = None
+    rate_name: Optional[str] = None
+    fulfillment: str = "in_house"
+    partner_id: Optional[int] = None
+    partner_name: Optional[str] = None
+    partner_cost: Optional[float] = None
+    partner_status: Optional[str] = None
+    partner_reference: Optional[str] = None
+    bill_to: str = "patient"
+    partner_settlement_status: Optional[str] = None
+    partner_invoice_ref: Optional[str] = None
     class Config:
         from_attributes = True
 
@@ -481,6 +519,9 @@ def _purge_lab_test_catalog_refs(db: Session, test_id: int) -> None:
     db.query(LabTestParameter).filter(LabTestParameter.test_id == test_id).delete(
         synchronize_session=False
     )
+    db.query(LabTestRate).filter(LabTestRate.test_id == test_id).delete(
+        synchronize_session=False
+    )
 
 
 def _delete_or_deactivate_lab_test(db: Session, test: LabTest) -> dict:
@@ -531,13 +572,19 @@ def _sync_parameter_reference_fields(param: LabTestParameter, data: ParameterCre
         setattr(param, field, val)
 
 
-def _build_test_response(test: LabTest, db: Session) -> dict:
+def _build_test_response(test: LabTest, db: Session, cards=None) -> dict:
+    from app.services.lab_rates import rates_for_test
     category = db.query(LabTestCategory).filter(LabTestCategory.id == test.category_id).first()
     sample_type_obj = db.query(SampleType).filter(SampleType.id == test.sample_type_id).first() if test.sample_type_id else None
     params = db.query(LabTestParameter).filter(
         LabTestParameter.test_id == test.id,
         LabTestParameter.is_active == True
     ).order_by(LabTestParameter.display_order).all()
+    rates = rates_for_test(db, test, cards)
+    rate_a = next((r for r in rates if r["code"] == "A"), None)
+    partner = None
+    if getattr(test, "default_partner_id", None):
+        partner = db.query(LabPartner).filter(LabPartner.id == test.default_partner_id).first()
     return {
         "id": test.id,
         "test_code": test.test_code,
@@ -545,7 +592,12 @@ def _build_test_response(test: LabTest, db: Session) -> dict:
         "description": test.description,
         "category_id": test.category_id,
         "category_name": category.name if category else None,
-        "cost": test.cost,
+        "cost": rate_a["amount"] if rate_a else test.cost,
+        "rates": rates,
+        "default_fulfillment": getattr(test, "default_fulfillment", None) or "in_house",
+        "default_partner_id": getattr(test, "default_partner_id", None),
+        "default_partner_name": partner.name if partner else None,
+        "default_partner_cost": getattr(test, "default_partner_cost", None),
         "sample_type": sample_type_obj.name if sample_type_obj else test.sample_type,
         "sample_type_id": test.sample_type_id,
         "sample_type_name": sample_type_obj.name if sample_type_obj else test.sample_type,
@@ -588,6 +640,14 @@ def _build_order_response(order: PatientLabOrder, db: Session) -> dict:
     cancelled_by_user = (
         db.query(User).filter(User.id == cancelled_by_id).first()
         if cancelled_by_id else None
+    )
+    rate_card = (
+        db.query(LabRateCard).filter(LabRateCard.id == order.rate_card_id).first()
+        if getattr(order, "rate_card_id", None) else None
+    )
+    partner = (
+        db.query(LabPartner).filter(LabPartner.id == order.partner_id).first()
+        if getattr(order, "partner_id", None) else None
     )
     return {
         "id": order.id,
@@ -634,6 +694,18 @@ def _build_order_response(order: PatientLabOrder, db: Session) -> dict:
             f"{cancelled_by_user.first_name} {cancelled_by_user.last_name}".strip()
             if cancelled_by_user else None
         ),
+        "rate_card_id": getattr(order, "rate_card_id", None),
+        "rate_code": rate_card.code if rate_card else None,
+        "rate_name": rate_card.name if rate_card else None,
+        "fulfillment": getattr(order, "fulfillment", None) or "in_house",
+        "partner_id": getattr(order, "partner_id", None),
+        "partner_name": partner.name if partner else None,
+        "partner_cost": getattr(order, "partner_cost", None),
+        "partner_status": getattr(order, "partner_status", None),
+        "partner_reference": getattr(order, "partner_reference", None),
+        "bill_to": getattr(order, "bill_to", None) or "patient",
+        "partner_settlement_status": getattr(order, "partner_settlement_status", None),
+        "partner_invoice_ref": getattr(order, "partner_invoice_ref", None),
     }
 
 def _build_report_response(report: LabReport, db: Session) -> dict:
@@ -731,13 +803,18 @@ def _build_report_response(report: LabReport, db: Session) -> dict:
     # Determine referral label: doctor = "Prescribed By", referral/self = "Referred By"
     referral_label = "Referred By"
     referral_name = "Self"
-    if doctor:
+    if getattr(order, "fulfillment", None) == "receive_in" and getattr(order, "partner_id", None):
+        receive_partner = db.query(LabPartner).filter(LabPartner.id == order.partner_id).first()
+        if receive_partner:
+            referral_label = "Referred Lab"
+            referral_name = receive_partner.name
+    elif doctor:
         referral_label = "Prescribed By"
         referral_name = f"Dr. {doctor.first_name} {doctor.last_name}"
+    elif patient and (patient.referred_by or "").strip():
+        referral_name = patient.referred_by.strip()
     elif order.referred_by:
         referral_name = order.referred_by
-    elif patient and patient.referred_by:
-        referral_name = patient.referred_by
 
     mrn_ean13 = ""
     if patient:
@@ -969,7 +1046,11 @@ async def list_tests(
             (LabTest.name.ilike(search_term)) | (LabTest.test_code.ilike(search_term))
         )
     tests = query.order_by(LabTest.name).all()
-    return [_build_test_response(t, db) for t in tests]
+    from app.services.lab_rates import ensure_rate_cards, persist_new_rate_cards
+    cards = ensure_rate_cards(db, current_user.hospital_id)
+    payload = [_build_test_response(t, db, cards) for t in tests]
+    persist_new_rate_cards(db)
+    return payload
 
 @router.get("/tests/{test_id}", response_model=TestResponse)
 async def get_test(
@@ -984,7 +1065,11 @@ async def get_test(
     ).first()
     if not test:
         raise HTTPException(status_code=404, detail="Test not found")
-    return _build_test_response(test, db)
+    from app.services.lab_rates import ensure_rate_cards, persist_new_rate_cards
+    cards = ensure_rate_cards(db, current_user.hospital_id)
+    payload = _build_test_response(test, db, cards)
+    persist_new_rate_cards(db)
+    return payload
 
 @router.post("/tests", response_model=TestResponse)
 async def create_test(
@@ -1015,7 +1100,6 @@ async def create_test(
         existing.name = data.name
         existing.description = data.description
         existing.category_id = data.category_id
-        existing.cost = data.cost
         existing.sample_type = data.sample_type
         existing.sample_type_id = data.sample_type_id
         existing.method = data.method
@@ -1034,6 +1118,8 @@ async def create_test(
                     possible_values=p.possible_values, display_order=p.display_order or i
                 )
                 db.add(param)
+        from app.services.lab_rates import apply_test_commercial
+        apply_test_commercial(db, existing, data, creating=True)
         db.commit()
         db.refresh(existing)
         return _build_test_response(existing, db)
@@ -1061,6 +1147,8 @@ async def create_test(
             )
             db.add(param)
 
+    from app.services.lab_rates import apply_test_commercial
+    apply_test_commercial(db, test, data, creating=True)
     db.commit()
     db.refresh(test)
     return _build_test_response(test, db)
@@ -1083,6 +1171,8 @@ async def update_test(
         if val is not None:
             setattr(test, field, val)
 
+    from app.services.lab_rates import apply_test_commercial
+    apply_test_commercial(db, test, data, creating=False)
     db.commit()
     db.refresh(test)
     return _build_test_response(test, db)
@@ -1303,7 +1393,33 @@ def _apply_lab_tech_payment_gate(query):
         or_(
             PatientLabOrder.payment_status == "paid",
             PatientLabOrder.admission_id.isnot(None),
+            # Samples sent in by a partner lab are billed to that lab, not the patient.
+            PatientLabOrder.bill_to == "partner",
         )
+    )
+
+
+def _patient_billable(query):
+    """Orders the patient (or their admission) pays. Excludes partner receivables."""
+    return query.filter(
+        or_(
+            PatientLabOrder.bill_to.is_(None),
+            PatientLabOrder.bill_to == "patient",
+        )
+    )
+
+
+def _pricing_for(db: Session, hospital_id: int, test: LabTest, data) -> dict:
+    from app.services.lab_rates import resolve_order_pricing
+    return resolve_order_pricing(
+        db,
+        hospital_id,
+        test,
+        rate_card_id=getattr(data, "rate_card_id", None),
+        fulfillment=getattr(data, "fulfillment", None),
+        partner_id=getattr(data, "partner_id", None),
+        partner_cost=getattr(data, "partner_cost", None),
+        partner_reference=getattr(data, "partner_reference", None),
     )
 
 _LAB_READ_PERMISSIONS = frozenset({
@@ -1438,6 +1554,9 @@ async def create_orders(
         if duplicates:
             raise HTTPException(status_code=409, detail={"message": "Duplicate orders found", "duplicates": duplicates})
 
+    from app.services.patient_referral import apply_patient_referral
+    referral_name = apply_patient_referral(patient, None)
+
     orders = []
     for test_id in data.test_ids:
         test = db.query(LabTest).filter(
@@ -1448,18 +1567,20 @@ async def create_orders(
         if not test:
             raise HTTPException(status_code=404, detail=f"Test ID {test_id} not found")
 
+        pricing = _pricing_for(db, current_user.hospital_id, test, data)
         order = PatientLabOrder(
             order_number=f"LAB-{str(uuid.uuid4())[:8].upper()}",
             patient_id=data.patient_id,
             test_id=test_id,
             doctor_id=current_user.id,
+            referred_by=referral_name,
             appointment_id=data.appointment_id,
             admission_id=data.admission_id,
             priority=data.priority,
             notes=data.notes,
             status="ordered",
-            amount=test.cost or 0.0,
-            payment_status="pending"
+            payment_status="pending",
+            **pricing,
         )
         db.add(order)
         orders.append(order)
@@ -1488,6 +1609,11 @@ class ReceptionLabBooking(BaseModel):
     discount_amount: float = Field(default=0.0, ge=0)
     force: bool = False
     notes: Optional[str] = None
+    rate_card_id: Optional[int] = None
+    fulfillment: Optional[str] = Field(None, pattern="^(in_house|send_out)$")
+    partner_id: Optional[int] = None
+    partner_cost: Optional[float] = Field(None, ge=0)
+    partner_reference: Optional[str] = Field(None, max_length=100)
 
 
 @router.post("/orders/reception-book")
@@ -1505,6 +1631,9 @@ async def reception_book_lab_tests(
     ).first()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
+
+    from app.services.patient_referral import apply_patient_referral
+    referral_name = apply_patient_referral(patient, data.referred_by)
 
     booking_doctor = None
     if data.doctor_id is not None:
@@ -1541,26 +1670,27 @@ async def reception_book_lab_tests(
         if not test:
             raise HTTPException(status_code=404, detail=f"Test ID {test_id} not found")
 
+        pricing = _pricing_for(db, current_user.hospital_id, test, data)
         order = PatientLabOrder(
             order_number=f"LAB-{str(uuid.uuid4())[:8].upper()}",
             patient_id=data.patient_id,
             test_id=test_id,
             doctor_id=booking_doctor.id if booking_doctor else None,
-            referred_by=data.referred_by,
+            referred_by=referral_name,
             priority="normal",
             notes=data.notes,
             status="ordered",
             order_date=now,
-            amount=test.cost or 0.0,
             payment_status="paid",
             payment_method=data.payment_method,
             payment_date=now,
             lab_bill_group_id=bill_group_id,
             lab_bill_number=bill_number,
+            **pricing,
         )
         db.add(order)
         orders.append(order)
-        total += test.cost or 0.0
+        total += pricing["amount"]
 
     db.commit()
 
@@ -1601,7 +1731,7 @@ async def reception_book_lab_tests(
             f"Dr. {booking_doctor.first_name} {booking_doctor.last_name}"
             if booking_doctor else ""
         ),
-        "referred_by": data.referred_by or "",
+        "referred_by": referral_name or "",
         "payment_method": data.payment_method.capitalize(),
         "items": [{"item_name": o.test.name, "item_code": o.test.test_code, "total_price": o.amount} for o in orders if o.test],
         "subtotal": total,
@@ -1689,6 +1819,8 @@ async def list_orders(
     )
     if _lab_tech_payment_gate_applies(current_user) and not skip_payment_gate:
         query = _apply_lab_tech_payment_gate(query)
+    if reception_view:
+        query = _patient_billable(query)
 
     orders = query.order_by(PatientLabOrder.order_date.desc()).limit(200).all()
     return [_build_order_response(o, db) for o in orders]
@@ -2374,6 +2506,9 @@ async def update_order_payment(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
+    if getattr(order, "bill_to", None) == "partner":
+        raise HTTPException(status_code=400, detail="This order is billed to a partner lab, not the patient")
+
     if order.payment_status == 'paid':
         raise HTTPException(status_code=400, detail="Payment already collected")
 
@@ -2415,12 +2550,14 @@ async def generate_lab_bill(
     Uses lab config provider details if available, falls back to hospital info."""
     _assert_reception_lab_book_role(current_user)
 
-    # Get pending orders
-    orders = db.query(PatientLabOrder).join(Patient).filter(
-        PatientLabOrder.patient_id == patient_id,
-        Patient.hospital_id == current_user.hospital_id,
-        PatientLabOrder.payment_status == "pending",
-        PatientLabOrder.status != "cancelled"
+    # Get pending patient-billed orders. Partner receivables are settled separately.
+    orders = _patient_billable(
+        db.query(PatientLabOrder).join(Patient).filter(
+            PatientLabOrder.patient_id == patient_id,
+            Patient.hospital_id == current_user.hospital_id,
+            PatientLabOrder.payment_status == "pending",
+            PatientLabOrder.status != "cancelled",
+        )
     ).order_by(PatientLabOrder.order_date.desc()).all()
 
     if not orders:
@@ -2530,11 +2667,13 @@ async def get_pending_payment_orders(
     db: Session = Depends(get_db)
 ):
     """Get lab orders pending payment for a patient. For reception to collect fees."""
-    orders = db.query(PatientLabOrder).join(Patient).filter(
-        PatientLabOrder.patient_id == patient_id,
-        Patient.hospital_id == current_user.hospital_id,
-        PatientLabOrder.payment_status == "pending",
-        PatientLabOrder.status != "cancelled"
+    orders = _patient_billable(
+        db.query(PatientLabOrder).join(Patient).filter(
+            PatientLabOrder.patient_id == patient_id,
+            Patient.hospital_id == current_user.hospital_id,
+            PatientLabOrder.payment_status == "pending",
+            PatientLabOrder.status != "cancelled",
+        )
     ).order_by(PatientLabOrder.order_date.desc()).all()
     return [_build_order_response(o, db) for o in orders]
 
@@ -2679,6 +2818,10 @@ def _write_order_results(db: Session, order: PatientLabOrder, data: ResultSubmit
     db.add(report)
     order.status = "completed"
     order.completion_date = datetime.now()
+    if getattr(order, "fulfillment", None) == "receive_in":
+        order.partner_status = "reported"
+    elif getattr(order, "fulfillment", None) == "send_out" and order.partner_status in (None, "to_send", "sent"):
+        order.partner_status = "result_received"
     return report
 
 
@@ -3141,13 +3284,15 @@ async def get_lab_stats(
         .count()
     )
     unpaid_opd_count = (
-        db.query(PatientLabOrder)
-        .join(Patient)
-        .filter(
-            Patient.hospital_id == hid,
-            PatientLabOrder.payment_status == "pending",
-            PatientLabOrder.admission_id.is_(None),
-            PatientLabOrder.status != "cancelled",
+        _patient_billable(
+            db.query(PatientLabOrder)
+            .join(Patient)
+            .filter(
+                Patient.hospital_id == hid,
+                PatientLabOrder.payment_status == "pending",
+                PatientLabOrder.admission_id.is_(None),
+                PatientLabOrder.status != "cancelled",
+            )
         )
         .count()
     )
@@ -3566,6 +3711,9 @@ async def book_package(
     if not tests:
         raise HTTPException(status_code=400, detail="No valid tests in package")
 
+    from app.services.patient_referral import apply_patient_referral
+    referral_name = apply_patient_referral(patient, data.referred_by)
+
     # Duplicate check
     if not data.force:
         duplicates = _check_duplicate_orders(db, data.patient_id, [t.id for t in tests])
@@ -3605,7 +3753,7 @@ async def book_package(
             doctor_id=None,
             package_id=pkg.id,
             package_booking_id=booking_id,
-            referred_by=data.referred_by,
+            referred_by=referral_name,
             priority=data.priority,
             notes=data.notes,
             status="ordered",
@@ -3652,6 +3800,7 @@ async def book_package(
         "district": patient.district or "",
         "reg_no": patient.patient_id,
         "doctor_name": "",
+        "referred_by": referral_name or "",
         "payment_method": data.payment_method.capitalize(),
         "items": bill_items,
         "subtotal": pkg.actual_price,
@@ -3753,12 +3902,354 @@ def _create_seed_parameter(test_id: int, param: dict, display_order: int) -> Lab
 
 
 # ============================================================
+# Rate cards, partner labs, send-out / receive-in
+# ============================================================
+
+class RateCardUpdate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+
+class PartnerCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    contact_person: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    partner_role: str = Field(default="both", pattern="^(send_out|receive_in|both)$")
+    default_rate_card_id: Optional[int] = None
+    notes: Optional[str] = None
+
+class PartnerUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    contact_person: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    partner_role: Optional[str] = Field(None, pattern="^(send_out|receive_in|both)$")
+    default_rate_card_id: Optional[int] = None
+    notes: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class ReceiveInBooking(BaseModel):
+    partner_id: int
+    patient_id: int
+    test_ids: List[int] = Field(..., min_length=1)
+    rate_card_id: Optional[int] = None
+    partner_reference: Optional[str] = Field(None, max_length=100)
+    notes: Optional[str] = None
+    priority: str = Field(default="normal", pattern="^(normal|urgent|stat)$")
+    force: bool = False
+
+class PartnerStatusUpdate(BaseModel):
+    partner_status: str = Field(..., pattern="^(to_send|sent|result_received)$")
+
+class PartnerSettleRequest(BaseModel):
+    order_ids: List[int] = Field(..., min_length=1)
+    invoice_ref: Optional[str] = Field(None, max_length=100)
+
+
+def _partner_payload(partner: LabPartner, db: Session) -> dict:
+    card = None
+    if partner.default_rate_card_id:
+        card = db.query(LabRateCard).filter(LabRateCard.id == partner.default_rate_card_id).first()
+    return {
+        "id": partner.id,
+        "name": partner.name,
+        "contact_person": partner.contact_person,
+        "phone": partner.phone,
+        "email": partner.email,
+        "address": partner.address,
+        "partner_role": partner.partner_role or "both",
+        "default_rate_card_id": partner.default_rate_card_id,
+        "default_rate_name": card.name if card else None,
+        "notes": partner.notes,
+        "is_active": partner.is_active,
+    }
+
+
+@router.get("/rate-cards")
+async def list_rate_cards(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.lab_rates import ensure_rate_cards, persist_new_rate_cards
+    card_a, card_b = ensure_rate_cards(db, current_user.hospital_id)
+    persist_new_rate_cards(db)
+    return [
+        {"id": c.id, "code": c.code, "name": c.name, "is_default": bool(c.is_default), "is_active": bool(c.is_active)}
+        for c in (card_a, card_b)
+    ]
+
+
+@router.put("/rate-cards/{card_id}")
+async def rename_rate_card(
+    card_id: int,
+    data: RateCardUpdate,
+    current_user: User = Depends(require_permission(Modules.LAB, "write")),
+    db: Session = Depends(get_db),
+):
+    _require_lab_admin(current_user)
+    card = db.query(LabRateCard).filter(
+        LabRateCard.id == card_id,
+        LabRateCard.hospital_id == current_user.hospital_id,
+    ).first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Rate card not found")
+    card.name = data.name.strip()
+    db.commit()
+    return {"id": card.id, "code": card.code, "name": card.name, "is_default": bool(card.is_default)}
+
+
+@router.get("/partners")
+async def list_partners(
+    include_inactive: bool = False,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    query = db.query(LabPartner).filter(LabPartner.hospital_id == current_user.hospital_id)
+    if not include_inactive:
+        query = query.filter(LabPartner.is_active == True)
+    return [_partner_payload(p, db) for p in query.order_by(LabPartner.name).all()]
+
+
+@router.post("/partners")
+async def create_partner(
+    data: PartnerCreate,
+    current_user: User = Depends(require_permission(Modules.LAB, "write")),
+    db: Session = Depends(get_db),
+):
+    _require_lab_admin(current_user)
+    name = data.name.strip()
+    existing = db.query(LabPartner).filter(
+        LabPartner.hospital_id == current_user.hospital_id,
+        LabPartner.name == name,
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Partner '{name}' already exists")
+    if data.default_rate_card_id:
+        card = db.query(LabRateCard).filter(
+            LabRateCard.id == data.default_rate_card_id,
+            LabRateCard.hospital_id == current_user.hospital_id,
+        ).first()
+        if not card:
+            raise HTTPException(status_code=400, detail="Unknown rate card")
+    partner = LabPartner(
+        hospital_id=current_user.hospital_id,
+        name=name,
+        contact_person=data.contact_person,
+        phone=data.phone,
+        email=data.email,
+        address=data.address,
+        partner_role=data.partner_role,
+        default_rate_card_id=data.default_rate_card_id,
+        notes=data.notes,
+    )
+    db.add(partner)
+    db.commit()
+    db.refresh(partner)
+    return _partner_payload(partner, db)
+
+
+@router.put("/partners/{partner_id}")
+async def update_partner(
+    partner_id: int,
+    data: PartnerUpdate,
+    current_user: User = Depends(require_permission(Modules.LAB, "write")),
+    db: Session = Depends(get_db),
+):
+    _require_lab_admin(current_user)
+    partner = db.query(LabPartner).filter(
+        LabPartner.id == partner_id,
+        LabPartner.hospital_id == current_user.hospital_id,
+    ).first()
+    if not partner:
+        raise HTTPException(status_code=404, detail="Partner lab not found")
+    if data.name is not None:
+        partner.name = data.name.strip()
+    for field in ("contact_person", "phone", "email", "address", "partner_role", "notes", "is_active"):
+        val = getattr(data, field)
+        if val is not None:
+            setattr(partner, field, val)
+    if data.default_rate_card_id is not None:
+        card = db.query(LabRateCard).filter(
+            LabRateCard.id == data.default_rate_card_id,
+            LabRateCard.hospital_id == current_user.hospital_id,
+        ).first()
+        if not card:
+            raise HTTPException(status_code=400, detail="Unknown rate card")
+        partner.default_rate_card_id = data.default_rate_card_id
+    db.commit()
+    db.refresh(partner)
+    return _partner_payload(partner, db)
+
+
+@router.post("/orders/receive-in", response_model=List[OrderResponse])
+async def receive_in_orders(
+    data: ReceiveInBooking,
+    current_user: User = Depends(require_permission(Modules.LAB, "write")),
+    db: Session = Depends(get_db),
+):
+    """Register samples sent by a partner lab. We process them and bill the partner."""
+    _require_lab_admin(current_user)
+    from app.services.lab_rates import _active_partner, resolve_receive_in_pricing
+
+    partner = _active_partner(db, current_user.hospital_id, data.partner_id)
+    patient = db.query(Patient).filter(
+        Patient.id == data.patient_id,
+        Patient.hospital_id == current_user.hospital_id,
+    ).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    if not data.force:
+        duplicates = _check_duplicate_orders(db, data.patient_id, data.test_ids)
+        if duplicates:
+            raise HTTPException(status_code=409, detail={"message": "Duplicate orders found", "duplicates": duplicates})
+
+    now = datetime.now()
+    sample_id = _generate_sample_id(db)
+    orders = []
+    for test_id in data.test_ids:
+        test = db.query(LabTest).filter(
+            LabTest.id == test_id,
+            LabTest.hospital_id == current_user.hospital_id,
+            LabTest.is_active == True,
+        ).first()
+        if not test:
+            raise HTTPException(status_code=404, detail=f"Test ID {test_id} not found")
+        pricing = resolve_receive_in_pricing(
+            db, current_user.hospital_id, test, partner,
+            rate_card_id=data.rate_card_id,
+            partner_reference=data.partner_reference,
+        )
+        order = PatientLabOrder(
+            order_number=f"LAB-{str(uuid.uuid4())[:8].upper()}",
+            patient_id=patient.id,
+            test_id=test.id,
+            priority=data.priority,
+            notes=data.notes,
+            status="collected",
+            order_date=now,
+            collection_date=now,
+            sample_id=sample_id,
+            payment_status="pending",
+            **pricing,
+        )
+        db.add(order)
+        orders.append(order)
+    db.flush()
+    for order in orders:
+        ensure_sample_ean13_for_order(db, order, current_user.hospital_id)
+    db.commit()
+    try:
+        log_action(
+            db, current_user, "receive_in_lab_orders", "lab", "LabOrder",
+            orders[0].id if orders else None,
+            f"Received {len(orders)} test(s) from {partner.name}",
+            details={"partner_id": partner.id, "patient_id": patient.id, "count": len(orders)},
+        )
+    except Exception:
+        pass
+    return [_build_order_response(o, db) for o in orders]
+
+
+@router.put("/orders/{order_id}/partner-status")
+async def update_partner_status(
+    order_id: int,
+    data: PartnerStatusUpdate,
+    current_user: User = Depends(require_permission(Modules.LAB, "write")),
+    db: Session = Depends(get_db),
+):
+    """Track a send-out sample: to send, sent, or result received."""
+    order = db.query(PatientLabOrder).join(Patient).filter(
+        PatientLabOrder.id == order_id,
+        Patient.hospital_id == current_user.hospital_id,
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.fulfillment != "send_out":
+        raise HTTPException(status_code=400, detail="Only send-out orders have a partner dispatch status")
+    if data.partner_status == "sent" and order.status == "ordered":
+        raise HTTPException(status_code=400, detail="Collect the sample before marking it sent")
+    order.partner_status = data.partner_status
+    db.commit()
+    return _build_order_response(order, db)
+
+
+@router.get("/partner-orders")
+async def list_partner_orders(
+    fulfillment: str = Query(..., pattern="^(send_out|receive_in)$"),
+    settlement: Optional[str] = Query(None, pattern="^(unsettled|settled)$"),
+    partner_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _require_lab_admin(current_user)
+    query = db.query(PatientLabOrder).join(Patient).filter(
+        Patient.hospital_id == current_user.hospital_id,
+        PatientLabOrder.fulfillment == fulfillment,
+        PatientLabOrder.status != "cancelled",
+    )
+    if settlement:
+        query = query.filter(PatientLabOrder.partner_settlement_status == settlement)
+    if partner_id:
+        query = query.filter(PatientLabOrder.partner_id == partner_id)
+    orders = query.order_by(PatientLabOrder.order_date.desc()).limit(300).all()
+    rows = []
+    for order in orders:
+        built = _build_order_response(order, db)
+        amount = float(order.amount or 0)
+        partner_cost = float(order.partner_cost or 0) if order.partner_cost is not None else None
+        built["margin"] = round(amount - partner_cost, 2) if partner_cost is not None else None
+        rows.append(built)
+    return rows
+
+
+@router.post("/partner-orders/settle")
+async def settle_partner_orders(
+    data: PartnerSettleRequest,
+    current_user: User = Depends(require_permission(Modules.LAB, "write")),
+    db: Session = Depends(get_db),
+):
+    """Mark send-out payables or receive-in receivables as settled against a partner invoice."""
+    _require_lab_admin(current_user)
+    orders = db.query(PatientLabOrder).join(Patient).filter(
+        PatientLabOrder.id.in_(data.order_ids),
+        Patient.hospital_id == current_user.hospital_id,
+    ).all()
+    if len(orders) != len(set(data.order_ids)):
+        raise HTTPException(status_code=404, detail="One or more orders were not found")
+    now = datetime.now()
+    for order in orders:
+        if order.fulfillment not in ("send_out", "receive_in"):
+            raise HTTPException(status_code=400, detail=f"{order.order_number} is not a partner order")
+        if order.partner_settlement_status == "settled":
+            raise HTTPException(status_code=400, detail=f"{order.order_number} is already settled")
+        order.partner_settlement_status = "settled"
+        order.partner_invoice_ref = (data.invoice_ref or "").strip() or None
+        order.partner_settled_at = now
+        if order.fulfillment == "receive_in" and order.payment_status != "paid":
+            order.payment_status = "partner_settled"
+            order.payment_method = "partner"
+            order.payment_date = now
+    db.commit()
+    try:
+        log_action(
+            db, current_user, "settle_partner_lab_orders", "lab", "LabOrder",
+            orders[0].id,
+            f"Settled {len(orders)} partner lab order(s)",
+            details={"order_ids": [o.id for o in orders], "invoice_ref": data.invoice_ref},
+        )
+    except Exception:
+        pass
+    return {"settled": len(orders)}
+
+
+# ============================================================
 # Bulk Import (Excel / CSV)
 # ============================================================
 
 _IMPORT_TEST_HEADERS = [
     "test_code", "name", "category", "sample_type", "cost",
-    "method", "description", "preparation_instructions",
+    "method", "description", "preparation_instructions", "rate_b",
 ]
 _IMPORT_PARAM_HEADERS = [
     "test_code", "section", "parameter_name", "unit", "method", "field_type",
@@ -3969,6 +4460,7 @@ async def download_import_template(
         [""],
         ["Fill the 'Tests' sheet — one row per test."],
         ["  Required columns: test_code, name, category, cost."],
+        ["  Optional column rate_b: second selling price. Blank copies cost (Rate A)."],
         ["  Categories and sample types are created automatically if they don't exist."],
         [""],
         ["Fill the 'Parameters' sheet (optional) — one row per reference range."],
@@ -4106,6 +4598,14 @@ async def import_tests(
             row_errs.append("Cost must be a number")
         if cost < 0:
             row_errs.append("Cost cannot be negative")
+        rate_b = None
+        if _cell_str(tr.get("rate_b")):
+            try:
+                rate_b = _cell_float(tr.get("rate_b"))
+            except ValueError:
+                row_errs.append("Rate B must be a number")
+        if rate_b is not None and rate_b < 0:
+            row_errs.append("Rate B cannot be negative")
 
         if row_errs:
             msg = "; ".join(row_errs)
@@ -4168,6 +4668,8 @@ async def import_tests(
                 db.query(LabTestParameter).filter(LabTestParameter.test_id == existing.id).delete()
                 for i, p in enumerate(p_list):
                     db.add(_create_seed_parameter(existing.id, p, i))
+            from app.services.lab_rates import save_test_rates
+            save_test_rates(db, existing, cost, rate_b, update_b=rate_b is not None)
             updated += 1
             preview.append(ImportPreviewRow(
                 row=rownum, test_code=test_code, name=name, category=cat_name,
@@ -4187,6 +4689,8 @@ async def import_tests(
             db.flush()
             for i, p in enumerate(p_list):
                 db.add(_create_seed_parameter(test.id, p, i))
+            from app.services.lab_rates import save_test_rates
+            save_test_rates(db, test, cost, rate_b, update_b=True)
             created += 1
             preview.append(ImportPreviewRow(
                 row=rownum, test_code=test_code, name=name, category=cat_name,
@@ -4301,6 +4805,8 @@ async def export_tests_xlsx(
         params_sheet = wb.create_sheet("Parameters")
         params_sheet.append(_IMPORT_PARAM_HEADERS)
 
+        from app.services.lab_rates import ensure_rate_cards, rates_for_test
+        cards = ensure_rate_cards(db, current_user.hospital_id)
         for test in tests:
             category = db.query(LabTestCategory).filter(
                 LabTestCategory.id == test.category_id
@@ -4308,6 +4814,8 @@ async def export_tests_xlsx(
             sample_type = db.query(SampleType).filter(
                 SampleType.id == test.sample_type_id
             ).first() if test.sample_type_id else None
+            rates = rates_for_test(db, test, cards)
+            rate_b_amount = next((r["amount"] for r in rates if r["code"] == "B"), test.cost or 0)
             tests_sheet.append([
                 test.test_code,
                 test.name,
@@ -4317,6 +4825,7 @@ async def export_tests_xlsx(
                 test.method or "",
                 test.description or "",
                 test.preparation_instructions or "",
+                rate_b_amount,
             ])
 
             parameters = (

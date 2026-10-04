@@ -12,6 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/ta
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import { useToast } from '../../hooks/use-toast';
+import { defaultRateCardId, testPrice } from '../../utils/labPricing';
 import { useAuth } from '../../contexts/AuthContext';
 import { printPdfFromUrl } from '../../utils/printPdf';
 import { errorDetail } from '../../utils/apiErrors';
@@ -298,6 +299,8 @@ const InpatientModule = () => {
   const [availableLabTests, setAvailableLabTests] = useState([]);
   const [showLabOrderDialog, setShowLabOrderDialog] = useState(false);
   const [labOrderForm, setLabOrderForm] = useState({ test_ids: [], priority: 'normal', notes: '' });
+  const [labRateCards, setLabRateCards] = useState([]);
+  const [labRateCardId, setLabRateCardId] = useState('');
   const [labTestSearch, setLabTestSearch] = useState('');
   // Inpatient prescription (Add Medication) state
   const BLANK_RX_ITEM = BLANK_INPATIENT_RX_ITEM;
@@ -783,8 +786,13 @@ const InpatientModule = () => {
 
   const fetchAvailableLabTests = useCallback(async (admissionId) => {
     try {
-      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/lab-tests-available`);
+      const [res, cardsRes] = await Promise.all([
+        axios.get(`/api/inpatient/admissions/${admissionId}/lab-tests-available`),
+        axios.get('/api/lab/rate-cards'),
+      ]);
       setAvailableLabTests(res.data);
+      setLabRateCards(cardsRes.data || []);
+      setLabRateCardId(defaultRateCardId(cardsRes.data));
     } catch { /* silent */ }
   }, []);
 
@@ -1507,6 +1515,7 @@ const InpatientModule = () => {
         test_ids: labOrderForm.test_ids,
         priority: labOrderForm.priority,
         notes: labOrderForm.notes || null,
+        rate_card_id: labRateCardId ? parseInt(labRateCardId, 10) : null,
         force: false,
       });
       toast({ title: 'Success', description: 'Lab orders created' });
@@ -8884,6 +8893,17 @@ const InpatientModule = () => {
               </Select>
             </div>
             <div>
+              <Label>Rate</Label>
+              <Select value={labRateCardId || '_none'} onValueChange={(v) => setLabRateCardId(v === '_none' ? '' : v)}>
+                <SelectTrigger><SelectValue placeholder="Rate" /></SelectTrigger>
+                <SelectContent>
+                  {labRateCards.map((c) => (
+                    <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
               <Label>Search Tests</Label>
               <Input placeholder="Search by test name or code..." value={labTestSearch}
                 onChange={e => setLabTestSearch(e.target.value)} />
@@ -8900,7 +8920,7 @@ const InpatientModule = () => {
                         {t.test_code && <span className="text-xs text-gray-400 ml-1">({t.test_code})</span>}
                       </div>
                     </div>
-                    <span className="text-sm text-gray-600">₹{parseFloat(t.cost || 0).toFixed(2)}</span>
+                    <span className="text-sm text-gray-600">₹{testPrice(t, labRateCardId).toFixed(2)}</span>
                   </label>
                 ))}
               {availableLabTests.length === 0 && (
@@ -8911,7 +8931,7 @@ const InpatientModule = () => {
               <p className="text-sm font-medium">
                 Selected: {labOrderForm.test_ids.length} test(s) — Total: ₹{availableLabTests
                   .filter(t => labOrderForm.test_ids.includes(t.id))
-                  .reduce((sum, t) => sum + (t.cost || 0), 0).toFixed(2)}
+                  .reduce((sum, t) => sum + testPrice(t, labRateCardId), 0).toFixed(2)}
               </p>
             )}
             <div>

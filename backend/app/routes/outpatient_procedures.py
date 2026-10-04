@@ -20,6 +20,7 @@ from app.models.patient import Patient
 from app.models.outpatient import OutpatientProcedure
 from app.models.billing import Bill, BillItem, Payment
 from app.services.audit_service import log_action
+from app.services.patient_referral import apply_patient_referral
 from config.database import get_db
 
 router = APIRouter()
@@ -256,7 +257,7 @@ async def create_procedure_bill(
         created_by_id=current_user.id,
         hospital_id=current_user.hospital_id,
         notes=data.notes or None,
-        referred_by=(data.referred_by or '').strip() or None,
+        referred_by=apply_patient_referral(patient, data.referred_by),
     )
     db.add(bill)
     db.flush()

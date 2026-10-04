@@ -31,6 +31,7 @@ import {
   validateAppointmentBooking,
 } from '../utils/appointmentBooking';
 import { localDateString } from '../utils/localDate';
+import { patientReferralName } from '../utils/patientReferral';
 import PatientFileLabelDialog from './PatientFileLabelDialog';
 
 const EMPTY_APPOINTMENT = {
@@ -178,6 +179,10 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
 
   const goToAppointment = async (patient) => {
     setSelectedPatient(patient);
+    setAppointmentForm((prev) => ({
+      ...prev,
+      referred_by: patientReferralName(patient),
+    }));
     await fetchPatientFeeInfo(patient.patient_id);
     setWizardStep(baseSteps.length - 1);
     if (appointmentForm.doctor_id) {
@@ -568,6 +573,7 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
               <ReferralSelectWithCreate
                 value={appointmentForm.referred_by}
                 onValueChange={(name) => setAppointmentForm({ ...appointmentForm, referred_by: name })}
+                locked={!!patientReferralName(selectedPatient)}
                 referrals={referralList}
                 onReferralsChange={setReferralList}
               />

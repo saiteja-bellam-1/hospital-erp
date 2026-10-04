@@ -213,11 +213,10 @@ async def get_referral_details(
 ):
     """Bills and payout math for one referrer.
 
-    A patient counts when the referral saved on their registration
-    (`patients.referred_by`) matches this referrer's name. Outpatient
-    visits, walk-in lab orders, admission bills, and counter pharmacy
-    sales are listed separately. Lab and pharmacy already consumed by an
-    admission bill stay inside that IP total.
+    A patient has one referral, saved on `patients.referred_by`. Outpatient
+    visits, walk-in lab orders, admission bills, and counter pharmacy sales
+    for those patients are listed separately. Lab and pharmacy already
+    consumed by an admission bill stay inside that IP total.
     """
     if not any(r in current_user.role_names for r in ALLOWED_ROLES):
         raise HTTPException(status_code=403, detail="Not authorized")

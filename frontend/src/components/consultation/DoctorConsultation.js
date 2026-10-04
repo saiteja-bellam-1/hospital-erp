@@ -18,6 +18,7 @@ import {
   CheckCircle,
   Printer
 } from 'lucide-react';
+import { defaultRateCardId, testPrice } from '../../utils/labPricing';
 
 const DoctorConsultation = ({ consultation, onUpdate }) => {
   const [activeTab, setActiveTab] = useState('consultation');
@@ -26,6 +27,8 @@ const DoctorConsultation = ({ consultation, onUpdate }) => {
   const [labOrders, setLabOrders] = useState([]);
   const [bill, setBill] = useState(null);
   const [availableTests, setAvailableTests] = useState([]);
+  const [rateCards, setRateCards] = useState([]);
+  const [rateCardId, setRateCardId] = useState('');
   const [loading, setLoading] = useState(false);
 
   // Load initial data
@@ -33,6 +36,7 @@ const DoctorConsultation = ({ consultation, onUpdate }) => {
     if (consultation?.id) {
       fetchLabRecommendations();
       fetchAvailableTests();
+      fetchRateCards();
       fetchExistingLabOrders();
       fetchBill();
     }
@@ -54,6 +58,22 @@ const DoctorConsultation = ({ consultation, onUpdate }) => {
       }
     } catch (error) {
       console.error('Error fetching lab recommendations:', error);
+    }
+  };
+
+  const fetchRateCards = async () => {
+    try {
+      const token = localStorage.getItem('auth_token');
+      const response = await fetch('/api/lab/rate-cards', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (response.ok) {
+        const cards = await response.json();
+        setRateCards(cards);
+        setRateCardId(defaultRateCardId(cards));
+      }
+    } catch (error) {
+      console.error('Error fetching rate cards:', error);
     }
   };
 
@@ -131,7 +151,8 @@ const DoctorConsultation = ({ consultation, onUpdate }) => {
           test_ids: selectedTests,
           priority: 'normal',
           force: force,
-          notes: 'Ordered during consultation'
+          notes: 'Ordered during consultation',
+          rate_card_id: rateCardId ? parseInt(rateCardId, 10) : null,
         })
       });
 
@@ -270,6 +291,17 @@ const DoctorConsultation = ({ consultation, onUpdate }) => {
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-4">
+                    <div className="max-w-xs">
+                      <Label>Rate</Label>
+                      <Select value={rateCardId || '_none'} onValueChange={(v) => setRateCardId(v === '_none' ? '' : v)}>
+                        <SelectTrigger><SelectValue placeholder="Rate" /></SelectTrigger>
+                        <SelectContent>
+                          {rateCards.map((c) => (
+                            <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
                     <div className="max-h-60 overflow-y-auto space-y-2">
                       {availableTests.map((test) => (
                         <div
@@ -300,7 +332,7 @@ const DoctorConsultation = ({ consultation, onUpdate }) => {
                               )}
                             </div>
                             <div className="text-right">
-                              <p className="font-semibold text-green-600">₹{test.cost}</p>
+                              <p className="font-semibold text-green-600">₹{testPrice(test, rateCardId)}</p>
                             </div>
                           </div>
                         </div>
