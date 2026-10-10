@@ -533,6 +533,7 @@ const CatchUpBills = () => {
         setPdfPreview({
           title: res.data.pdf.title || `Bill ${res.data.bill_number || ''}`.trim(),
           path: res.data.pdf.path,
+          whatsapp: res.data.pdf.whatsapp || null,
         });
       }
       setDates(emptyDates());
@@ -601,7 +602,11 @@ const CatchUpBills = () => {
       setLabEntryOpen(false);
       loadMeta();
       if (data?.pdf?.path) {
-        setPdfPreview({ title: data.pdf.title || 'Lab report', path: data.pdf.path });
+        setPdfPreview({
+          title: data.pdf.title || 'Lab report',
+          path: data.pdf.path,
+          whatsapp: data.pdf.whatsapp || (data.report_id ? { kind: 'lab_report', resourceId: data.report_id } : null),
+        });
       }
     } catch (err) {
       toast({ title: 'Failed to save results', description: errMsg(err), variant: 'destructive' });
@@ -1386,6 +1391,7 @@ const CatchUpBills = () => {
                       onClick={() => setPdfPreview({
                         title: `Lab report — ${o.order_number || o.test_name}`,
                         path: o.pdf?.path || `/api/lab/reports/${o.report_id}/download`,
+                        whatsapp: o.report_id ? { kind: 'lab_report', resourceId: o.report_id } : null,
                       })}
                       disabled={!o.report_id}
                     >
@@ -1644,6 +1650,7 @@ const CatchUpBills = () => {
         onClose={() => setPdfPreview(null)}
         title={pdfPreview?.title || 'Bill Preview'}
         path={pdfPreview?.path || null}
+        whatsapp={pdfPreview?.whatsapp || null}
       />
     </div>
   );

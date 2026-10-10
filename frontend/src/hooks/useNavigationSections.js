@@ -8,7 +8,7 @@ import {
   DownloadCloud, Pill, ShoppingCart, Boxes, Truck, BookOpen, LayoutGrid, Plus,
   Warehouse, Tags, Layers, Ruler, Percent, Link2, ArrowLeftRight, Store, Droplets,
   UtensilsCrossed, IndianRupee, Settings2, Undo2, UserCheck, PanelTop, Settings,
-  CreditCard,
+  CreditCard, MessageCircle,
 } from 'lucide-react';
 import { PHARMACY_ROLE_NAMES } from './usePharmacyPermissions';
 import { CANTEEN_ROLE_NAMES } from './useCanteenPermissions';
@@ -365,6 +365,9 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     add(admin, make('Hospital Info', Building2, '/dashboard/hospital-admin/info'));
     add(admin, make('Appearance', PanelTop, '/dashboard/hospital-admin/appearance'));
     add(admin, make('Customisations', Printer, '/dashboard/print-settings'));
+    if (enabledModules.whatsapp) {
+      add(admin, make('WhatsApp', MessageCircle, '/dashboard/whatsapp-settings'));
+    }
     add(admin, make('Guided Setup', ClipboardList, '/dashboard/setup'));
     if (admin.length > 0) sections.push({ label: 'Administration', items: admin });
 

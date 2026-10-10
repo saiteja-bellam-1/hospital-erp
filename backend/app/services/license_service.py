@@ -38,6 +38,7 @@ def _build_gdrive_config(license_data: dict):
 
 # Optional paid add-on (not a SystemModule). Issued from License Manager.
 FEATURE_CUSTOMISATION = "customisation"
+FEATURE_WHATSAPP = "whatsapp"
 
 
 def get_current_license(db: Session) -> License | None:
@@ -59,6 +60,11 @@ def license_allows_customisation(db: Session) -> bool:
     available and are not gated by this feature.
     """
     return license_has_feature(db, FEATURE_CUSTOMISATION)
+
+
+def license_allows_whatsapp(db: Session) -> bool:
+    """WhatsApp document sending requires this license add-on."""
+    return license_has_feature(db, FEATURE_WHATSAPP)
 
 
 def build_rebind_request_payload(

@@ -6804,12 +6804,11 @@ def _pdf_response(buffer, filename: str) -> StreamingResponse:
     )
 
 
-@router.get("/sales/{sid}/invoice/pdf")
-def sale_invoice_pdf(
-    sid: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_sales")),
-):
+def build_sale_invoice_document(db: Session, current_user: User, sid: int) -> dict:
+    """Render a pharmacy sale invoice. Shared by the PDF route and WhatsApp."""
+    from app.utils.dependencies import user_has_feature_permission
+    if not user_has_feature_permission(db, current_user, Modules.PHARMACY, "view_sales"):
+        raise HTTPException(status_code=403, detail="Permission 'view_sales' required on pharmacy")
     s = db.query(PharmacySale).filter(
         PharmacySale.id == sid,
         PharmacySale.hospital_id == current_user.hospital_id,
@@ -6821,8 +6820,30 @@ def sale_invoice_pdf(
     shaped["store_name"] = _store_label(db, s.store_id)
     shaped = _enrich_sale_invoice_payload(s, shaped, db)
     hi = _pharmacy_hospital_info_for_pdf(db, current_user.hospital_id)
-    buf = pdf_service.generate_pharmacy_sale_invoice_pdf(shaped, hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_sale_invoice'))
-    return _pdf_response(buf, f"{s.sale_number}.pdf")
+    buf = pdf_service.generate_pharmacy_sale_invoice_pdf(
+        shaped, hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_sale_invoice'),
+    )
+    patient_name = shaped.get("patient_name") or "Patient"
+    return {
+        "pdf_bytes": buf.getvalue() if hasattr(buf, "getvalue") else buf.read(),
+        "filename": f"{s.sale_number}.pdf",
+        "phone": s.patient_phone or shaped.get("patient_phone") or "",
+        "patient_name": patient_name,
+        "reference": s.sale_number or "",
+        "document_date": s.sale_date,
+        "resource_type": "PharmacySale",
+        "resource_id": str(s.id),
+    }
+
+
+@router.get("/sales/{sid}/invoice/pdf")
+def sale_invoice_pdf(
+    sid: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_sales")),
+):
+    document = build_sale_invoice_document(db, current_user, sid)
+    return _pdf_response(io.BytesIO(document["pdf_bytes"]), document["filename"])
 
 
 @router.get("/purchases/{pid}/pdf")

@@ -38,6 +38,7 @@ import HospitalAdminModule from './modules/HospitalAdminModule';
 import CatchUpBills from './modules/admin/CatchUpBills';
 import SettlementsPage from './modules/admin/SettlementsPage';
 import PrintSettingsPage from './modules/PrintSettingsPage';
+import WhatsAppSettingsPage from './modules/WhatsAppSettingsPage';
 import DoctorDashboard from './modules/DoctorDashboard';
 import ReceptionDashboard from './modules/reception/ReceptionDashboard';
 import ReceptionPatientsPage from './modules/reception/ReceptionPatientsPage';
@@ -461,6 +462,11 @@ const DashboardShell = () => {
               <Route path="/settlements" element={<SettlementsPage />} />
               <Route path="/catch-up" element={<CatchUpBills />} />
               <Route path="/print-settings" element={<PrintSettingsPage />} />
+              <Route path="/whatsapp-settings" element={
+                hasAnyRole('super_admin', 'hospital_admin') && enabledModules.whatsapp
+                  ? <WhatsAppSettingsPage />
+                  : <Navigate to="/dashboard/home" replace />
+              } />
               <Route path="/license" element={<LicenseManagement />} />
               <Route path="/backup" element={<BackupManagement />} />
               <Route path="/software-update" element={<SoftwareUpdate />} />

@@ -24,6 +24,7 @@ import { BLANK_INPATIENT_RX_ITEM } from '../../utils/prescriptionSchedule';
 import { canSeeLabTestRates, normalizeUserRoles } from '../../hooks/useNavigationSections';
 import { useToast } from '../../hooks/use-toast';
 import { printPdfFromUrl } from '../../utils/printPdf';
+import WhatsAppSendButton from '../../components/WhatsAppSendButton';
 import DischargeSummaryEditor from './inpatient/DischargeSummaryEditor';
 import DischargeSummaryPreviewCard from './inpatient/discharge/DischargeSummaryPreviewCard';
 import { DISCHARGE_SUMMARY_STATUS } from './inpatient/discharge/constants';
@@ -2034,6 +2035,9 @@ const DoctorDashboard = () => {
                     <Printer className="h-3.5 w-3.5 mr-1" /> Print discharge summary
                   </Button>
                 )}
+                {summaryReadyForPrint && wardRoundAdmission?.id && (
+                  <WhatsAppSendButton kind="discharge_summary" resourceId={wardRoundAdmission.id} label="Summary" />
+                )}
                 <Button size="sm" variant="outline" onClick={printWardRoundAdmissionDetail}>
                   <Printer className="h-3.5 w-3.5 mr-1" /> Detailed summary
                 </Button>
@@ -2048,6 +2052,7 @@ const DoctorDashboard = () => {
                 readOnly={wardRoundIsDischarged || wardRoundSummaryStatus === 'locked'}
                 onEdit={openDischargeSummaryEditor}
                 onPrint={summaryReadyForPrint ? printWardRoundDischargeSummary : undefined}
+                admissionId={summaryReadyForPrint ? wardRoundAdmission?.id : null}
               />
 
               {/* Tabs */}
@@ -3097,6 +3102,12 @@ const DoctorDashboard = () => {
               </div>
               <div className="flex gap-3">
                 <Button variant="outline" onClick={closePrintPreview}>Cancel</Button>
+                {previewPrescription?.prescription_id && (
+                  <WhatsAppSendButton
+                    kind="prescription"
+                    resourceId={previewPrescription.prescription_id}
+                  />
+                )}
                 <Button onClick={printFromPreview}>
                   <Printer className="h-4 w-4 mr-2" /> Print Now
                 </Button>

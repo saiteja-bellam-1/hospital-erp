@@ -16,6 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../../components/ui/dialog';
 import { Textarea } from '../../../components/ui/textarea';
 import { useToast } from '../../../hooks/use-toast';
+import WhatsAppSendButton from '../../../components/WhatsAppSendButton';
 import {
   Users,
   Calendar,
@@ -494,6 +495,9 @@ const ReceptionDashboard = () => {
                       <Download className="h-3 w-3 mr-1" />Download
                     </Button>
                   )}
+                  {order.has_report && order.report_id && (
+                    <WhatsAppSendButton kind="lab_report" resourceId={order.report_id} label="" className="h-6 px-1.5" />
+                  )}
                 </div>
               </div>
             ))}
@@ -552,6 +556,9 @@ const ReceptionDashboard = () => {
               onClick={() => downloadLabReport(order.report_id, order.order_number)}>
               <Download className="h-3 w-3 mr-1" />Download
             </Button>
+          )}
+          {order.has_report && order.report_id && (
+            <WhatsAppSendButton kind="lab_report" resourceId={order.report_id} label="" className="h-7 px-1.5" />
           )}
         </div>
       </div>
@@ -1210,6 +1217,9 @@ const ReceptionDashboard = () => {
             </div>
             <div className="flex justify-end gap-2 pt-4">
               <Button variant="outline" onClick={closePrescriptionDialog}>Close</Button>
+              {prescriptionData?.prescription_id && (
+                <WhatsAppSendButton kind="prescription" resourceId={prescriptionData.prescription_id} />
+              )}
               <Button onClick={printPrescription} className="bg-purple-600 hover:bg-purple-700">
                 <Printer className="h-4 w-4 mr-2" />Print
               </Button>

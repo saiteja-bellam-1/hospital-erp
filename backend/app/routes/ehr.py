@@ -383,6 +383,7 @@ def _build_patient_history(db: Session, patient: Patient, hospital_id: int) -> d
             "label": f"Prescription — {rx['diagnosis'] or rx['prescription_id']}",
             "date": rx["prescription_date"],
             "download_url": f"/api/prescriptions-simple/{rx['prescription_id']}/download",
+            "whatsapp": {"kind": "prescription", "resourceId": rx["prescription_id"]},
         })
     for lo in lab_orders:
         if lo.get("report"):
@@ -391,6 +392,7 @@ def _build_patient_history(db: Session, patient: Patient, hospital_id: int) -> d
                 "label": f"Lab Report — {lo['test_name']}",
                 "date": lo["report"].get("report_date") or lo["order_date"],
                 "download_url": f"/api/lab/reports/{lo['report']['id']}/download",
+                "whatsapp": {"kind": "lab_report", "resourceId": lo["report"]["id"]},
             })
     for adm in admissions:
         if adm["has_discharge_summary"]:
@@ -399,6 +401,7 @@ def _build_patient_history(db: Session, patient: Patient, hospital_id: int) -> d
                 "label": f"Discharge Summary — {adm['admission_number']}",
                 "date": adm["discharge_date"] or adm["admission_date"],
                 "download_url": f"/api/inpatient/admissions/{adm['id']}/discharge-summary/pdf/preview",
+                "whatsapp": {"kind": "discharge_summary", "resourceId": adm["id"]},
             })
     documents.sort(key=lambda d: d["date"] or "", reverse=True)
 

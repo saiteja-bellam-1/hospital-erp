@@ -2235,13 +2235,8 @@ async def cancel_lab_order_by_reception(
     return _build_order_response(order, db)
 
 
-@router.get("/orders/{order_id}/bill")
-async def download_order_bill(
-    order_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Download/regenerate bill PDF for a single lab order."""
+def build_lab_order_bill_document(db: Session, current_user: User, order_id: int) -> dict:
+    """Render one lab-order bill. Shared by the download route and WhatsApp."""
     order = db.query(PatientLabOrder).join(Patient).filter(
         PatientLabOrder.id == order_id,
         Patient.hospital_id == current_user.hospital_id
@@ -2284,11 +2279,18 @@ async def download_order_bill(
     }
 
     from app.utils.pdf_service import pdf_service
-    from fastapi.responses import StreamingResponse
     pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
     filename = f"lab_bill_{order.order_number}.pdf"
-    return StreamingResponse(pdf_buffer, media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename={filename}"})
+    return {
+        "pdf_bytes": pdf_buffer.getvalue() if hasattr(pdf_buffer, "getvalue") else pdf_buffer.read(),
+        "filename": filename,
+        "phone": (patient.primary_phone if patient else "") or "",
+        "patient_name": bill_data.get("patient_name") or "",
+        "reference": bill_data.get("bill_number") or order.order_number or "",
+        "document_date": order.order_date,
+        "resource_type": "LabOrder",
+        "resource_id": str(order.id),
+    }
 
 
 class RegenerateBillRequest(BaseModel):
@@ -2372,22 +2374,31 @@ async def regenerate_lab_bill(
     }
 
     from app.utils.pdf_service import pdf_service
-    from fastapi.responses import StreamingResponse
     pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
     return StreamingResponse(pdf_buffer, media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=lab_bill.pdf"})
+        headers={"Content-Disposition": "attachment; filename=lab_bill.pdf"})
 
 
-@router.get("/bills/{group_id}/pdf")
-async def download_grouped_lab_bill(
-    group_id: str,
+@router.get("/orders/{order_id}/bill")
+async def download_order_bill(
+    order_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Re-render the combined lab bill PDF for every order that shares a
-    lab_bill_group_id. This is what the centralised Billing dashboard's
-    Download button calls — it reproduces the originally-issued bill
-    (multi-test or package) without any payment side effects.
+    """Download/regenerate bill PDF for a single lab order."""
+    document = build_lab_order_bill_document(db, current_user, order_id)
+    return StreamingResponse(
+        io.BytesIO(document["pdf_bytes"]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={document['filename']}"},
+    )
+
+
+def build_grouped_lab_bill_document(db: Session, current_user: User, group_id: str) -> dict:
+    """Re-render the combined lab bill PDF for a lab_bill_group_id.
+
+    Shared by the bill download route and WhatsApp. Reproduces the
+    originally-issued bill without any payment side effects.
     """
     orders = db.query(PatientLabOrder).join(Patient).filter(
         PatientLabOrder.lab_bill_group_id == group_id,
@@ -2479,11 +2490,32 @@ async def download_grouped_lab_bill(
         bill_data["package_name"] = pkg.name
 
     from app.utils.pdf_service import pdf_service
-    from fastapi.responses import StreamingResponse
     pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
     filename = f"lab_bill_{bill_number}.pdf"
-    return StreamingResponse(pdf_buffer, media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename={filename}"})
+    return {
+        "pdf_bytes": pdf_buffer.getvalue() if hasattr(pdf_buffer, "getvalue") else pdf_buffer.read(),
+        "filename": filename,
+        "phone": patient.primary_phone or "",
+        "patient_name": bill_data["patient_name"],
+        "reference": bill_number,
+        "document_date": bill_date,
+        "resource_type": "LabBill",
+        "resource_id": group_id,
+    }
+
+
+@router.get("/bills/{group_id}/pdf")
+async def download_grouped_lab_bill(
+    group_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    document = build_grouped_lab_bill_document(db, current_user, group_id)
+    return StreamingResponse(
+        io.BytesIO(document["pdf_bytes"]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={document['filename']}"},
+    )
 
 
 class LabPaymentUpdate(BaseModel):
@@ -3037,14 +3069,13 @@ def _parse_report_ids_csv(report_ids: str) -> List[int]:
     return ids
 
 
-@router.get("/reports/combined/download")
-async def download_combined_reports_pdf(
-    report_ids: str = Query(..., description="Comma-separated lab report IDs"),
-    include_header: Optional[bool] = Query(None),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Download a continuous combined PDF for selected completed reports (same patient)."""
+def build_combined_lab_report_document(
+    db: Session,
+    current_user: User,
+    report_ids: str,
+    include_header: Optional[bool] = None,
+) -> dict:
+    """Render a combined lab-report PDF. Shared by the download route and WhatsApp."""
     ids = _parse_report_ids_csv(report_ids)
     rows = (
         db.query(LabReport, PatientLabOrder)
@@ -3085,26 +3116,52 @@ async def download_combined_reports_pdf(
         )
         patient = db.query(Patient).filter(Patient.id == ordered_pairs[0][1].patient_id).first()
         patient_name = (
-            f"{patient.first_name}_{patient.last_name}" if patient else "patient"
+            f"{patient.first_name} {patient.last_name}".strip() if patient else "Patient"
         )
-        filename = f"{patient_name}_lab_reports_{datetime.now().strftime('%Y%m%d')}.pdf"
-        return StreamingResponse(
-            pdf_buffer,
-            media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename={filename}"},
-        )
+        filename = f"{patient_name.replace(' ', '_')}_lab_reports_{datetime.now().strftime('%Y%m%d')}.pdf"
+        return {
+            "pdf_bytes": pdf_buffer.getvalue() if hasattr(pdf_buffer, "getvalue") else pdf_buffer.read(),
+            "filename": filename,
+            "phone": (patient.primary_phone if patient else "") or "",
+            "patient_name": patient_name,
+            "reference": (
+                str(reports_data[0].get("order_number") or "")
+                if len(reports_data) == 1
+                else f"{len(reports_data)} reports"
+            ),
+            "document_date": datetime.now(),
+            "resource_type": "LabReport",
+            "resource_id": report_ids[:200],
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PDF generation error: {str(e)}")
 
 
-@router.get("/reports/{report_id}/download")
-async def download_report_pdf(
-    report_id: int,
+@router.get("/reports/combined/download")
+async def download_combined_reports_pdf(
+    report_ids: str = Query(..., description="Comma-separated lab report IDs"),
     include_header: Optional[bool] = Query(None),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    """Download lab report as PDF. Accessible by any authenticated user."""
+    """Download a continuous combined PDF for selected completed reports (same patient)."""
+    document = build_combined_lab_report_document(db, current_user, report_ids, include_header)
+    return StreamingResponse(
+        io.BytesIO(document["pdf_bytes"]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={document['filename']}"},
+    )
+
+
+def build_lab_report_document(
+    db: Session,
+    current_user: User,
+    report_id: int,
+    include_header: Optional[bool] = None,
+) -> dict:
+    """Render one lab report PDF. Shared by the download route and WhatsApp."""
     report = (
         db.query(LabReport)
         .join(PatientLabOrder, LabReport.order_id == PatientLabOrder.id)
@@ -3130,22 +3187,47 @@ async def download_report_pdf(
             report_data, hospital_info, lab_config, **pdf_kwargs
         )
         filename = f"lab_report_{report_data['order_number']}_{datetime.now().strftime('%Y%m%d')}.pdf"
-        return StreamingResponse(
-            pdf_buffer,
-            media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
-        )
+        patient = report.order.patient if getattr(report, "order", None) else None
+        patient_name = report_data.get("patient_name") or "Patient"
+        return {
+            "pdf_bytes": pdf_buffer.getvalue() if hasattr(pdf_buffer, "getvalue") else pdf_buffer.read(),
+            "filename": filename,
+            "phone": (patient.primary_phone if patient else "") or report_data.get("patient_phone") or "",
+            "patient_name": patient_name,
+            "reference": str(report_data.get("order_number") or report_id),
+            "document_date": report_data.get("report_date") or report_data.get("order_date") or datetime.now(),
+            "resource_type": "LabReport",
+            "resource_id": str(report_id),
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PDF generation error: {str(e)}")
 
-@router.get("/reports/package/{package_booking_id}/download")
-async def download_package_report_pdf(
-    package_booking_id: str,
+
+@router.get("/reports/{report_id}/download")
+async def download_report_pdf(
+    report_id: int,
     include_header: Optional[bool] = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Download combined PDF for all completed tests in a package booking."""
+    """Download lab report as PDF. Accessible by any authenticated user."""
+    document = build_lab_report_document(db, current_user, report_id, include_header)
+    return StreamingResponse(
+        io.BytesIO(document["pdf_bytes"]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={document['filename']}"},
+    )
+
+
+def build_package_lab_report_document(
+    db: Session,
+    current_user: User,
+    package_booking_id: str,
+    include_header: Optional[bool] = None,
+) -> dict:
+    """Render a package lab-report PDF. Shared by the download route and WhatsApp."""
     orders = (
         db.query(PatientLabOrder)
         .join(Patient, PatientLabOrder.patient_id == Patient.id)
@@ -3180,17 +3262,40 @@ async def download_package_report_pdf(
         )
         pkg_name = orders[0].package.name if orders[0].package else "package"
         patient = db.query(Patient).filter(Patient.id == orders[0].patient_id).first()
-        patient_name = f"{patient.first_name}_{patient.last_name}" if patient else "patient"
-        filename = f"{patient_name}_{pkg_name}_{datetime.now().strftime('%Y%m%d')}.pdf"
-        return StreamingResponse(
-            pdf_buffer,
-            media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
-        )
+        patient_name = f"{patient.first_name} {patient.last_name}".strip() if patient else "Patient"
+        filename = f"{patient_name.replace(' ', '_')}_{pkg_name}_{datetime.now().strftime('%Y%m%d')}.pdf"
+        return {
+            "pdf_bytes": pdf_buffer.getvalue() if hasattr(pdf_buffer, "getvalue") else pdf_buffer.read(),
+            "filename": filename,
+            "phone": (patient.primary_phone if patient else "") or "",
+            "patient_name": patient_name,
+            "reference": pkg_name,
+            "document_date": datetime.now(),
+            "resource_type": "LabReport",
+            "resource_id": package_booking_id[:80],
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"PDF generation error: {str(e)}")
+
+
+@router.get("/reports/package/{package_booking_id}/download")
+async def download_package_report_pdf(
+    package_booking_id: str,
+    include_header: Optional[bool] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Download combined PDF for all completed tests in a package booking."""
+    document = build_package_lab_report_document(db, current_user, package_booking_id, include_header)
+    return StreamingResponse(
+        io.BytesIO(document["pdf_bytes"]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={document['filename']}"},
+    )
 
 # ============================================================
 # Stats & Seed

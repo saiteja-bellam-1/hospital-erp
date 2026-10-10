@@ -740,6 +740,7 @@ def init_database_and_seed(seed: Mapping, db_path: str) -> None:
         PhysioDocument,
     )
     from app.models.settlement import Settlement, SettlementConfig  # noqa
+    from app.models.whatsapp import WhatsAppMessage  # noqa
 
     engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)

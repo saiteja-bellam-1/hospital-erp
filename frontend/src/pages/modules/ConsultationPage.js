@@ -18,6 +18,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { canSeeLabTestRates, normalizeUserRoles } from '../../hooks/useNavigationSections';
 import { defaultRateCardId, testPrice } from '../../utils/labPricing';
 import { FREQUENCY_OPTIONS } from '../../utils/prescriptionSchedule';
+import WhatsAppSendButton from '../../components/WhatsAppSendButton';
 import MedicineLookupInput from '../../components/inpatient/MedicineLookupInput';
 import {
   buildVitalSignsPayload,
@@ -984,6 +985,10 @@ const ConsultationPage = () => {
                           }}>
                             <Printer className="h-3 w-3 mr-1" /> Download
                           </Button>
+                          <WhatsAppSendButton
+                            kind="prescription"
+                            resourceId={savedPrescription.prescription_id}
+                          />
                         </>
                       )}
                     </div>

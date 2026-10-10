@@ -4301,13 +4301,13 @@ async def preview_discharge_summary_pdf(
     return _inline_pdf_response(pdf_buffer, filename)
 
 
-@router.get("/admissions/{admission_id}/discharge-summary/pdf")
-async def get_discharge_summary_pdf(
+def build_discharge_summary_document(
+    db: Session,
+    current_user: User,
     admission_id: int,
-    include_header: Optional[bool] = Query(None),
-    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_discharge_summary")),
-    db: Session = Depends(get_db),
-):
+    include_header: Optional[bool] = None,
+) -> dict:
+    require_feature_permission(Modules.INPATIENT, "view_discharge_summary")(current_user=current_user, db=db)
     admission = db.query(Admission).options(
         joinedload(Admission.payer_scheme),
         joinedload(Admission.patient),
@@ -4349,7 +4349,29 @@ async def get_discharge_summary_pdf(
         discharge_data, hospital_info, template=get_template(db), **pdf_kwargs,
     )
     filename = f"DischargeSummary_{admission.admission_number}.pdf"
-    return _inline_pdf_response(pdf_buffer, filename)
+    patient = admission.patient
+    patient_name = f"{patient.first_name} {patient.last_name}".strip() if patient else "Patient"
+    return {
+        "pdf_bytes": pdf_buffer.getvalue() if hasattr(pdf_buffer, "getvalue") else pdf_buffer.read(),
+        "filename": filename,
+        "phone": (patient.primary_phone if patient else "") or "",
+        "patient_name": patient_name,
+        "reference": admission.admission_number or "",
+        "document_date": getattr(admission.discharge, "discharge_date", None) if admission.discharge else None,
+        "resource_type": "DischargeSummary",
+        "resource_id": str(admission.id),
+    }
+
+
+@router.get("/admissions/{admission_id}/discharge-summary/pdf")
+async def get_discharge_summary_pdf(
+    admission_id: int,
+    include_header: Optional[bool] = Query(None),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_discharge_summary")),
+    db: Session = Depends(get_db),
+):
+    document = build_discharge_summary_document(db, current_user, admission_id, include_header)
+    return _inline_pdf_response(io.BytesIO(document["pdf_bytes"]), document["filename"])
 
 
 # ============================================================
@@ -6861,17 +6883,14 @@ async def create_interim_bill(
     )
 
 
-@router.get("/admissions/{admission_id}/bill/pdf")
-async def get_bill_pdf(
+def build_inpatient_bill_document(
+    db: Session,
+    current_user: User,
     admission_id: int,
-    bill_id: Optional[int] = Query(default=None, description="Specific bill row to render (any status). Defaults to the latest non-cancelled bill."),
-    as_interim: bool = Query(
-        default=False,
-        description="Print live charges up to now. Does not create a Bill row or stamp charges. Ignored when bill_id is set.",
-    ),
-    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
-    db: Session = Depends(get_db),
-):
+    bill_id: Optional[int] = None,
+    as_interim: bool = False,
+) -> dict:
+    require_feature_permission(Modules.INPATIENT, "view_bill")(current_user=current_user, db=db)
     """Inpatient bill PDF — prefers saved BillItem snapshots when a bill
     record exists (stable historical name/qty/rate/amount). Falls back to the
     live computed breakdown for preview when no Bill exists yet, or for legacy
@@ -7316,10 +7335,43 @@ async def get_bill_pdf(
     pdf_buffer = pdf_service.generate_inpatient_bill_pdf(
         bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'inpatient_bill'))
 
+    pdf_bytes = pdf_buffer.getvalue() if hasattr(pdf_buffer, "getvalue") else pdf_buffer.read()
+    patient_name = ""
+    phone = ""
+    if patient:
+        patient_name = f"{patient.first_name} {patient.last_name}".strip()
+        phone = patient.primary_phone or ""
+    return {
+        "pdf_bytes": pdf_bytes,
+        "filename": f"bill_{bill_number}.pdf",
+        "phone": phone,
+        "patient_name": patient_name,
+        "reference": bill_number or (admission.admission_number or ""),
+        "document_date": getattr(bill, "bill_date", None) if bill else None,
+        "resource_type": "InpatientBill",
+        "resource_id": str(admission.id),
+    }
+
+
+@router.get("/admissions/{admission_id}/bill/pdf")
+async def get_bill_pdf(
+    admission_id: int,
+    bill_id: Optional[int] = Query(default=None, description="Specific bill row to render (any status). Defaults to the latest non-cancelled bill."),
+    as_interim: bool = Query(
+        default=False,
+        description="Print live charges up to now. Does not create a Bill row or stamp charges. Ignored when bill_id is set.",
+    ),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
+    db: Session = Depends(get_db),
+):
+    """Inpatient bill PDF."""
+    document = build_inpatient_bill_document(
+        db, current_user, admission_id, bill_id=bill_id, as_interim=as_interim,
+    )
     return StreamingResponse(
-        io.BytesIO(pdf_buffer.getvalue()) if hasattr(pdf_buffer, "getvalue") else pdf_buffer,
+        io.BytesIO(document["pdf_bytes"]),
         media_type="application/pdf",
-        headers={"Content-Disposition": f"inline; filename=bill_{bill_number}.pdf"}
+        headers={"Content-Disposition": f"inline; filename={document['filename']}"},
     )
 
 
@@ -11311,12 +11363,8 @@ async def delete_ancillary_charge(
     db.commit()
 
 
-@router.get("/deposits/{deposit_id}/receipt/pdf")
-async def get_deposit_receipt_pdf(
-    deposit_id: int,
-    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
-    db: Session = Depends(get_db),
-):
+def build_deposit_receipt_document(db: Session, current_user: User, deposit_id: int) -> dict:
+    require_feature_permission(Modules.INPATIENT, "view_bill")(current_user=current_user, db=db)
     d = db.query(AdmissionDeposit).filter(AdmissionDeposit.id == deposit_id).first()
     if not d:
         raise HTTPException(status_code=404, detail="Deposit not found")
@@ -11358,10 +11406,30 @@ async def get_deposit_receipt_pdf(
         pdf_buffer = pdf_service.generate_refund_receipt_pdf(deposit_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'refund_receipt'))
     else:
         pdf_buffer = pdf_service.generate_deposit_receipt_pdf(deposit_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'deposit_receipt'))
+    filename = f"receipt-{d.deposit_number}.pdf"
+    return {
+        "pdf_bytes": pdf_buffer.getvalue() if hasattr(pdf_buffer, "getvalue") else pdf_buffer.read(),
+        "filename": filename,
+        "phone": (patient.primary_phone if patient else "") or "",
+        "patient_name": deposit_data["patient_name"],
+        "reference": d.deposit_number or "",
+        "document_date": d.received_at,
+        "resource_type": "AdmissionDeposit",
+        "resource_id": str(d.id),
+    }
+
+
+@router.get("/deposits/{deposit_id}/receipt/pdf")
+async def get_deposit_receipt_pdf(
+    deposit_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
+    db: Session = Depends(get_db),
+):
+    document = build_deposit_receipt_document(db, current_user, deposit_id)
     return StreamingResponse(
-        pdf_buffer,
+        io.BytesIO(document["pdf_bytes"]),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="receipt-{d.deposit_number}.pdf"'},
+        headers={"Content-Disposition": f'inline; filename="{document["filename"]}"'},
     )
 
 

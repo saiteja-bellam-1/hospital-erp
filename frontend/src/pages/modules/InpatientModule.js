@@ -18,6 +18,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { printPdfFromUrl } from '../../utils/printPdf';
 import { errorDetail } from '../../utils/apiErrors';
 import PdfPreviewDialog from '../../components/PdfPreviewDialog';
+import WhatsAppSendButton from '../../components/WhatsAppSendButton';
 import AdmitPatientWizard from './inpatient/AdmitPatientWizard';
 import PreAuthorisationsTab from './inpatient/PreAuthorisationsTab';
 import PatientSearchPicker from '../../components/PatientSearchPicker';
@@ -348,6 +349,8 @@ const InpatientModule = () => {
   const [showBillPdfDialog, setShowBillPdfDialog] = useState(false);
   const [billPdfUrl, setBillPdfUrl] = useState(null);
   const [billPdfAdmissionId, setBillPdfAdmissionId] = useState(null);
+  const [billPdfBillId, setBillPdfBillId] = useState(null);
+  const [billPdfInterim, setBillPdfInterim] = useState(false);
   const [billPdfIncludeHeader, setBillPdfIncludeHeader] = useState(false);
   const [billPdfLoading, setBillPdfLoading] = useState(false);
   const [nursingNotes, setNursingNotes] = useState([]);
@@ -3168,6 +3171,8 @@ const InpatientModule = () => {
       const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
       setBillPdfUrl(url);
       setBillPdfAdmissionId(admissionId);
+      setBillPdfBillId(billId || null);
+      setBillPdfInterim(Boolean(opts.asInterim) && !billId);
       setShowBillPdfDialog(true);
     } catch (err) {
       let msg = 'Failed to generate bill PDF';
@@ -3189,6 +3194,8 @@ const InpatientModule = () => {
     setShowBillPdfDialog(false);
     if (billPdfUrl) { URL.revokeObjectURL(billPdfUrl); setBillPdfUrl(null); }
     setBillPdfAdmissionId(null);
+    setBillPdfBillId(null);
+    setBillPdfInterim(false);
   };
 
   const printBillPdf = () => {
@@ -4481,6 +4488,14 @@ const InpatientModule = () => {
                                           <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => handlePrintDepositReceipt(d.id)}>
                                             <FileText className="h-3.5 w-3.5" />
                                           </Button>
+                                          {d.deposit_type !== 'refund' && (
+                                            <WhatsAppSendButton
+                                              kind="deposit_receipt"
+                                              resourceId={d.id}
+                                              label=""
+                                              className="h-6 px-1.5"
+                                            />
+                                          )}
                                         </td>
                                       </tr>
                                     ))}
@@ -9520,6 +9535,13 @@ const InpatientModule = () => {
           </p>
           <div className="flex items-center gap-3 pt-3">
             <div className="flex-1" />
+            {!billPdfInterim && billPdfAdmissionId && (
+              <WhatsAppSendButton
+                kind="inpatient_bill"
+                resourceId={billPdfBillId ? `${billPdfAdmissionId}:${billPdfBillId}` : billPdfAdmissionId}
+                disabled={!billPdfUrl}
+              />
+            )}
             <Button variant="outline" onClick={printBillPdf} disabled={!billPdfUrl}>
               <Printer className="h-4 w-4 mr-1" /> Print
             </Button>

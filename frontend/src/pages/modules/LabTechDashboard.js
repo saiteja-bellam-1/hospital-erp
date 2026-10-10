@@ -457,6 +457,7 @@ const LabTechDashboard = () => {
       path: `/api/lab/reports/package/${packageBookingId}/download`,
       title: `${packageName || 'Package'} — All Reports`,
       filename: `${packageName || 'package'}_reports.pdf`,
+      whatsapp: { kind: 'lab_report_package', resourceId: packageBookingId },
     });
   };
 
@@ -466,6 +467,7 @@ const LabTechDashboard = () => {
       path: `/api/lab/reports/${reportId}/download`,
       title: 'Lab Report Preview',
       filename: `lab_report_${reportId}.pdf`,
+      whatsapp: { kind: 'lab_report', resourceId: reportId },
     });
   };
 
@@ -530,6 +532,7 @@ const LabTechDashboard = () => {
       title: `Combined Lab Reports (${ids.length})`,
       params: { report_ids: ids.join(',') },
       filename: 'combined_lab_reports.pdf',
+      whatsapp: { kind: 'lab_report_combined', resourceId: ids.join(',') },
     });
   };
 
@@ -1679,6 +1682,7 @@ const LabTechDashboard = () => {
         params={reportPreview?.params || {}}
         filename={reportPreview?.filename || 'lab_report.pdf'}
         letterheadReportType="lab_report"
+        whatsapp={reportPreview?.whatsapp || null}
       />
 
     </div>

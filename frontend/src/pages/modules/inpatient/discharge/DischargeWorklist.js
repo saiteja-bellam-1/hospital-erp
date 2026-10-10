@@ -266,6 +266,7 @@ const DischargeWorklist = ({ onPick, refreshKey = 0 }) => {
                     <td className="py-2 px-3">{needsLabel(a, bucket)}</td>
                     <td className="py-2 px-3 text-right" onClick={e => e.stopPropagation()}>
                       <DischargePrintBar
+                        admissionId={a.id}
                         onClickStopPropagation
                         canPrintFinalBill={!!a.finalBill}
                         canPrintDischargeSummary={summaryIsReady(a.summaryStatus)}

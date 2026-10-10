@@ -132,17 +132,41 @@ def _pdf_meta(
 ) -> Optional[dict]:
     """Canonical PDF path for PdfPreviewDialog after a catch-up create."""
     if appointment_id:
-        return {"path": f"/api/appointments/{appointment_id}/bill/download", "title": title}
+        return {
+            "path": f"/api/appointments/{appointment_id}/bill/download",
+            "title": title,
+            "whatsapp": {"kind": "appointment_bill", "resourceId": appointment_id},
+        }
     if lab_group_id:
-        return {"path": f"/api/lab/bills/{lab_group_id}/pdf", "title": title}
+        return {
+            "path": f"/api/lab/bills/{lab_group_id}/pdf",
+            "title": title,
+            "whatsapp": {"kind": "lab_bill", "resourceId": lab_group_id},
+        }
     if admission_id:
-        return {"path": f"/api/inpatient/admissions/{admission_id}/bill/pdf", "title": title}
+        return {
+            "path": f"/api/inpatient/admissions/{admission_id}/bill/pdf",
+            "title": title,
+            "whatsapp": {"kind": "inpatient_bill", "resourceId": admission_id},
+        }
     if pharmacy_sale_id:
-        return {"path": f"/api/pharmacy/sales/{pharmacy_sale_id}/invoice/pdf", "title": title}
+        return {
+            "path": f"/api/pharmacy/sales/{pharmacy_sale_id}/invoice/pdf",
+            "title": title,
+            "whatsapp": {"kind": "pharmacy_sale", "resourceId": pharmacy_sale_id},
+        }
     if canteen_sale_id:
-        return {"path": f"/api/canteen/sales/{canteen_sale_id}/receipt/pdf", "title": title}
+        return {
+            "path": f"/api/canteen/sales/{canteen_sale_id}/receipt/pdf",
+            "title": title,
+            "whatsapp": {"kind": "canteen_receipt", "resourceId": canteen_sale_id},
+        }
     if bill_id:
-        return {"path": f"/api/hospital/billing/bills/{bill_id}/pdf", "title": title}
+        return {
+            "path": f"/api/hospital/billing/bills/{bill_id}/pdf",
+            "title": title,
+            "whatsapp": {"kind": "hospital_bill", "resourceId": bill_id},
+        }
     return None
 
 
@@ -691,6 +715,7 @@ async def catch_up_lab_submit_results(
         "pdf": {
             "path": f"/api/lab/reports/{report.id}/download",
             "title": f"Lab report — {order.order_number}",
+            "whatsapp": {"kind": "lab_report", "resourceId": report.id},
         },
     }
 

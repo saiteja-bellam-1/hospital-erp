@@ -12,6 +12,7 @@ EXPLICIT_LOGGED = {
     "/api/auth/login", "/api/patients", "/api/appointments",
     "/api/lab/orders", "/api/admin/users", "/api/license/upload",
     "/api/backup/run", "/api/referrals",
+    "/api/whatsapp/documents", "/api/whatsapp/settings",
 }
 
 SKIP_PATHS = {"/profile", "/api/license/status",

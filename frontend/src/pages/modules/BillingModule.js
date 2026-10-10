@@ -267,6 +267,29 @@ const BillingModule = () => {
     setEditBill(bill);
   };
 
+  const whatsappForBill = (bill) => {
+    if (!bill) return null;
+    const phone = bill.patient_phone || '';
+    if (bill.type === 'pharmacy' && !(bill.is_catch_up || String(bill.id || '').startsWith('CU-'))) {
+      return bill.bill_id ? { kind: 'pharmacy_sale', resourceId: bill.bill_id, phone } : null;
+    }
+    if (bill.type === 'lab' && bill.lab_bill_group_id) {
+      return { kind: 'lab_bill', resourceId: bill.lab_bill_group_id, phone };
+    }
+    if (bill.type === 'lab' && bill.bill_id) {
+      return { kind: 'lab_order_bill', resourceId: bill.bill_id, phone };
+    }
+    if (bill.type === 'consultation' && bill.bill_id) {
+      return { kind: 'appointment_bill', resourceId: bill.bill_id, phone };
+    }
+    if (bill.type === 'admission' && bill.admission_id) {
+      const resourceId = bill.bill_id ? `${bill.admission_id}:${bill.bill_id}` : bill.admission_id;
+      return { kind: 'inpatient_bill', resourceId, phone };
+    }
+    if (bill.bill_id) return { kind: 'hospital_bill', resourceId: bill.bill_id, phone };
+    return null;
+  };
+
   const handleViewBill = (bill) => {
     if (bill.type === 'admission' || bill.type === 'consolidated' || bill.type === 'day_care' || bill.type === 'physiotherapy') {
       openBillDetail(bill);
@@ -274,7 +297,11 @@ const BillingModule = () => {
     }
     const path = getBillPdfPath(bill);
     if (path) {
-      setPdfPreview({ title: `Bill — ${bill.reference || bill.patient_name}`, path });
+      setPdfPreview({
+        title: `Bill — ${bill.reference || bill.patient_name}`,
+        path,
+        whatsapp: whatsappForBill(bill),
+      });
     }
   };
 
@@ -1416,6 +1443,7 @@ const BillingModule = () => {
                       <Button variant="outline" onClick={() => setPdfPreview({
                         title: `Bill — ${detailBill.reference || detailBill.patient_name}`,
                         path: getBillPdfPath(detailBill),
+                        whatsapp: whatsappForBill(detailBill),
                       })}>
                         <Eye className="h-4 w-4 mr-1" /> View PDF
                       </Button>
@@ -1917,6 +1945,7 @@ const BillingModule = () => {
         onClose={() => setPdfPreview(null)}
         title={pdfPreview?.title || 'Bill Preview'}
         path={pdfPreview?.path || null}
+        whatsapp={pdfPreview?.whatsapp || null}
       />
 
       <EditBillDialog

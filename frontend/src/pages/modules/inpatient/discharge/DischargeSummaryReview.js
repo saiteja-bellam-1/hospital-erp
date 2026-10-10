@@ -26,6 +26,7 @@ const DischargeSummaryReview = ({
           readOnly={summary?.status === 'locked'}
           onEdit={onEdit}
           onPrint={summaryIsReadyForPrint(summary?.status) ? handlePrint : undefined}
+          admissionId={summaryIsReadyForPrint(summary?.status) ? admissionId : null}
         />
       </CardContent>
     </Card>

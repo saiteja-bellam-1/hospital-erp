@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
-import { Download, Printer } from 'lucide-react';
+import { Download, MessageCircle, Printer } from 'lucide-react';
 import {
   resolveIncludeHeaderForReport,
   usePdfPrintSettings,
@@ -23,7 +23,19 @@ import {
  *   filename string — optional download filename (defaults to document.pdf)
  *   letterheadReportType string|null — when set (e.g. "lab_report"), show
  *     Include letterhead checkbox that re-fetches with include_header
+ *   whatsapp { kind, resourceId, phone } | null — Send on WhatsApp when the
+ *     license add-on is on. Omit it for staff-only PDFs.
  */
+function apiErrorMessage(error, fallback) {
+  const detail = error?.response?.data?.detail;
+  if (typeof detail === 'string' && detail) return detail;
+  if (Array.isArray(detail)) {
+    const parts = detail.map((item) => (typeof item === 'string' ? item : item?.msg)).filter(Boolean);
+    if (parts.length) return parts.join(', ');
+  }
+  return fallback;
+}
+
 const PdfPreviewDialog = ({
   open,
   onClose,
@@ -32,12 +44,18 @@ const PdfPreviewDialog = ({
   params = {},
   filename = 'document.pdf',
   letterheadReportType = null,
+  whatsapp = null,
 }) => {
   const [pdfUrl, setPdfUrl] = useState(null);
   const [loading, setLoading] = useState(false);
   const { settings, isLoading: settingsLoading } = usePdfPrintSettings();
   const [includeHeader, setIncludeHeader] = useState(true);
   const [headerInitialized, setHeaderInitialized] = useState(false);
+  const [whatsappEnabled, setWhatsappEnabled] = useState(false);
+  const [showWhatsapp, setShowWhatsapp] = useState(false);
+  const [whatsappPhone, setWhatsappPhone] = useState('');
+  const [whatsappSending, setWhatsappSending] = useState(false);
+  const [whatsappNotice, setWhatsappNotice] = useState('');
 
   // Seed the letterhead checkbox once per open from Print Settings — do not
   // reset if settings cache identity changes after the user toggles.
@@ -51,6 +69,33 @@ const PdfPreviewDialog = ({
     setIncludeHeader(resolveIncludeHeaderForReport(settings, letterheadReportType));
     setHeaderInitialized(true);
   }, [open, letterheadReportType, settings, settingsLoading, headerInitialized]);
+
+  useEffect(() => {
+    if (!open || !whatsapp?.kind || !whatsapp?.resourceId) {
+      setWhatsappEnabled(false);
+      setShowWhatsapp(false);
+      setWhatsappNotice('');
+      return undefined;
+    }
+    let cancelled = false;
+    setWhatsappPhone(whatsapp.phone || '');
+    setWhatsappNotice('');
+    setShowWhatsapp(false);
+    axios.get('/api/whatsapp/status')
+      .then((res) => {
+        if (!cancelled) setWhatsappEnabled(Boolean(res.data?.enabled));
+      })
+      .catch(() => {
+        if (!cancelled) setWhatsappEnabled(false);
+      });
+    axios.get('/api/whatsapp/documents/defaults', {
+      params: { kind: whatsapp.kind, resource_id: whatsapp.resourceId },
+    }).then((res) => {
+      if (cancelled) return;
+      if (!whatsapp.phone && res.data?.phone) setWhatsappPhone(res.data.phone);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [open, whatsapp?.kind, whatsapp?.resourceId, whatsapp?.phone]);
 
   const requestParams = {
     ...params,
@@ -116,6 +161,28 @@ const PdfPreviewDialog = ({
     await printPdfFromUrl(pdfUrl);
   };
 
+  const handleSendWhatsapp = async () => {
+    if (!whatsapp?.kind || !whatsapp?.resourceId) return;
+    setWhatsappSending(true);
+    setWhatsappNotice('');
+    try {
+      await axios.post('/api/whatsapp/documents', {
+        kind: whatsapp.kind,
+        resource_id: String(whatsapp.resourceId),
+        phone: whatsappPhone,
+        ...(letterheadReportType && headerInitialized
+          ? { include_header: includeHeader }
+          : {}),
+      });
+      setWhatsappNotice('Sent on WhatsApp.');
+      setShowWhatsapp(false);
+    } catch (error) {
+      setWhatsappNotice(apiErrorMessage(error, 'Could not send the WhatsApp message.'));
+    } finally {
+      setWhatsappSending(false);
+    }
+  };
+
   const handleDownload = () => {
     if (!pdfUrl) return;
     const anchor = document.createElement('a');
@@ -167,10 +234,43 @@ const PdfPreviewDialog = ({
               </div>
             )}
           </div>
+          {whatsappNotice && (
+            <p className="text-sm text-gray-700">{whatsappNotice}</p>
+          )}
+          {showWhatsapp && (
+            <div className="flex flex-wrap items-end gap-2 rounded-lg border p-3">
+              <div className="flex-1 min-w-[180px]">
+                <Label htmlFor="whatsapp-phone" className="text-xs">WhatsApp number</Label>
+                <input
+                  id="whatsapp-phone"
+                  className="mt-1 flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+                  value={whatsappPhone}
+                  onChange={(e) => setWhatsappPhone(e.target.value)}
+                  placeholder="10-digit mobile"
+                />
+              </div>
+              <Button onClick={handleSendWhatsapp} disabled={whatsappSending || !whatsappPhone.trim()}>
+                {whatsappSending ? 'Sending…' : 'Send'}
+              </Button>
+              <Button variant="outline" onClick={() => setShowWhatsapp(false)} disabled={whatsappSending}>
+                Cancel
+              </Button>
+            </div>
+          )}
           <div className="flex items-center gap-3">
             <Button variant="outline" onClick={handleClose} className="flex-1">
               Close
             </Button>
+            {whatsappEnabled && whatsapp?.kind && (
+              <Button
+                variant="outline"
+                onClick={() => { setShowWhatsapp(true); setWhatsappNotice(''); }}
+                disabled={!pdfUrl || loading}
+                className="flex-1"
+              >
+                <MessageCircle className="h-4 w-4 mr-2" /> WhatsApp
+              </Button>
+            )}
             <Button
               variant="outline"
               onClick={handleDownload}

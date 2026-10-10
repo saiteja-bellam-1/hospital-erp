@@ -27,6 +27,7 @@ SKIP_PATHS = [
     "/openapi.json",
     "/redoc",
     "/uploads",
+    "/api/whatsapp/media",
     "/static",
     "/sw.js",
     "/manifest.json",

@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Textarea } from '../../../components/ui/textarea';
 import { useToast } from '../../../hooks/use-toast';
 import { ConfirmDialog } from '../../../components/ui/confirm-dialog';
+import WhatsAppSendButton from '../../../components/WhatsAppSendButton';
 import PatientSearchPicker from '../../../components/PatientSearchPicker';
 import ReferralSelectWithCreate from '../../../components/ReferralSelectWithCreate';
 import AppointmentAvailabilityOverride from '../../../components/AppointmentAvailabilityOverride';
@@ -1803,6 +1804,9 @@ const ReceptionAppointmentsPage = () => {
             </div>
             <div className="flex justify-end gap-2 pt-4">
               <Button variant="outline" onClick={closePrescriptionPreview}>Close</Button>
+              {prescriptionData?.prescription_id && (
+                <WhatsAppSendButton kind="prescription" resourceId={prescriptionData.prescription_id} />
+              )}
               <Button onClick={printPrescription} className="bg-purple-600 hover:bg-purple-700">
                 <Printer className="h-4 w-4 mr-2" />
                 Print

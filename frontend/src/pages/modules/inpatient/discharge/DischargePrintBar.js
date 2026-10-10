@@ -1,5 +1,6 @@
 import React from 'react';
 import { Button } from '../../../../components/ui/button';
+import WhatsAppSendButton from '../../../../components/WhatsAppSendButton';
 
 const ACTIONS = [
   {
@@ -47,6 +48,7 @@ const DischargePrintBar = ({
   canPrintDetailedSummary = true,
   className = '',
   onClickStopPropagation = false,
+  admissionId = null,
 }) => {
   const props = {
     onPrintFinalBill,
@@ -82,6 +84,16 @@ const DischargePrintBar = ({
           </Button>
         );
       })}
+      {admissionId && (
+        <span onClick={(e) => e.stopPropagation()} className="inline-flex gap-1.5">
+          {canPrintFinalBill && (
+            <WhatsAppSendButton kind="inpatient_bill" resourceId={admissionId} label="Bill" className="h-8 text-xs" />
+          )}
+          {canPrintDischargeSummary && (
+            <WhatsAppSendButton kind="discharge_summary" resourceId={admissionId} label="Summary" className="h-8 text-xs" />
+          )}
+        </span>
+      )}
     </div>
   );
 };

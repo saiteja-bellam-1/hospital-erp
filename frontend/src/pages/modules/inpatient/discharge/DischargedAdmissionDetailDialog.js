@@ -111,6 +111,7 @@ const DischargedAdmissionDetailDialog = ({
               </div>
 
               <DischargePrintBar
+                admissionId={admissionId}
                 canPrintFinalBill={admission.status === 'discharged'}
                 canPrintDischargeSummary={ready}
                 canPrintGatePass={admission.status === 'discharged'}

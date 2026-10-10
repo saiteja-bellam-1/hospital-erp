@@ -5863,17 +5863,12 @@ async def issue_credit_note(
     }
 
 
-@router.get("/billing/bills/{bill_id}/pdf")
-async def get_bill_pdf(
-    bill_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Generic PDF for any Bill row (procedure / consolidated / etc.).
+def build_central_bill_document(db: Session, current_user: User, bill_id: int) -> dict:
+    """Render a central Bill PDF and the fields needed to send it.
 
-    Pharmacy catch-up (and any central Bill with bill_type='pharmacy') uses the
-    same retail invoice layout as the pharmacy module so qty / price / total
-    columns match POS prints. Other bill types use the OPD `generate_bill_pdf`.
+    Shared by the bill download route and WhatsApp. Pharmacy catch-up (and any
+    central Bill with bill_type='pharmacy') uses the retail invoice layout.
+    Other bill types use the OPD bill layout.
     """
     if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin', 'receptionist', 'doctor']):
         raise HTTPException(status_code=403, detail="Not authorized")
@@ -5892,7 +5887,6 @@ async def get_bill_pdf(
                    or created_by.username) if created_by else ""
 
     from app.utils.pdf_service import pdf_service
-    from fastapi.responses import Response
 
     # Pharmacy central bills (incl. financial catch-up): retail invoice layout.
     if (bill.bill_type or "").lower() == "pharmacy":
@@ -5962,10 +5956,16 @@ async def get_bill_pdf(
             sale_data, hi,
             **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_sale_invoice'),
         )
-        return Response(
-            content=buf.getvalue(), media_type="application/pdf",
-            headers={"Content-Disposition": f'inline; filename="{bill.bill_number}.pdf"'},
-        )
+        return {
+            "pdf_bytes": buf.getvalue(),
+            "filename": f"{bill.bill_number}.pdf",
+            "phone": patient.primary_phone if patient else "",
+            "patient_name": sale_data["patient_name"],
+            "reference": bill.bill_number or "",
+            "document_date": bill.bill_date,
+            "resource_type": "Bill",
+            "resource_id": str(bill.id),
+        }
 
     # Hide Paid/Balance for fresh unpaid bills (procedure / consolidated /
     # any bill that has no payments yet) — the printed bill should read as
@@ -6007,8 +6007,32 @@ async def get_bill_pdf(
         "hospital_subname": getattr(hospital, "hospital_subname", "") if hospital else "",
     }
     buf = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'opd_bill'))
-    return Response(content=buf.getvalue(), media_type="application/pdf",
-                    headers={"Content-Disposition": f'inline; filename="{bill.bill_number}.pdf"'})
+    return {
+        "pdf_bytes": buf.getvalue(),
+        "filename": f"{bill.bill_number}.pdf",
+        "phone": patient.primary_phone if patient else "",
+        "patient_name": bill_data["patient_name"],
+        "reference": bill.bill_number or "",
+        "document_date": bill.bill_date,
+        "resource_type": "Bill",
+        "resource_id": str(bill.id),
+    }
+
+
+@router.get("/billing/bills/{bill_id}/pdf")
+async def get_bill_pdf(
+    bill_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Generic PDF for any Bill row (procedure / consolidated / etc.)."""
+    document = build_central_bill_document(db, current_user, bill_id)
+    from fastapi.responses import Response
+    return Response(
+        content=document["pdf_bytes"],
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{document["filename"]}"'},
+    )
 
 @router.get("/billing/bills/{bill_id}/credit-note/pdf")
 async def credit_note_pdf(

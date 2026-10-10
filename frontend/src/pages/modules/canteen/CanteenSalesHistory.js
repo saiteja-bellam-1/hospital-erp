@@ -120,6 +120,7 @@ export default function CanteenSalesHistory({ canVoid = false }) {
         onClose={() => setPreviewId(null)}
         title="Canteen sale receipt"
         path={previewId ? `/api/canteen/sales/${previewId}/receipt/pdf` : null}
+        whatsapp={previewId ? { kind: 'canteen_receipt', resourceId: previewId } : null}
       />
     </div>
   );

@@ -99,6 +99,7 @@ const DaysLeft = ({ days }) => {
 const FEATURE_LABELS = {
   physiotherapy: 'Physiotherapy',
   customisation: 'Customisation',
+  whatsapp: 'WhatsApp',
 };
 
 const FeatureTag = ({ name }) => (
@@ -145,6 +146,7 @@ const LICENSE_STEPS = [
 ];
 
 const CUSTOMISATION_ADDON = 'customisation';
+const WHATSAPP_ADDON = 'whatsapp';
 
 function withFeature(features, key, on) {
   const next = (features || []).filter((f) => f !== key);
@@ -2253,6 +2255,12 @@ function App() {
                   title="Customisation"
                   description="Unlocks white-label branding (app name, logo, favicon). Print customisations are always included. Leave off unless this customer bought the add-on."
                 />
+                <ToggleRow
+                  checked={form.features.includes(WHATSAPP_ADDON)}
+                  onChange={(on) => setForm({ ...form, features: withFeature(form.features, WHATSAPP_ADDON, on) })}
+                  title="WhatsApp"
+                  description="Send invoices, lab reports, and other patient documents on WhatsApp. Leave off unless this customer bought the add-on."
+                />
               </div>
             </div>
           )}
@@ -2310,6 +2318,12 @@ function App() {
                   onChange={(on) => setForm({ ...form, features: withFeature(form.features, CUSTOMISATION_ADDON, on) })}
                   title="Customisation"
                   description="White-label branding: app name, logo, and favicon."
+                />
+                <ToggleRow
+                  checked={form.features.includes(WHATSAPP_ADDON)}
+                  onChange={(on) => setForm({ ...form, features: withFeature(form.features, WHATSAPP_ADDON, on) })}
+                  title="WhatsApp"
+                  description="Send patient documents on WhatsApp from the hospital ERP."
                 />
               </div>
               <div className="border-t border-slate-700/30 pt-4">
@@ -2455,6 +2469,12 @@ function App() {
                 onChange={(on) => setRenewForm({ ...renewForm, features: withFeature(renewForm.features, CUSTOMISATION_ADDON, on) })}
                 title="Customisation"
                 description="Unlocks white-label branding (app name, logo, favicon)."
+              />
+              <ToggleRow
+                checked={renewForm.features.includes(WHATSAPP_ADDON)}
+                onChange={(on) => setRenewForm({ ...renewForm, features: withFeature(renewForm.features, WHATSAPP_ADDON, on) })}
+                title="WhatsApp"
+                description="Send patient documents on WhatsApp from the hospital ERP."
               />
             </div>
 

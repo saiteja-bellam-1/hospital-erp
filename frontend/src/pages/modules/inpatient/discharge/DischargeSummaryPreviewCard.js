@@ -2,6 +2,7 @@ import React from 'react';
 import { Badge } from '../../../../components/ui/badge';
 import { Button } from '../../../../components/ui/button';
 import { CheckCircle2, Circle, FileText, Pencil, Printer, AlertTriangle } from 'lucide-react';
+import WhatsAppSendButton from '../../../../components/WhatsAppSendButton';
 
 import { DISCHARGE_SUMMARY_STATUS } from './constants';
 import { summaryIsReadyForPrint } from './dischargeSummaryUtils';
@@ -31,6 +32,7 @@ export default function DischargeSummaryPreviewCard({
   readOnly = false,
   onEdit,
   onPrint,
+  admissionId = null,
   compact = false,
 }) {
   const st = summary?.status || 'missing';
@@ -72,6 +74,9 @@ export default function DischargeSummaryPreviewCard({
             <Button size="sm" variant="outline" className="h-8" onClick={onPrint}>
               <Printer className="h-3.5 w-3.5 mr-1" /> Print
             </Button>
+          )}
+          {compact && canPrint && admissionId && (
+            <WhatsAppSendButton kind="discharge_summary" resourceId={admissionId} className="h-8" />
           )}
         </div>
       </div>
@@ -190,6 +195,9 @@ export default function DischargeSummaryPreviewCard({
             <Button size="sm" variant="outline" onClick={onPrint}>
               <Printer className="h-3.5 w-3.5 mr-1" /> Print
             </Button>
+          )}
+          {canPrint && admissionId && (
+            <WhatsAppSendButton kind="discharge_summary" resourceId={admissionId} />
           )}
         </div>
         )}

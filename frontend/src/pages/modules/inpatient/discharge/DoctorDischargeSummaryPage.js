@@ -9,6 +9,7 @@ import DischargeSummaryEditor from '../DischargeSummaryEditor';
 import { DISCHARGE_SUMMARY_STATUS } from './constants';
 import { prepareDischargeSummaryEdit, summaryIsReadyForPrint } from './dischargeSummaryUtils';
 import { printPdfFromUrl } from '../../../../utils/printPdf';
+import WhatsAppSendButton from '../../../../components/WhatsAppSendButton';
 import { useToast } from '../../../../hooks/use-toast';
 
 const isMyAdmission = (adm, doctorUserId) => (
@@ -156,6 +157,9 @@ const DoctorDischargeSummaryPage = ({
                       <Button size="sm" variant="outline" onClick={() => printSummary(adm)}>
                         <Printer className="h-3.5 w-3.5 mr-1" /> Print
                       </Button>
+                    )}
+                    {canPrint && (
+                      <WhatsAppSendButton kind="discharge_summary" resourceId={adm.id} />
                     )}
                     <Button size="sm" onClick={() => openEditor(adm)}>
                       <FileText className="h-3.5 w-3.5 mr-1" />

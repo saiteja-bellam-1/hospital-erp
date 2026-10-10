@@ -128,6 +128,7 @@ const DischargeHistory = ({
                   </td>
                   <td className="py-2 px-3 text-right" onClick={e => e.stopPropagation()}>
                     <DischargePrintBar
+                      admissionId={a.id}
                       onClickStopPropagation
                       canPrintFinalBill
                       canPrintDischargeSummary

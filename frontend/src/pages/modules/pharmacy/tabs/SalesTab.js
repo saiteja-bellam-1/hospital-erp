@@ -175,6 +175,7 @@ export default function SalesTab() {
         onClose={() => setPreviewSaleId(null)}
         title="Sale Invoice Preview"
         path={previewSaleId ? `/api/pharmacy/sales/${previewSaleId}/invoice/pdf` : null}
+        whatsapp={previewSaleId ? { kind: 'pharmacy_sale', resourceId: previewSaleId } : null}
       />
 
       <MappedImportDialog

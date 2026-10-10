@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { printPdfFromUrl } from '../../utils/printPdf';
+import WhatsAppSendButton from '../../components/WhatsAppSendButton';
 import LabTestBookingDialog from '../../components/LabTestBookingDialog';
 import PatientFileLabelDialog from '../../components/PatientFileLabelDialog';
 import ReferralSelectWithCreate from '../../components/ReferralSelectWithCreate';
@@ -556,6 +557,7 @@ const EHRPage = () => {
             <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title="Download prescription" onClick={(e) => { e.stopPropagation(); downloadPrescription(rx.prescription_id); }}>
               <Printer className="h-3.5 w-3.5" />
             </Button>
+            <WhatsAppSendButton kind="prescription" resourceId={rx.prescription_id} label="" className="h-7 px-1.5" />
             {isExpanded ? <ChevronUp className="h-4 w-4 text-gray-400" /> : <ChevronDown className="h-4 w-4 text-gray-400" />}
           </div>
         </div>
@@ -611,6 +613,7 @@ const EHRPage = () => {
               <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title="Download report" onClick={(e) => { e.stopPropagation(); downloadLabReport(lo.report.id, lo.order_number); }}>
                 <Printer className="h-3.5 w-3.5" />
               </Button>
+              <WhatsAppSendButton kind="lab_report" resourceId={lo.report.id} label="" className="h-7 px-1.5" />
             )}
             {isExpanded ? <ChevronUp className="h-4 w-4 text-gray-400" /> : <ChevronDown className="h-4 w-4 text-gray-400" />}
           </div>
@@ -1515,6 +1518,14 @@ const EHRPage = () => {
                               onClick={() => downloadDocument(doc)}>
                               <Download className="h-4 w-4" />
                             </Button>
+                            {doc.whatsapp?.kind && (
+                              <WhatsAppSendButton
+                                kind={doc.whatsapp.kind}
+                                resourceId={doc.whatsapp.resourceId}
+                                label=""
+                                className="h-8 px-1.5"
+                              />
+                            )}
                           </div>
                         </div>
                       ))}

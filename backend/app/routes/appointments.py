@@ -1552,13 +1552,9 @@ async def get_appointment_bill(
     
     return bill_data
 
-@router.get("/{appointment_id}/bill/download")
-async def download_appointment_bill(
-    appointment_id: int,
-    current_user: User = Depends(require_permission(Modules.OUTPATIENT, "read")),
-    db: Session = Depends(get_db)
-):
-    """Download appointment bill as PDF"""
+def build_appointment_bill_document(db: Session, current_user: User, appointment_id: int) -> dict:
+    """Render an OPD consultation bill. Shared by the download route and WhatsApp."""
+    require_permission(Modules.OUTPATIENT, "read")(current_user=current_user, db=db)
     # Get bill data
     appointment = db.query(Appointment).join(Patient).join(User, Appointment.doctor_id == User.id).filter(
         Appointment.id == appointment_id,
@@ -1642,9 +1638,30 @@ async def download_appointment_bill(
 
     # Generate PDF
     pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'opd_bill'))
+    filename = f"appointment_bill_{appointment.appointment_number}.pdf"
+    phone = getattr(patient, "primary_phone", "") or ""
+    return {
+        "pdf_bytes": pdf_buffer.getvalue() if hasattr(pdf_buffer, "getvalue") else pdf_buffer.read(),
+        "filename": filename,
+        "phone": phone,
+        "patient_name": bill_data.get("patient_name") or "",
+        "reference": bill_number,
+        "document_date": bill_data.get("bill_date") or "",
+        "resource_type": "Appointment",
+        "resource_id": str(appointment.id),
+    }
 
+
+@router.get("/{appointment_id}/bill/download")
+async def download_appointment_bill(
+    appointment_id: int,
+    current_user: User = Depends(require_permission(Modules.OUTPATIENT, "read")),
+    db: Session = Depends(get_db)
+):
+    """Download appointment bill as PDF"""
+    document = build_appointment_bill_document(db, current_user, appointment_id)
     return StreamingResponse(
-        io.BytesIO(pdf_buffer.read()),
+        io.BytesIO(document["pdf_bytes"]),
         media_type="application/pdf",
-        headers={"Content-Disposition": f"inline; filename=appointment_bill_{appointment.appointment_number}.pdf"}
+        headers={"Content-Disposition": f"inline; filename={document['filename']}"},
     )

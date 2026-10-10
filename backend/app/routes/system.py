@@ -45,10 +45,19 @@ async def get_enabled_modules(
 
         result.append(EnabledModule(module_name=module.module_name, is_enabled=enabled))
 
-    from app.services.license_service import FEATURE_CUSTOMISATION, license_allows_customisation
+    from app.services.license_service import (
+        FEATURE_CUSTOMISATION,
+        FEATURE_WHATSAPP,
+        license_allows_customisation,
+        license_allows_whatsapp,
+    )
     result.append(EnabledModule(
         module_name=FEATURE_CUSTOMISATION,
         is_enabled=license_allows_customisation(db),
+    ))
+    result.append(EnabledModule(
+        module_name=FEATURE_WHATSAPP,
+        is_enabled=license_allows_whatsapp(db),
     ))
 
     return result

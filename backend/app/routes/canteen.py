@@ -5,6 +5,7 @@ Permissions live under module_name=\"canteen\".
 """
 from __future__ import annotations
 
+import io
 from datetime import date, datetime
 from decimal import Decimal
 from typing import List, Optional
@@ -1002,12 +1003,9 @@ async def void_sale(
     return _sale_to_dict(sale)
 
 
-@router.get("/sales/{sale_id}/receipt/pdf")
-async def sale_receipt_pdf(
-    sale_id: int,
-    current_user: User = Depends(require_canteen_permission("view_sales")),
-    db: Session = Depends(get_db),
-):
+def build_canteen_receipt_document(db: Session, current_user: User, sale_id: int) -> dict:
+    """Render a canteen receipt. Shared by the PDF route and WhatsApp."""
+    require_canteen_permission("view_sales")(current_user=current_user, db=db)
     hospital = _get_hospital(db)
     sale = (
         db.query(CanteenSale)
@@ -1022,4 +1020,24 @@ async def sale_receipt_pdf(
     buf = pdf_service.generate_canteen_sale_receipt_pdf(
         shaped, hi, **pdf_gen_kwargs(db, hospital.id, "canteen_sale_receipt"),
     )
-    return _pdf_response(buf, f"{sale.sale_number}.pdf")
+    pdf_bytes = buf.getvalue() if hasattr(buf, "getvalue") else buf.read()
+    return {
+        "pdf_bytes": pdf_bytes,
+        "filename": f"{sale.sale_number}.pdf",
+        "phone": getattr(sale, "customer_phone", "") or "",
+        "patient_name": shaped.get("customer_name") or getattr(sale, "customer_name", "") or "Customer",
+        "reference": sale.sale_number or "",
+        "document_date": getattr(sale, "sale_date", None) or getattr(sale, "created_at", None),
+        "resource_type": "CanteenSale",
+        "resource_id": str(sale.id),
+    }
+
+
+@router.get("/sales/{sale_id}/receipt/pdf")
+async def sale_receipt_pdf(
+    sale_id: int,
+    current_user: User = Depends(require_canteen_permission("view_sales")),
+    db: Session = Depends(get_db),
+):
+    document = build_canteen_receipt_document(db, current_user, sale_id)
+    return _pdf_response(io.BytesIO(document["pdf_bytes"]), document["filename"])

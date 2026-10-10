@@ -924,16 +924,9 @@ async def update_prescription(
     
     return build_prescription_response(prescription, db)
 
-@router.get("/{prescription_id}/download")
-async def download_prescription_pdf(
-    prescription_id: str,
-    current_user: User = Depends(require_permission(Modules.OUTPATIENT, "read")),
-    db: Session = Depends(get_db)
-):
-    """Download a doctor-filled prescription PDF (vitals, findings, medicines, tests).
-
-    For blank/empty forms use POST /blank or GET /blank/download instead.
-    """
+def build_prescription_document(db: Session, current_user: User, prescription_id: str) -> dict:
+    """Render a filled prescription PDF. Shared by the download route and WhatsApp."""
+    require_permission(Modules.OUTPATIENT, "read")(current_user=current_user, db=db)
     import json as json_lib
     from app.models.ehr import Consultation
     from app.models.lab import PatientLabOrder, LabTest
@@ -1123,12 +1116,34 @@ async def download_prescription_pdf(
 
     # Create filename
     filename = f"prescription_{prescription.prescription_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    patient_name = f"{patient.first_name} {patient.last_name}".strip() if patient else "Patient"
+    return {
+        "pdf_bytes": pdf_buffer.getvalue(),
+        "filename": filename,
+        "phone": (patient.primary_phone if patient else "") or "",
+        "patient_name": patient_name,
+        "reference": prescription.prescription_id or "",
+        "document_date": getattr(prescription, "created_at", None),
+        "resource_type": "Prescription",
+        "resource_id": str(prescription.prescription_id or prescription_id)[:80],
+    }
 
-    # Return PDF as inline response (bytes — reliable in Windows bundled build)
+
+@router.get("/{prescription_id}/download")
+async def download_prescription_pdf(
+    prescription_id: str,
+    current_user: User = Depends(require_permission(Modules.OUTPATIENT, "read")),
+    db: Session = Depends(get_db)
+):
+    """Download a doctor-filled prescription PDF (vitals, findings, medicines, tests).
+
+    For blank/empty forms use POST /blank or GET /blank/download instead.
+    """
+    document = build_prescription_document(db, current_user, prescription_id)
     return Response(
-        content=pdf_buffer.getvalue(),
+        content=document["pdf_bytes"],
         media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
+        headers={"Content-Disposition": f"attachment; filename={document['filename']}"},
     )
 
 @router.delete("/{prescription_id}")

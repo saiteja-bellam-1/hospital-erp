@@ -48,9 +48,16 @@ def get_enabled_module_names(db: Session) -> set[str]:
             is_on = module.is_enabled
         if is_on or module.is_always_enabled:
             enabled.add(module.module_name)
-    from app.services.license_service import FEATURE_CUSTOMISATION, license_allows_customisation
+    from app.services.license_service import (
+        FEATURE_CUSTOMISATION,
+        FEATURE_WHATSAPP,
+        license_allows_customisation,
+        license_allows_whatsapp,
+    )
     if license_allows_customisation(db):
         enabled.add(FEATURE_CUSTOMISATION)
+    if license_allows_whatsapp(db):
+        enabled.add(FEATURE_WHATSAPP)
     return enabled
 
 

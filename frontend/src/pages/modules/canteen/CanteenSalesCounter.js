@@ -282,6 +282,7 @@ export default function CanteenSalesCounter({ canCreate = true, canViewSales = t
         onClose={() => setPreviewSaleId(null)}
         title="Canteen sale receipt"
         path={previewSaleId ? `/api/canteen/sales/${previewSaleId}/receipt/pdf` : null}
+        whatsapp={previewSaleId ? { kind: 'canteen_receipt', resourceId: previewSaleId, phone: customerPhone } : null}
       />
     </div>
   );
