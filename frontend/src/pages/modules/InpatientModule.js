@@ -1620,7 +1620,32 @@ const InpatientModule = () => {
     setCheckoutAdmissionId(admission.id);
   };
 
-  const handleCheckoutDeath = ({ admissionId }) => {
+  const mortalityFormFromSummary = async (admissionId, fallbackCause = '') => {
+    let cause = fallbackCause;
+    let time = localDateTimeString();
+    try {
+      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/discharge-summary`);
+      if ((res.data?.cause_of_death || '').trim()) cause = res.data.cause_of_death;
+      if (res.data?.time_of_death) time = localDateTimeString(res.data.time_of_death);
+    } catch {
+      /* Summary may not exist when death is recorded without one. */
+    }
+    return {
+      cause_of_death: cause,
+      time_of_death: time,
+      death_certificate_number: '',
+      mlc_required: false,
+      mlc_number: '',
+      autopsy_done: false,
+      autopsy_findings: '',
+      body_handed_over_to: '',
+      body_handover_relationship: '',
+      body_handover_time: '',
+      body_handover_id_proof: '',
+    };
+  };
+
+  const handleCheckoutDeath = async ({ admissionId }) => {
     fetchAdmissions('admitted');
     fetchDashboard();
     if (activityAdmission?.id === admissionId) {
@@ -1629,13 +1654,7 @@ const InpatientModule = () => {
         .catch(() => setActivityAdmission(null));
     }
     setMortalityAdmission({ id: admissionId, discharge: {} });
-    setMortalityForm({
-      cause_of_death: '', time_of_death: localDateTimeString(),
-      death_certificate_number: '', mlc_required: false, mlc_number: '',
-      autopsy_done: false, autopsy_findings: '',
-      body_handed_over_to: '', body_handover_relationship: '',
-      body_handover_time: '', body_handover_id_proof: '',
-    });
+    setMortalityForm(await mortalityFormFromSummary(admissionId));
     setShowMortalityDialog(true);
   };
 
@@ -1683,14 +1702,10 @@ const InpatientModule = () => {
       // On death, immediately prompt for mortality details
       if (wasDeath) {
         setMortalityAdmission({ id: admId, discharge: {} });
-        setMortalityForm({
-          cause_of_death: dischargeForm.diagnosis_on_discharge || '',
-          time_of_death: localDateTimeString(),
-          death_certificate_number: '', mlc_required: false, mlc_number: '',
-          autopsy_done: false, autopsy_findings: '',
-          body_handed_over_to: '', body_handover_relationship: '',
-          body_handover_time: '', body_handover_id_proof: '',
-        });
+        setMortalityForm(await mortalityFormFromSummary(
+          admId,
+          dischargeForm.diagnosis_on_discharge || '',
+        ));
         setShowMortalityDialog(true);
       }
       // On DAMA, immediately prompt for the signed form

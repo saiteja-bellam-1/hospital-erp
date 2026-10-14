@@ -12,6 +12,7 @@ from config.database import engine
 NEW_COLUMNS = [
     ("patients", "marital_status", "VARCHAR(20)"),
     ("patients", "abha_id", "VARCHAR(30)"),
+    ("patients", "aadhaar_number", "VARCHAR(12)"),
     ("patients", "email", "VARCHAR(100)"),
     ("patients", "emergency_contact_name", "VARCHAR(100)"),
     ("patients", "emergency_contact_relation", "VARCHAR(50)"),
@@ -311,6 +312,15 @@ NEW_COLUMNS = [
     ("patient_lab_orders", "partner_settlement_status", "VARCHAR(20)"),
     ("patient_lab_orders", "partner_invoice_ref", "VARCHAR(100)"),
     ("patient_lab_orders", "partner_settled_at", "DATETIME"),
+    ("admission_discharge_summaries", "dama_medical_advice", "TEXT"),
+    ("admission_discharge_summaries", "dama_risks_explained", "TEXT"),
+    ("admission_discharge_summaries", "dama_advice_acknowledged", "BOOLEAN DEFAULT 0"),
+    ("admission_discharge_summaries", "dama_absolves_acknowledged", "BOOLEAN DEFAULT 0"),
+    ("admission_discharge_summaries", "time_of_death", "DATETIME"),
+    ("admission_discharge_summaries", "cause_of_death", "TEXT"),
+    ("admission_discharge_summaries", "transfer_facility", "VARCHAR(200)"),
+    ("admission_discharge_summaries", "transfer_reason", "TEXT"),
+    ("admission_discharge_summaries", "transfer_contact", "VARCHAR(200)"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.

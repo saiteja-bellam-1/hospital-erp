@@ -147,6 +147,7 @@ def build_admission_clinical_summary(
         "gender": patient.gender if patient else "",
         "village": (patient.village or "") if patient else "",
         "district": (patient.district or "") if patient else "",
+        "aadhaar_number": _patient_aadhaar(patient),
         "admission_number": admission.admission_number,
         "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "N/A",
         "room_number": room.room_number if room else (admission.bed_number or ""),

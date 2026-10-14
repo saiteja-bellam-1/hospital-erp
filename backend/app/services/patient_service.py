@@ -24,7 +24,11 @@ def patient_search_match_clause(search_term: str):
         Patient.patient_id.ilike(like),
         Patient.mrn.ilike(like),
         Patient.mrn_ean13.ilike(like),
+        Patient.aadhaar_number.ilike(like),
     ]
+    aadhaar_digits = "".join(ch for ch in term if ch.isdigit())
+    if len(aadhaar_digits) == 12:
+        clauses.append(Patient.aadhaar_number == aadhaar_digits)
     for code in barcode_lookup_codes(term):
         clauses.append(Patient.mrn_ean13 == code)
     return or_(*clauses)
@@ -62,7 +66,7 @@ class PatientService:
     def create_patient(self, patient_data: Dict[str, Any]) -> Patient:
         allowed = {
             "first_name", "last_name", "date_of_birth", "age", "age_months", "gender",
-            "blood_group", "marital_status", "abha_id", "email",
+            "blood_group", "marital_status", "abha_id", "aadhaar_number", "email",
             "primary_phone", "emergency_contact_phone", "emergency_contact_name",
             "emergency_contact_relation", "address_line1", "address_line2",
             "village", "mandal", "district", "address", "referred_by",
@@ -274,6 +278,7 @@ class PatientService:
                 'age': age,
                 'gender': patient.gender,
                 'blood_group': patient.blood_group,
+                'aadhaar_number': getattr(patient, "aadhaar_number", None),
                 'primary_phone': patient.primary_phone,
                 'emergency_contact_phone': patient.emergency_contact_phone,
                 'address': patient.address,

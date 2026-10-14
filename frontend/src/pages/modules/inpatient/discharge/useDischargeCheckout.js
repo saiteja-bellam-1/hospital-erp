@@ -155,7 +155,9 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
       const draft = loadDraft(admissionId);
       const summaryClinical = summary ? {
         discharge_type: summary.discharge_type || 'normal',
-        condition_on_discharge: summary.condition_on_discharge || 'stable',
+        condition_on_discharge: summary.discharge_type === 'death'
+          ? ''
+          : (summary.condition_on_discharge || 'stable'),
       } : {};
       if (draft?.clinicalForm) {
         setClinicalForm({ ...EMPTY_CLINICAL_FORM, ...summaryClinical, ...draft.clinicalForm });
@@ -396,8 +398,10 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
   const buildDischargePayload = () => {
     const payload = {
       discharge_type: clinicalForm.discharge_type || summaryDoc?.discharge_type || 'normal',
-      condition_on_discharge: clinicalForm.condition_on_discharge
-        || summaryDoc?.condition_on_discharge || 'stable',
+      condition_on_discharge: (clinicalForm.discharge_type || summaryDoc?.discharge_type) === 'death'
+        ? null
+        : (clinicalForm.condition_on_discharge
+          || summaryDoc?.condition_on_discharge || 'stable'),
     };
     if (blockers.length > 0) {
       const codes = blockers.map(b => b.code);

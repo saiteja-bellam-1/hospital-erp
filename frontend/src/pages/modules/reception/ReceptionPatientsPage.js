@@ -31,6 +31,7 @@ import PatientRegisterFormFields, {
   buildPatientPayload,
   patientStepCanProceed,
   validatePatientForm,
+  aadhaarInputError,
 } from '../../../components/PatientRegisterFormFields';
 import { useToast } from '../../../hooks/use-toast';
 import { applyDobToForm, formatPatientAge, hasValidAge, parseAgeFields } from '../../../utils/patientAge';
@@ -56,7 +57,7 @@ const ReceptionPatientsPage = () => {
   // Edit patient form
   const [editPatientForm, setEditPatientForm] = useState({
     first_name: '', last_name: '', date_of_birth: '', age: '', age_months: '', gender: '',
-    blood_group: '', marital_status: '', abha_id: '', gstin: '', email: '',
+    blood_group: '', marital_status: '', abha_id: '', aadhaar_number: '', gstin: '', email: '',
     emergency_contact_name: '', emergency_contact_phone: '', emergency_contact_relation: '',
     address_line1: '', address_line2: '', village: '', mandal: '', district: ''
   });
@@ -277,6 +278,7 @@ const ReceptionPatientsPage = () => {
       blood_group: patient.blood_group || '',
       marital_status: patient.marital_status || '',
       abha_id: patient.abha_id || '',
+      aadhaar_number: patient.aadhaar_number || '',
       gstin: patient.gstin || '',
       email: patient.email || '',
       emergency_contact_name: patient.emergency_contact_name || '',
@@ -293,6 +295,11 @@ const ReceptionPatientsPage = () => {
 
   const handleUpdatePatient = async () => {
     if (!selectedPatient) return;
+    const aadhaarError = aadhaarInputError(editPatientForm.aadhaar_number);
+    if (aadhaarError) {
+      toast({ title: 'Update Failed', description: aadhaarError, variant: 'destructive' });
+      return;
+    }
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
@@ -754,6 +761,16 @@ const ReceptionPatientsPage = () => {
             <div>
               <Label>ABHA ID</Label>
               <Input value={editPatientForm.abha_id} onChange={(e) => setEditPatientForm({...editPatientForm, abha_id: e.target.value})} placeholder="14-digit ABHA number" />
+            </div>
+            <div>
+              <Label>Aadhaar Number</Label>
+              <Input
+                inputMode="numeric"
+                maxLength={12}
+                value={editPatientForm.aadhaar_number || ''}
+                onChange={(e) => setEditPatientForm({...editPatientForm, aadhaar_number: e.target.value.replace(/\D/g, '').slice(0, 12)})}
+                placeholder="12-digit Aadhaar"
+              />
             </div>
             <div>
               <Label>GSTIN (optional)</Label>

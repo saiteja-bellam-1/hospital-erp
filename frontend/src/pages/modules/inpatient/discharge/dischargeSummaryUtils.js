@@ -26,6 +26,20 @@ export function summaryIsReadyForPrint(status) {
   return status === 'ready' || status === 'locked';
 }
 
+export const DISCHARGE_TYPE_LABELS = {
+  normal: 'Normal',
+  against_advice: 'Against medical advice (DAMA)',
+  transfer: 'Transfer',
+  death: 'Death',
+};
+
+export const CONDITION_ON_DISCHARGE_LABELS = {
+  stable: 'Stable',
+  improved: 'Improved',
+  unchanged: 'Unchanged',
+  critical: 'Critical',
+};
+
 /**
  * Reopen a submitted summary to draft when needed, then return latest summary doc.
  */

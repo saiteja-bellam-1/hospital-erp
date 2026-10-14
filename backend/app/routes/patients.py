@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional
 from datetime import date, datetime
 import json
@@ -13,8 +13,13 @@ from app.utils.dependencies import get_current_user, require_permission, require
 from app.utils.auth import Modules
 from app.services.audit_service import log_action
 from app.utils.patient_age import has_valid_age, normalize_stored_age
+from app.utils.aadhaar import normalize_aadhaar
 
 router = APIRouter()
+
+
+def _clean_aadhaar(value):
+    return normalize_aadhaar(value)
 
 class PatientCreate(BaseModel):
     first_name: str = Field(..., min_length=1, max_length=50)
@@ -26,6 +31,7 @@ class PatientCreate(BaseModel):
     blood_group: Optional[str] = Field(None, max_length=5)
     marital_status: Optional[str] = Field(None, max_length=20)
     abha_id: Optional[str] = Field(None, max_length=30)
+    aadhaar_number: Optional[str] = Field(None, max_length=20)
     email: Optional[str] = Field(None, max_length=100)
     primary_phone: str = Field(..., min_length=10, max_length=15)
     emergency_contact_phone: Optional[str] = Field(None, max_length=15)
@@ -40,6 +46,11 @@ class PatientCreate(BaseModel):
     referred_by: Optional[str] = Field(None, max_length=100)
     gstin: Optional[str] = Field(None, max_length=20)
 
+    @field_validator("aadhaar_number", mode="before")
+    @classmethod
+    def _aadhaar(cls, value):
+        return _clean_aadhaar(value)
+
 class PatientResponse(BaseModel):
     id: int
     patient_id: str
@@ -53,6 +64,7 @@ class PatientResponse(BaseModel):
     blood_group: Optional[str]
     marital_status: Optional[str] = None
     abha_id: Optional[str] = None
+    aadhaar_number: Optional[str] = None
     email: Optional[str] = None
     primary_phone: str
     emergency_contact_phone: Optional[str]
@@ -84,6 +96,7 @@ class PatientSearchResponse(BaseModel):
     blood_group: Optional[str]
     marital_status: Optional[str] = None
     abha_id: Optional[str] = None
+    aadhaar_number: Optional[str] = None
     email: Optional[str] = None
     primary_phone: str
     emergency_contact_phone: Optional[str]
@@ -135,6 +148,7 @@ class PatientUpdate(BaseModel):
     blood_group: Optional[str] = Field(None, max_length=5)
     marital_status: Optional[str] = Field(None, max_length=20)
     abha_id: Optional[str] = Field(None, max_length=30)
+    aadhaar_number: Optional[str] = Field(None, max_length=20)
     email: Optional[str] = Field(None, max_length=100)
     emergency_contact_phone: Optional[str] = Field(None, max_length=15)
     emergency_contact_name: Optional[str] = Field(None, max_length=100)
@@ -146,6 +160,11 @@ class PatientUpdate(BaseModel):
     district: Optional[str] = Field(None, max_length=100)
     address: Optional[str] = None
     gstin: Optional[str] = Field(None, max_length=20)
+
+    @field_validator("aadhaar_number", mode="before")
+    @classmethod
+    def _aadhaar(cls, value):
+        return _clean_aadhaar(value)
 
 @router.post("/", response_model=PatientResponse)
 async def create_patient(

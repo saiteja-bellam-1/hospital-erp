@@ -18,6 +18,7 @@ import PatientRegisterFormFields, {
   buildPatientPayload,
   patientStepCanProceed,
   validatePatientForm,
+  formatAadhaarDisplay,
 } from '../../components/PatientRegisterFormFields';
 
 const PatientsModule = () => {
@@ -273,6 +274,7 @@ const PatientsModule = () => {
                 <div><span className="text-gray-500">MRN:</span> <span className="font-mono text-xs">{selectedPatient.mrn || '-'}</span></div>
                 {selectedPatient.email && <div><span className="text-gray-500">Email:</span> <span className="font-medium">{selectedPatient.email}</span></div>}
                 {selectedPatient.abha_id && <div><span className="text-gray-500">ABHA ID:</span> <span className="font-medium">{selectedPatient.abha_id}</span></div>}
+                {selectedPatient.aadhaar_number && <div><span className="text-gray-500">Aadhaar:</span> <span className="font-medium">{formatAadhaarDisplay(selectedPatient.aadhaar_number)}</span></div>}
               </div>
               {(selectedPatient.address_line1 || selectedPatient.village || selectedPatient.district) && (
                 <div className="text-sm">

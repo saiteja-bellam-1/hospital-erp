@@ -192,6 +192,17 @@ def _patient_age(patient):
 def _patient_age_display(patient):
     return format_patient_age(patient)
 
+
+def _patient_aadhaar(patient) -> str:
+    if not patient:
+        return ""
+    return (getattr(patient, "aadhaar_number", None) or "").strip()
+
+
+def _patient_aadhaar_display(patient) -> str:
+    from app.utils.aadhaar import format_aadhaar_display
+    return format_aadhaar_display(_patient_aadhaar(patient))
+
 # ============================================================
 # Pydantic Models
 # ============================================================
@@ -669,6 +680,15 @@ class DischargeSummaryUpsert(BaseModel):
     discharge_type: Optional[str] = Field(default=None, pattern="^(normal|against_advice|transfer|death)$")
     condition_on_discharge: Optional[str] = Field(
         default=None, pattern="^(stable|improved|unchanged|critical)$")
+    dama_medical_advice: Optional[str] = None
+    dama_risks_explained: Optional[str] = None
+    dama_advice_acknowledged: Optional[bool] = None
+    dama_absolves_acknowledged: Optional[bool] = None
+    time_of_death: Optional[datetime] = None
+    cause_of_death: Optional[str] = None
+    transfer_facility: Optional[str] = Field(default=None, max_length=200)
+    transfer_reason: Optional[str] = None
+    transfer_contact: Optional[str] = Field(default=None, max_length=200)
     take_home_medications: Optional[List[TakeHomeMedItem]] = None
     follow_up_date: Optional[datetime] = None
     diet_instructions: Optional[str] = None
@@ -699,6 +719,15 @@ class DischargeSummaryResponse(BaseModel):
     follow_up: Optional[str] = None
     discharge_type: Optional[str] = None
     condition_on_discharge: Optional[str] = None
+    dama_medical_advice: Optional[str] = None
+    dama_risks_explained: Optional[str] = None
+    dama_advice_acknowledged: Optional[bool] = False
+    dama_absolves_acknowledged: Optional[bool] = False
+    time_of_death: Optional[datetime] = None
+    cause_of_death: Optional[str] = None
+    transfer_facility: Optional[str] = None
+    transfer_reason: Optional[str] = None
+    transfer_contact: Optional[str] = None
     take_home_medications: Optional[List[dict]] = None
     follow_up_date: Optional[datetime] = None
     diet_instructions: Optional[str] = None
@@ -2442,6 +2471,7 @@ async def get_admission_case_sheet_pdf(
         "age": _age_str(patient),
         "gender": (patient.gender or "").title() if patient else "",
         "primary_phone": (getattr(patient, "primary_phone", None) or "") if patient else "",
+        "aadhaar_number": _patient_aadhaar(patient),
         "admission_number": admission.admission_number or "",
         "admission_date": format_bill_date(admission.admission_date, empty="") or format_bill_date(system_now()),
         "doctor_name": doctor_name,
@@ -3313,6 +3343,7 @@ async def get_handover_pdf(
         "admission_number": admission.admission_number if admission else "",
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
         "mrn": (patient.mrn or "") if patient else "",
+        "aadhaar_number": _patient_aadhaar(patient),
         "patient_id": patient.patient_id if patient else "",
         "room": room.room_number if room else "",
         "bed": (admission.bed.bed_label if admission and admission.bed else admission.bed_number) if admission else "",
@@ -4026,6 +4057,7 @@ def _build_summary_pdf_payload(db: Session, admission: Admission, summary: Admis
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "N/A",
         "mrn": (patient.mrn or patient.patient_id or "") if patient else "",
         "patient_phone": (patient.primary_phone or "") if patient else "",
+        "aadhaar_number": _patient_aadhaar(patient),
         "address_line": addr_line,
         "age": _patient_age(patient) or "",
         "age_display": _patient_age_display(patient),
@@ -4063,6 +4095,15 @@ def _build_summary_pdf_payload(db: Session, admission: Admission, summary: Admis
         "course_in_hospital": summary.course_in_hospital or "",
         "procedure_notes": summary.procedure_notes or "",
         "discharge_advice": summary.discharge_advice or "",
+        "dama_medical_advice": summary.dama_medical_advice or "",
+        "dama_risks_explained": summary.dama_risks_explained or "",
+        "dama_advice_acknowledged": bool(summary.dama_advice_acknowledged),
+        "dama_absolves_acknowledged": bool(summary.dama_absolves_acknowledged),
+        "time_of_death": format_system_dt(summary.time_of_death, fmt="%d-%b-%Y %H:%M", empty=""),
+        "cause_of_death": summary.cause_of_death or "",
+        "transfer_facility": summary.transfer_facility or "",
+        "transfer_reason": summary.transfer_reason or "",
+        "transfer_contact": summary.transfer_contact or "",
         "emergency_instructions": summary.emergency_instructions or "",
         "follow_up": summary.follow_up or "",
         "diagnosis": summary.primary_diagnosis or "",
@@ -4090,7 +4131,10 @@ def _apply_summary_to_discharge_create(summary: AdmissionDischargeSummary, data:
     if not payload.get("discharge_type"):
         payload["discharge_type"] = summary.discharge_type or "normal"
     if not payload.get("condition_on_discharge"):
-        payload["condition_on_discharge"] = summary.condition_on_discharge or "stable"
+        if payload.get("discharge_type") == "death":
+            payload["condition_on_discharge"] = None
+        else:
+            payload["condition_on_discharge"] = summary.condition_on_discharge or "stable"
     if not payload.get("diagnosis_on_discharge"):
         payload["diagnosis_on_discharge"] = summary.primary_diagnosis
     if not payload.get("treatment_given"):
@@ -4173,6 +4217,34 @@ async def upsert_discharge_summary(
     return _summary_to_response(db, summary, admission)
 
 
+def _validate_summary_identity(summary: AdmissionDischargeSummary) -> Optional[str]:
+    """Step-1 identity, plus the extra fields a DAMA summary must carry."""
+    if not (summary.discharge_type or "").strip():
+        return "Discharge type is required before finalizing"
+    if summary.discharge_type != "death" and not (summary.condition_on_discharge or "").strip():
+        return "Condition on discharge is required before finalizing"
+    if not summary.primary_doctor_id:
+        return "Primary doctor is required before finalizing"
+    if summary.discharge_type == "against_advice":
+        if not (summary.dama_medical_advice or "").strip():
+            return "Medical advice given is required for a DAMA discharge summary"
+        if not (summary.dama_risks_explained or "").strip():
+            return "Risks explained are required for a DAMA discharge summary"
+        if not summary.dama_advice_acknowledged or not summary.dama_absolves_acknowledged:
+            return "Both DAMA acknowledgements are required before finalizing"
+    elif summary.discharge_type == "death":
+        if not summary.time_of_death:
+            return "Time of death is required for a death summary"
+        if not (summary.cause_of_death or "").strip():
+            return "Cause of death is required for a death summary"
+    elif summary.discharge_type == "transfer":
+        if not (summary.transfer_facility or "").strip():
+            return "Receiving hospital is required for a transfer summary"
+        if not (summary.transfer_reason or "").strip():
+            return "Reason for transfer is required for a transfer summary"
+    return None
+
+
 @router.post("/admissions/{admission_id}/discharge-summary/finalize", response_model=DischargeSummaryResponse)
 async def finalize_discharge_summary(
     admission_id: int,
@@ -4195,6 +4267,9 @@ async def finalize_discharge_summary(
     err = validate_summary_against_template(summary, template)
     if err:
         raise HTTPException(status_code=400, detail=err)
+    identity_err = _validate_summary_identity(summary)
+    if identity_err:
+        raise HTTPException(status_code=400, detail=identity_err)
     summary.status = "ready"
     summary.finalized_by_id = current_user.id
     summary.finalized_at = datetime.now()
@@ -4550,6 +4625,9 @@ async def discharge_patient(
         total_stay_days=stay_days,
         total_charges=total_charges,
     )
+    if data.discharge_type == "death" and summary_doc:
+        discharge.cause_of_death = (summary_doc.cause_of_death or "").strip() or None
+        discharge.time_of_death = summary_doc.time_of_death
     db.add(discharge)
 
     if summary_doc and summary_doc.status == "ready":
@@ -4680,6 +4758,7 @@ async def get_discharge_pdf(
             "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "N/A",
             "mrn": (patient.mrn or "") if patient else "",
             "patient_phone": (patient.primary_phone or "") if patient else "",
+            "aadhaar_number": _patient_aadhaar(patient),
             "address_line": _format_full_patient_address(patient),
             "age": _patient_age(patient) or "",
             "age_display": _patient_age_display(patient),
@@ -7272,6 +7351,7 @@ async def get_bill_pdf(
             "age_display": _patient_age_display(patient),
             "gender": patient.gender if patient else "",
             "phone": patient.primary_phone if patient else "",
+            "aadhaar_number": _patient_aadhaar(patient),
             "address": ", ".join(filter(None, [
                 getattr(patient, "address_line1", None),
                 getattr(patient, "address_line2", None),
@@ -10020,6 +10100,7 @@ async def gate_pass_pdf(
         "admission_number": admission.admission_number if admission else "",
         "patient_name": (f"{patient.first_name} {patient.last_name}" if patient else "-"),
         "mrn": (patient.mrn or "") if patient else "",
+        "aadhaar_number": _patient_aadhaar(patient),
         "patient_id": patient.patient_id if patient else "-",
         "vehicle_no": gp.vehicle_no or "-",
         "attendant_name": gp.attendant_name or "-",
@@ -11341,6 +11422,7 @@ async def get_deposit_receipt_pdf(
         "mrn": (patient.mrn or "") if patient else "",
         "patient_id": patient.patient_id if patient else "—",
         "patient_phone": patient.primary_phone if patient else "",
+        "aadhaar_number": _patient_aadhaar(patient),
         "village": (patient.village or "") if patient else "",
         "district": (patient.district or "") if patient else "",
         "admission_number": admission.admission_number if admission else "—",
@@ -12684,6 +12766,8 @@ async def preview_consent_pdf(
         "patient_id": patient.patient_id,
         "primary_phone": getattr(patient, "primary_phone", None) or "",
         "phone": getattr(patient, "primary_phone", None) or "",
+        "aadhaar_number": _patient_aadhaar_display(patient),
+        "aadhaar": _patient_aadhaar_display(patient),
         "admission_number": admission_number,
         "admission_date": admission_date_str,
         "ward": getattr(room, "ward", "") if room else "",
@@ -12726,6 +12810,7 @@ async def preview_consent_pdf(
         "age": token_ctx["age"],
         "gender": token_ctx["gender"],
         "primary_phone": token_ctx["primary_phone"],
+        "aadhaar_number": token_ctx.get("aadhaar_number") or "",
         "village": (patient.village or "") if patient else "",
         "district": (patient.district or "") if patient else "",
         "emergency_contact_name": token_ctx["emergency_contact_name"],
@@ -12804,6 +12889,8 @@ async def get_consent_pdf(
         "patient_id": patient.patient_id if patient else "",
         "primary_phone": (getattr(patient, "primary_phone", None) or "") if patient else "",
         "phone": (getattr(patient, "primary_phone", None) or "") if patient else "",
+        "aadhaar_number": _patient_aadhaar_display(patient),
+        "aadhaar": _patient_aadhaar_display(patient),
         "admission_number": admission.admission_number if admission else "",
         "admission_date": format_bill_date(admission.admission_date if admission else None, empty=""),
         "ward": getattr(room, "ward", "") if room else "",
@@ -12841,6 +12928,7 @@ async def get_consent_pdf(
         "withdrawal_reason": c.withdrawal_reason or "",
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
         "mrn": getattr(patient, "mrn", None) or (patient.patient_id if patient else ""),
+        "aadhaar_number": _patient_aadhaar(patient),
         "patient_id": patient.patient_id if patient else "",
         "village": (getattr(patient, "village", None) or "") if patient else "",
         "district": (getattr(patient, "district", None) or "") if patient else "",
@@ -13056,6 +13144,7 @@ async def get_dama_pdf(
     dama_data = {
         "admission_number": admission.admission_number if admission else "",
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
+        "aadhaar_number": _patient_aadhaar(patient),
         "patient_id": patient.patient_id if patient else "",
         "age": _patient_age(patient) or "",
         "age_display": _patient_age_display(patient),
@@ -13126,6 +13215,7 @@ async def get_mlc_register_pdf(
         "age_display": _patient_age_display(patient),
         "gender": patient.gender if patient else "",
         "phone": patient.primary_phone if patient else "",
+        "aadhaar_number": _patient_aadhaar(patient),
         "address": addr,
         "brought_by": admission.emergency_contact or "",
         "arrival_mode": admission.arrival_mode or "",
@@ -13725,6 +13815,7 @@ async def death_certificate_pdf(
     cert_data = {
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
         "mrn": (patient.mrn or "") if patient else "",
+        "aadhaar_number": _patient_aadhaar(patient),
         "patient_id": patient.patient_id if patient else "",
         "age": _patient_age(patient) or "",
         "age_display": _patient_age_display(patient),
@@ -14900,6 +14991,7 @@ async def get_body_release_pdf(
         "admission_number": admission.admission_number,
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
         "mrn": (patient.mrn or "") if patient else "",
+        "aadhaar_number": _patient_aadhaar(patient),
         "patient_id": patient.patient_id if patient else "",
         "age": _patient_age(patient) or "",
         "age_display": _patient_age_display(patient),

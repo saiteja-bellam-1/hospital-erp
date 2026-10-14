@@ -20,6 +20,7 @@ import {
   validateAppointmentBooking,
 } from '../../utils/appointmentBooking';
 import { formatPatientAge } from '../../utils/patientAge';
+import { aadhaarInputError } from '../../components/PatientRegisterFormFields';
 
 const OutpatientModule = () => {
   const { toast } = useToast();
@@ -57,6 +58,7 @@ const OutpatientModule = () => {
     blood_group: '',
     marital_status: '',
     abha_id: '',
+    aadhaar_number: '',
     email: '',
     primary_phone: '',
     emergency_contact_name: '',
@@ -236,6 +238,11 @@ const OutpatientModule = () => {
 
   const createPatient = async (e) => {
     e.preventDefault();
+    const aadhaarError = aadhaarInputError(patientForm.aadhaar_number);
+    if (aadhaarError) {
+      toast({ variant: 'destructive', title: 'Invalid Aadhaar', description: aadhaarError });
+      return;
+    }
     setLoading(true);
     
     try {
@@ -263,6 +270,7 @@ const OutpatientModule = () => {
           blood_group: '',
           marital_status: '',
           abha_id: '',
+          aadhaar_number: '',
           email: '',
           primary_phone: '',
           emergency_contact_name: '',
@@ -843,6 +851,20 @@ const OutpatientModule = () => {
                             placeholder="14-digit ABHA number"
                             value={patientForm.abha_id}
                             onChange={(e) => setPatientForm(prev => ({ ...prev, abha_id: e.target.value }))}
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="aadhaar_number">Aadhaar Number</Label>
+                          <Input
+                            id="aadhaar_number"
+                            inputMode="numeric"
+                            maxLength={12}
+                            placeholder="12-digit Aadhaar"
+                            value={patientForm.aadhaar_number || ''}
+                            onChange={(e) => setPatientForm(prev => ({
+                              ...prev,
+                              aadhaar_number: e.target.value.replace(/\D/g, '').slice(0, 12),
+                            }))}
                           />
                         </div>
                       </div>

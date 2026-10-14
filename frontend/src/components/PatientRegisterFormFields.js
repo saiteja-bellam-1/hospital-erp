@@ -27,6 +27,7 @@ export const EMPTY_PATIENT_FORM = {
   blood_group: '',
   marital_status: '',
   abha_id: '',
+  aadhaar_number: '',
   gstin: '',
   email: '',
   primary_phone: '',
@@ -134,6 +135,16 @@ export default function PatientRegisterFormFields({ form, onChange, activeStep =
             <Input value={form.abha_id} onChange={(e) => set('abha_id', e.target.value)} placeholder="14-digit ABHA number" />
           </div>
           <div>
+            <Label>Aadhaar Number</Label>
+            <Input
+              inputMode="numeric"
+              maxLength={12}
+              value={form.aadhaar_number || ''}
+              onChange={(e) => set('aadhaar_number', e.target.value.replace(/\D/g, '').slice(0, 12))}
+              placeholder="12-digit Aadhaar"
+            />
+          </div>
+          <div>
             <Label>GSTIN (optional, B2B)</Label>
             <Input value={form.gstin || ''} onChange={(e) => set('gstin', e.target.value.toUpperCase())} placeholder="Customer GSTIN for ITC invoices" maxLength={15} />
           </div>
@@ -217,6 +228,21 @@ export function buildPatientPayload(form) {
   );
 }
 
+export function aadhaarInputError(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (!digits) return null;
+  if (digits.length !== 12 || digits[0] === '0') {
+    return 'Aadhaar number must be 12 digits and cannot start with 0.';
+  }
+  return null;
+}
+
+export function formatAadhaarDisplay(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (digits.length !== 12) return value || '';
+  return `${digits.slice(0, 4)} ${digits.slice(4, 8)} ${digits.slice(8)}`;
+}
+
 export function validatePatientForm(form) {
   if (!form.first_name?.trim() || !form.last_name?.trim() || !form.primary_phone?.trim()) {
     return 'First name, last name, and phone are required.';
@@ -224,6 +250,8 @@ export function validatePatientForm(form) {
   if (!hasValidAge(form)) {
     return 'Age or date of birth is required.';
   }
+  const aadhaarError = aadhaarInputError(form.aadhaar_number);
+  if (aadhaarError) return aadhaarError;
   return null;
 }
 

@@ -404,3 +404,221 @@ class TestDischargeSummaryTemplate:
         assert r.status_code == 200, r.text
         assert r.json().get("is_default") is True
         assert r.json()["document_title"] == "DISCHARGE SUMMARY"
+
+
+class TestDamaDischargeSummary:
+    def test_dama_summary_requires_advice_and_prints_it(self, client, auth_headers, seed_data):
+        discharge_active_admissions(client, auth_headers, seed_data["patient_id"])
+        room = client.post(
+            f"{API}/rooms",
+            json={
+                "room_number": "DS-DAMA",
+                "room_type": "general",
+                "bed_count": 1,
+                "room_charge_per_day": 500.0,
+            },
+            headers=auth_headers,
+        )
+        assert room.status_code == 201, room.text
+        adm = client.post(
+            f"{API}/admissions",
+            json={
+                "patient_id": seed_data["patient_id"],
+                "admitting_doctor_id": seed_data["doctor_user_id"],
+                "room_id": room.json()["id"],
+                "admission_type": "elective",
+                "admission_reason": "DAMA summary test",
+            },
+            headers=auth_headers,
+        )
+        assert adm.status_code == 201, adm.text
+        admission_id = adm.json()["id"]
+
+        incomplete = client.put(
+            f"{API}/admissions/{admission_id}/discharge-summary",
+            json={
+                "primary_diagnosis": "Unresolved pneumonia",
+                "discharge_type": "against_advice",
+                "condition_on_discharge": "unchanged",
+                "primary_doctor_id": seed_data["doctor_user_id"],
+            },
+            headers=auth_headers,
+        )
+        assert incomplete.status_code == 200, incomplete.text
+        blocked = client.post(
+            f"{API}/admissions/{admission_id}/discharge-summary/finalize",
+            headers=auth_headers,
+        )
+        assert blocked.status_code == 400, blocked.text
+        assert "Medical advice" in blocked.json()["detail"]
+
+        complete = client.put(
+            f"{API}/admissions/{admission_id}/discharge-summary",
+            json={
+                "primary_diagnosis": "Unresolved pneumonia",
+                "discharge_type": "against_advice",
+                "condition_on_discharge": "unchanged",
+                "primary_doctor_id": seed_data["doctor_user_id"],
+                "dama_medical_advice": "Stay for IV antibiotics for five more days",
+                "dama_risks_explained": "Risk of sepsis if treatment is stopped",
+                "dama_advice_acknowledged": True,
+                "dama_absolves_acknowledged": True,
+            },
+            headers=auth_headers,
+        )
+        assert complete.status_code == 200, complete.text
+        assert complete.json()["dama_advice_acknowledged"] is True
+        fin = client.post(
+            f"{API}/admissions/{admission_id}/discharge-summary/finalize",
+            headers=auth_headers,
+        )
+        assert fin.status_code == 200, fin.text
+
+        pdf = client.get(
+            f"{API}/admissions/{admission_id}/discharge-summary/pdf",
+            headers=auth_headers,
+        )
+        assert pdf.status_code == 200, pdf.text
+        text = _pdf_text(pdf.content)
+        assert "DISCHARGE AGAINST MEDICAL ADVICE" in text
+        assert "Stay for IV antibiotics" in text
+        assert "Risk of sepsis" in text
+        assert "absolves the hospital" in text
+
+
+def _admit(client, headers, seed_data, room_number, reason):
+    discharge_active_admissions(client, headers, seed_data["patient_id"])
+    room = client.post(
+        f"{API}/rooms",
+        json={
+            "room_number": room_number,
+            "room_type": "general",
+            "bed_count": 1,
+            "room_charge_per_day": 500.0,
+        },
+        headers=headers,
+    )
+    assert room.status_code == 201, room.text
+    adm = client.post(
+        f"{API}/admissions",
+        json={
+            "patient_id": seed_data["patient_id"],
+            "admitting_doctor_id": seed_data["doctor_user_id"],
+            "room_id": room.json()["id"],
+            "admission_type": "elective",
+            "admission_reason": reason,
+        },
+        headers=headers,
+    )
+    assert adm.status_code == 201, adm.text
+    return adm.json()["id"]
+
+
+class TestDeathAndTransferSummary:
+    def test_death_summary_requires_cause_and_copies_to_mortality(self, client, auth_headers, seed_data):
+        admission_id = _admit(client, auth_headers, seed_data, "DS-DEATH-SUM", "Death summary test")
+        base = {
+            "primary_diagnosis": "Septic shock",
+            "discharge_type": "death",
+            "condition_on_discharge": None,
+            "primary_doctor_id": seed_data["doctor_user_id"],
+        }
+        incomplete = client.put(
+            f"{API}/admissions/{admission_id}/discharge-summary",
+            json=base,
+            headers=auth_headers,
+        )
+        assert incomplete.status_code == 200, incomplete.text
+        blocked = client.post(
+            f"{API}/admissions/{admission_id}/discharge-summary/finalize",
+            headers=auth_headers,
+        )
+        assert blocked.status_code == 400, blocked.text
+        assert "Time of death" in blocked.json()["detail"]
+
+        complete = client.put(
+            f"{API}/admissions/{admission_id}/discharge-summary",
+            json={
+                **base,
+                "time_of_death": "2026-10-14T06:30:00",
+                "cause_of_death": "Septic shock following pneumonia",
+            },
+            headers=auth_headers,
+        )
+        assert complete.status_code == 200, complete.text
+        fin = client.post(
+            f"{API}/admissions/{admission_id}/discharge-summary/finalize",
+            headers=auth_headers,
+        )
+        assert fin.status_code == 200, fin.text
+        pdf = client.get(
+            f"{API}/admissions/{admission_id}/discharge-summary/pdf",
+            headers=auth_headers,
+        )
+        assert pdf.status_code == 200, pdf.text
+        text = _pdf_text(pdf.content)
+        assert "DEATH SUMMARY" in text
+        assert "Septic shock following pneumonia" in text
+        assert "Condition on Discharge" not in text
+
+        discharged = client.post(
+            f"{API}/admissions/{admission_id}/discharge",
+            json={"discharge_type": "death"},
+            headers=auth_headers,
+        )
+        assert discharged.status_code == 201, discharged.text
+        assert discharged.json()["condition_on_discharge"] in (None, "")
+        cert = client.get(
+            f"{API}/admissions/{admission_id}/death-certificate/pdf",
+            headers=auth_headers,
+        )
+        assert cert.status_code == 200, cert.text
+        assert "Septic shock following pneumonia" in _pdf_text(cert.content)
+
+    def test_transfer_summary_requires_destination(self, client, auth_headers, seed_data):
+        admission_id = _admit(client, auth_headers, seed_data, "DS-XFER", "Transfer summary test")
+        base = {
+            "primary_diagnosis": "Polytrauma",
+            "discharge_type": "transfer",
+            "condition_on_discharge": "critical",
+            "primary_doctor_id": seed_data["doctor_user_id"],
+        }
+        incomplete = client.put(
+            f"{API}/admissions/{admission_id}/discharge-summary",
+            json=base,
+            headers=auth_headers,
+        )
+        assert incomplete.status_code == 200, incomplete.text
+        blocked = client.post(
+            f"{API}/admissions/{admission_id}/discharge-summary/finalize",
+            headers=auth_headers,
+        )
+        assert blocked.status_code == 400, blocked.text
+        assert "Receiving hospital" in blocked.json()["detail"]
+
+        complete = client.put(
+            f"{API}/admissions/{admission_id}/discharge-summary",
+            json={
+                **base,
+                "transfer_facility": "City Trauma Centre",
+                "transfer_reason": "Needs neurosurgical ICU",
+                "transfer_contact": "Dr. Rao, neurosurgery",
+            },
+            headers=auth_headers,
+        )
+        assert complete.status_code == 200, complete.text
+        fin = client.post(
+            f"{API}/admissions/{admission_id}/discharge-summary/finalize",
+            headers=auth_headers,
+        )
+        assert fin.status_code == 200, fin.text
+        pdf = client.get(
+            f"{API}/admissions/{admission_id}/discharge-summary/pdf",
+            headers=auth_headers,
+        )
+        assert pdf.status_code == 200, pdf.text
+        text = _pdf_text(pdf.content)
+        assert "TRANSFER SUMMARY" in text
+        assert "City Trauma Centre" in text
+        assert "Needs neurosurgical ICU" in text
+        assert "Dr. Rao" in text

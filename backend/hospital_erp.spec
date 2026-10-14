@@ -25,7 +25,9 @@ a = Analysis(
     pathex=['.'],
     binaries=reportlab_binaries,
     datas=[
-        # Bundle the React frontend build
+        # Bundle the React frontend build.
+        # The public introduction site ships inside it at website/
+        # (frontend/public/website is copied by the production build).
         (frontend_build, 'frontend_build'),
         # Bundle the app icon
         ('assets/icon.ico', 'assets'),

@@ -274,6 +274,21 @@ def _append_address_row(info_data, style_list, data, lv):
     style_list.append(('SPAN', (0, row_idx), (1, row_idx)))
 
 
+def _aadhaar_display(data) -> str:
+    from app.utils.aadhaar import aadhaar_from_payload
+    return aadhaar_from_payload(data)
+
+
+def _append_aadhaar_row(info_data, style_list, data, lv):
+    """Append a full-width Aadhaar row when the payload carries a number."""
+    aadhaar = _aadhaar_display(data)
+    if not aadhaar:
+        return
+    row_idx = len(info_data)
+    info_data.append([lv('Aadhaar', aadhaar), ''])
+    style_list.append(('SPAN', (0, row_idx), (1, row_idx)))
+
+
 def _discharge_type_label(dtype: str) -> str:
     labels = {
         'normal': 'Normal Discharge',
@@ -701,6 +716,7 @@ class PDFService:
             ('RIGHTPADDING', (0, 0), (-1, -1), 6),
             ('BOX', (0, 0), (-1, -1), 1, colors.black),
         ]
+        _append_aadhaar_row(info_data, info_style, p, lv)
         info_table = Table(info_data, colWidths=[col_w, col_w])
         info_table.setStyle(TableStyle(info_style))
         elements.append(info_table)
@@ -2860,7 +2876,14 @@ class PDFService:
         else:
             elements.append(Spacer(1, letterhead_gap_pt))
 
+        discharge_kind = discharge_data.get("discharge_type") or ""
         doc_title = (template.get("document_title") or "DISCHARGE SUMMARY").strip() or "DISCHARGE SUMMARY"
+        if discharge_kind == "against_advice":
+            doc_title = "DISCHARGE AGAINST MEDICAL ADVICE"
+        elif discharge_kind == "death":
+            doc_title = "DEATH SUMMARY"
+        elif discharge_kind == "transfer":
+            doc_title = "TRANSFER SUMMARY"
         elements.append(Spacer(1, 4))
         elements.append(Paragraph(_escape_pdf_inline(doc_title), doc_title_style))
         if template.get("show_department_line", True):
@@ -2935,10 +2958,64 @@ class PDFService:
                     ('BOX', (0, 0), (-1, -1), 1, colors.black),
                 ]
                 _append_address_row(patient_info_data, info_style, discharge_data, lv)
+                _append_aadhaar_row(patient_info_data, info_style, discharge_data, lv)
                 info_table = Table(patient_info_data, colWidths=[col_w, col_w])
                 info_table.setStyle(TableStyle(info_style))
                 elements.append(info_table)
                 elements.append(Spacer(1, 8))
+                if (discharge_data.get("discharge_type") or "") == "against_advice":
+                    _append_section(
+                        "Discharge Against Medical Advice",
+                        "The patient is leaving the hospital against medical advice.",
+                    )
+                    _append_section(
+                        "Medical advice given",
+                        discharge_data.get("dama_medical_advice"),
+                    )
+                    _append_section(
+                        "Risks of leaving explained",
+                        discharge_data.get("dama_risks_explained"),
+                    )
+                    acknowledgements = []
+                    if discharge_data.get("dama_advice_acknowledged"):
+                        acknowledgements.append(
+                            "Medical advice was given, and the risks of leaving against advice were explained."
+                        )
+                    if discharge_data.get("dama_absolves_acknowledged"):
+                        acknowledgements.append(
+                            "Patient / guardian absolves the hospital and treating doctors of consequences of leaving against medical advice."
+                        )
+                    _append_section("Acknowledgements", "\n".join(acknowledgements))
+                elif (discharge_data.get("discharge_type") or "") == "death":
+                    _append_section(
+                        "Death during admission",
+                        "The patient died during this admission.",
+                    )
+                    _append_section(
+                        "Date and time of death",
+                        discharge_data.get("time_of_death"),
+                    )
+                    _append_section(
+                        "Cause of death",
+                        discharge_data.get("cause_of_death"),
+                    )
+                elif (discharge_data.get("discharge_type") or "") == "transfer":
+                    destination = (discharge_data.get("transfer_facility") or "").strip()
+                    contact = (discharge_data.get("transfer_contact") or "").strip()
+                    if contact:
+                        destination = (
+                            f"{destination}\nReferred to: {contact}" if destination
+                            else f"Referred to: {contact}"
+                        )
+                    _append_section(
+                        "Transfer",
+                        "The patient is being transferred for further care.",
+                    )
+                    _append_section("Transferred to", destination)
+                    _append_section(
+                        "Reason for transfer",
+                        discharge_data.get("transfer_reason"),
+                    )
 
             elif btype == "consultants":
                 consultants = discharge_data.get('consultants') or []
@@ -3061,6 +3138,8 @@ class PDFService:
                             cell_value))
 
             elif btype == "condition_on_discharge":
+                if (discharge_data.get("discharge_type") or "") == "death":
+                    continue
                 elements.append(Spacer(1, 16))
                 condition_discharge = discharge_data.get("condition_on_discharge", "")
                 if condition_discharge:
@@ -3293,6 +3372,7 @@ class PDFService:
             ('BOX', (0, 0), (-1, -1), 1, colors.black),
         ]
         _append_address_row(patient_info_data, info_style, meta, lv)
+        _append_aadhaar_row(patient_info_data, info_style, meta, lv)
         info_table = Table(patient_info_data, colWidths=[col_w, col_w])
         info_table.setStyle(TableStyle(info_style))
         elements.append(info_table)
@@ -3593,6 +3673,7 @@ class PDFService:
             ('RIGHTPADDING', (0, 0), (-1, -1), 6),
             ('BOX', (0, 0), (-1, -1), 1, colors.black),
         ]
+        _append_aadhaar_row(info_data, info_style, deposit_data, lv)
         info_table = Table(info_data, colWidths=[col_w, col_w])
         info_table.setStyle(TableStyle(info_style))
         elements.append(info_table)
@@ -3789,6 +3870,11 @@ class PDFService:
              Paragraph("Original Amt:", label_style), Paragraph(f"Rs. {float(refund_data.get('original_amount', 0)):,.2f}", value_style)],
         ]
         _refund_style = [('VALIGN', (0, 0), (-1, -1), 'TOP'), ('BOTTOMPADDING', (0, 0), (-1, -1), 6)]
+        _refund_aadhaar = _aadhaar_display(refund_data)
+        if _refund_aadhaar:
+            _row_idx = len(rows)
+            rows.append([Paragraph("Aadhaar:", label_style), Paragraph(_refund_aadhaar, value_style), '', ''])
+            _refund_style.append(('SPAN', (1, _row_idx), (3, _row_idx)))
         _refund_addr = _patient_address_line(refund_data)
         if _refund_addr:
             _row_idx = len(rows)
@@ -4067,6 +4153,12 @@ class PDFService:
              Paragraph(f"{consent_data.get('age', '')} / {consent_data.get('gender', '')}", body),
              Paragraph("Phone:", label_small), Paragraph(str(consent_data.get('primary_phone', '')), body)],
         ]
+        _consent_aadhaar = _aadhaar_display(consent_data)
+        if _consent_aadhaar:
+            meta_rows.append([
+                Paragraph("Aadhaar:", label_small), Paragraph(_consent_aadhaar, body),
+                Paragraph("", label_small), Paragraph("", body),
+            ])
         if consent_data.get('emergency_contact_name'):
             meta_rows.append([
                 Paragraph("Emergency Contact:", label_small),
@@ -4256,6 +4348,14 @@ class PDFService:
                 Paragraph(str(payload.get('primary_phone') or '—'), body),
             ],
         ]
+        _cs_aadhaar = _aadhaar_display(payload)
+        if _cs_aadhaar:
+            meta_rows.append([
+                Paragraph("Aadhaar:", label_small),
+                Paragraph(_cs_aadhaar, body),
+                Paragraph("", label_small),
+                Paragraph("", body),
+            ])
         meta_table = Table(
             meta_rows,
             colWidths=[page_width * 0.15, page_width * 0.35, page_width * 0.15, page_width * 0.35],
@@ -4380,6 +4480,9 @@ class PDFService:
         ]
         if cert_data.get('mlc_required') and cert_data.get('mlc_number'):
             rows.append([Paragraph("MLC No:", label), Paragraph(str(cert_data['mlc_number']), value)])
+        _cert_aadhaar = _aadhaar_display(cert_data)
+        if _cert_aadhaar:
+            rows.insert(3, [Paragraph("Aadhaar:", label), Paragraph(_cert_aadhaar, value)])
         rows.append([Paragraph("Autopsy Done:", label), Paragraph("Yes" if cert_data.get('autopsy_done') else "No", value)])
 
         _cert_addr = _patient_address_line(cert_data)
@@ -4477,6 +4580,9 @@ class PDFService:
             [Paragraph("Discharge Date/Time:", label), Paragraph(_fmt_system_dt(dama_data.get('discharge_date', ''), fmt="%d/%m/%Y %H:%M", empty=""), value)],
             [Paragraph("Language Used:", label), Paragraph(str(dama_data.get('language_used', '')).title(), value)],
         ]
+        _dama_aadhaar = _aadhaar_display(dama_data)
+        if _dama_aadhaar:
+            meta_rows.append([Paragraph("Aadhaar:", label), Paragraph(_dama_aadhaar, value)])
         _dama_addr = _patient_address_line(dama_data)
         if _dama_addr:
             meta_rows.append([Paragraph("Address:", label), Paragraph(_dama_addr, value)])
@@ -4661,6 +4767,12 @@ class PDFService:
             [Paragraph("Vehicle No.", label), Paragraph(payload.get('vehicle_no', '-'), value),
              Paragraph("Relationship", label), Paragraph(payload.get('attendant_relationship', '-'), value)],
         ]
+        _gp_aadhaar = _aadhaar_display(payload)
+        if _gp_aadhaar:
+            rows.append([
+                Paragraph("Aadhaar", label), Paragraph(_gp_aadhaar, value),
+                Paragraph("", label), Paragraph("", value),
+            ])
         t = Table(rows, colWidths=[page_width * 0.18, page_width * 0.32,
                                    page_width * 0.18, page_width * 0.32])
         t.setStyle(TableStyle([
@@ -5010,6 +5122,9 @@ class PDFService:
             [Paragraph("To Nurse:", label), Paragraph(str(payload.get('to_nurse', '') or '— (unassigned)'), value)],
             [Paragraph("Acknowledged:", label), Paragraph(str(payload.get('acknowledged_at', '') or '— pending'), value)],
         ]
+        _ho_aadhaar = _aadhaar_display(payload)
+        if _ho_aadhaar:
+            meta_rows.insert(2, [Paragraph("Aadhaar:", label), Paragraph(_ho_aadhaar, value)])
         meta_table = Table(meta_rows, colWidths=[page_width * 0.30, page_width * 0.70])
         meta_table.setStyle(TableStyle([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
@@ -5237,6 +5352,12 @@ class PDFService:
             [Paragraph("Brought By:", label), Paragraph(str(mlc_data.get('brought_by') or '—'), value),
              Paragraph("Arrival Mode:", label), Paragraph(str(mlc_data.get('arrival_mode') or '—').replace('_', ' ').title(), value)],
         ]
+        _mlc_aadhaar = _aadhaar_display(mlc_data)
+        if _mlc_aadhaar:
+            pat_meta.append([
+                Paragraph("Aadhaar:", label), Paragraph(_mlc_aadhaar, value),
+                Paragraph("", label), Paragraph("", value),
+            ])
         t = Table(pat_meta, colWidths=[page_width*0.18, page_width*0.32, page_width*0.18, page_width*0.32])
         t.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
         elements.append(t)
@@ -5314,6 +5435,12 @@ class PDFService:
             [Paragraph("MLC:", label), Paragraph(("Yes — " + rel.get('mlc_number', '')) if rel.get('is_mlc') else "No", value),
              Paragraph("Mortuary Slot:", label), Paragraph(str(rel.get('mortuary_slot') or '—'), value)],
         ]
+        _rel_aadhaar = _aadhaar_display(rel)
+        if _rel_aadhaar:
+            meta.append([
+                Paragraph("Aadhaar:", label), Paragraph(_rel_aadhaar, value),
+                Paragraph("", label), Paragraph("", value),
+            ])
         t = Table(meta, colWidths=[page_width*0.18, page_width*0.32, page_width*0.18, page_width*0.32])
         t.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
         elements.append(t)

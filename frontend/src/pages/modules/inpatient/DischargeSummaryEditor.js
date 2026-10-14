@@ -14,9 +14,14 @@ import {
 import { useToast } from '../../../hooks/use-toast';
 import TakeHomeMedicinesSection from '../../../components/prescription/TakeHomeMedicinesSection';
 import { serializeTakeHomeMed } from '../../../utils/prescriptionSchedule';
+import { localDateTimeString, localDateTimeToApi } from '../../../utils/localDate';
 import { printPdfFromUrl } from '../../../utils/printPdf';
 import DischargeSummaryPdfPreviewDialog from './discharge/DischargeSummaryPdfPreviewDialog';
-import { summaryIsReadyForPrint } from './discharge/dischargeSummaryUtils';
+import {
+  CONDITION_ON_DISCHARGE_LABELS,
+  DISCHARGE_TYPE_LABELS,
+  summaryIsReadyForPrint,
+} from './discharge/dischargeSummaryUtils';
 import CaseSheetClinicalFields from './CaseSheetClinicalFields';
 import {
   Loader2, FileText, CheckCircle2, ChevronLeft, ChevronRight, Printer, Eye, Pencil,
@@ -47,8 +52,17 @@ const EMPTY_FORM = {
   procedure_notes: '',
   discharge_advice: '',
   follow_up: '',
-  discharge_type: 'normal',
-  condition_on_discharge: 'stable',
+  discharge_type: '',
+  condition_on_discharge: '',
+  dama_medical_advice: '',
+  dama_risks_explained: '',
+  dama_advice_acknowledged: false,
+  dama_absolves_acknowledged: false,
+  time_of_death: '',
+  cause_of_death: '',
+  transfer_facility: '',
+  transfer_reason: '',
+  transfer_contact: '',
   take_home_medications: [],
   follow_up_date: '',
   diet_instructions: '',
@@ -198,6 +212,17 @@ const DischargeSummaryEditor = ({
             ? String(data.follow_up_date).slice(0, 10) : '',
           primary_doctor_id: data.primary_doctor_id ? String(data.primary_doctor_id) : '',
           secondary_doctor_id: data.secondary_doctor_id ? String(data.secondary_doctor_id) : '',
+          discharge_type: data.discharge_type || '',
+          condition_on_discharge: data.condition_on_discharge || '',
+          dama_medical_advice: data.dama_medical_advice || '',
+          dama_risks_explained: data.dama_risks_explained || '',
+          dama_advice_acknowledged: !!data.dama_advice_acknowledged,
+          dama_absolves_acknowledged: !!data.dama_absolves_acknowledged,
+          time_of_death: data.time_of_death ? localDateTimeString(data.time_of_death) : '',
+          cause_of_death: data.cause_of_death || '',
+          transfer_facility: data.transfer_facility || '',
+          transfer_reason: data.transfer_reason || '',
+          transfer_contact: data.transfer_contact || '',
           take_home_medications: data.take_home_medications || [],
           payer_label: data.payer_label || '',
           department_name: data.department_name || '',
@@ -246,8 +271,21 @@ const DischargeSummaryEditor = ({
     procedure_notes: form.procedure_notes || null,
     discharge_advice: form.discharge_advice || null,
     follow_up: form.follow_up || null,
-    discharge_type: form.discharge_type,
-    condition_on_discharge: form.condition_on_discharge,
+    discharge_type: form.discharge_type || null,
+    condition_on_discharge: form.discharge_type === 'death'
+      ? null
+      : hasBlockType('condition_on_discharge')
+        ? (form.condition_on_discharge || null)
+        : (form.condition_on_discharge || undefined),
+    dama_medical_advice: form.dama_medical_advice || null,
+    dama_risks_explained: form.dama_risks_explained || null,
+    dama_advice_acknowledged: !!form.dama_advice_acknowledged,
+    dama_absolves_acknowledged: !!form.dama_absolves_acknowledged,
+    time_of_death: form.time_of_death ? localDateTimeToApi(form.time_of_death) : null,
+    cause_of_death: form.cause_of_death || null,
+    transfer_facility: form.transfer_facility || null,
+    transfer_reason: form.transfer_reason || null,
+    transfer_contact: form.transfer_contact || null,
     take_home_medications: (form.take_home_medications || [])
       .filter(m => (m.medicine_name || '').trim())
       .map(serializeTakeHomeMed),
@@ -256,7 +294,8 @@ const DischargeSummaryEditor = ({
     diet_instructions: form.diet_instructions || null,
     activity_restrictions: form.activity_restrictions || null,
     primary_doctor_id: form.primary_doctor_id
-      ? parseInt(form.primary_doctor_id, 10) : null,
+      ? parseInt(form.primary_doctor_id, 10)
+      : (hasBlockType('consultants') ? null : undefined),
     secondary_doctor_id: form.secondary_doctor_id
       ? parseInt(form.secondary_doctor_id, 10) : null,
     custom_fields: form.custom_fields || {},
@@ -288,6 +327,23 @@ const DischargeSummaryEditor = ({
   };
 
   const handleFinalize = async () => {
+    const idErr = identityError();
+    if (idErr) {
+      toast({ variant: 'destructive', title: 'Complete Doctors & Type', description: idErr });
+      setStep(1);
+      return;
+    }
+    const typeErr = typeSpecificError();
+    if (typeErr) {
+      const title = form.discharge_type === 'death'
+        ? 'Death details required'
+        : form.discharge_type === 'transfer'
+          ? 'Transfer details required'
+          : 'DAMA details required';
+      toast({ variant: 'destructive', title, description: typeErr });
+      setStep(4);
+      return;
+    }
     if (primaryRequired && !form.primary_diagnosis?.trim()) {
       toast({
         variant: 'destructive',
@@ -399,8 +455,73 @@ const DischargeSummaryEditor = ({
     }
   };
 
+  const doctorLabel = (id) => {
+    const doctor = doctorsList.find((d) => String(d.id) === String(id));
+    if (!doctor) return '';
+    const name = `Dr. ${doctor.first_name || ''} ${doctor.last_name || ''}`.trim();
+    return doctor.specialization ? `${name} · ${doctor.specialization}` : name;
+  };
+
+  const identityError = () => {
+    if (!form.discharge_type) return 'Select a discharge type.';
+    if (
+      form.discharge_type !== 'death'
+      && hasBlockType('condition_on_discharge')
+      && !form.condition_on_discharge
+    ) {
+      return 'Select the condition on discharge.';
+    }
+    if (hasBlockType('consultants') && !form.primary_doctor_id) {
+      return 'Select the primary doctor.';
+    }
+    return null;
+  };
+
+  const typeSpecificError = () => {
+    if (form.discharge_type === 'against_advice') {
+      if (!(form.dama_medical_advice || '').trim()) {
+        return 'Enter the medical advice given to the patient.';
+      }
+      if (!(form.dama_risks_explained || '').trim()) {
+        return 'Enter the risks of leaving that were explained.';
+      }
+      if (!form.dama_advice_acknowledged || !form.dama_absolves_acknowledged) {
+        return 'Both DAMA acknowledgements are required.';
+      }
+    }
+    if (form.discharge_type === 'death') {
+      if (!form.time_of_death) return 'Enter the date and time of death.';
+      if (!(form.cause_of_death || '').trim()) return 'Enter the cause of death.';
+    }
+    if (form.discharge_type === 'transfer') {
+      if (!(form.transfer_facility || '').trim()) {
+        return 'Enter the hospital or centre the patient is transferred to.';
+      }
+      if (!(form.transfer_reason || '').trim()) return 'Enter the reason for transfer.';
+    }
+    return null;
+  };
+
   const goNext = () => {
+    if (!locked && step === 1) {
+      const err = identityError();
+      if (err) {
+        toast({ variant: 'destructive', title: 'Complete Doctors & Type', description: err });
+        return;
+      }
+    }
     if (step < TOTAL_STEPS) setStep(step + 1);
+  };
+
+  const goToStep = (next) => {
+    if (!locked && next > 1 && step === 1) {
+      const err = identityError();
+      if (err) {
+        toast({ variant: 'destructive', title: 'Complete Doctors & Type', description: err });
+        return;
+      }
+    }
+    setStep(next);
   };
 
   const goBack = () => {
@@ -452,24 +573,27 @@ const DischargeSummaryEditor = ({
         <div className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <Label>Discharge type</Label>
-              <Select value={form.discharge_type} disabled={locked}
-                      onValueChange={v => update({ discharge_type: v })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+              <Label>Discharge type *</Label>
+              <Select value={form.discharge_type || undefined} disabled={locked}
+                      onValueChange={v => update({
+                        discharge_type: v,
+                        ...(v === 'death' ? { condition_on_discharge: '' } : {}),
+                      })}>
+                <SelectTrigger><SelectValue placeholder="Select discharge type" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="normal">Normal</SelectItem>
-                  <SelectItem value="against_advice">Against medical advice</SelectItem>
+                  <SelectItem value="against_advice">Against medical advice (DAMA)</SelectItem>
                   <SelectItem value="transfer">Transfer</SelectItem>
                   <SelectItem value="death">Death</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            {hasBlockType('condition_on_discharge') && (
+            {hasBlockType('condition_on_discharge') && form.discharge_type !== 'death' && (
             <div>
-              <Label>Condition on discharge</Label>
-              <Select value={form.condition_on_discharge} disabled={locked}
+              <Label>Condition on discharge *</Label>
+              <Select value={form.condition_on_discharge || undefined} disabled={locked}
                       onValueChange={v => update({ condition_on_discharge: v })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="Select condition" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="stable">Stable</SelectItem>
                   <SelectItem value="improved">Improved</SelectItem>
@@ -482,10 +606,10 @@ const DischargeSummaryEditor = ({
             {hasBlockType('consultants') && (
             <>
             <div>
-              <Label>Primary doctor</Label>
-              <Select value={form.primary_doctor_id} disabled={locked}
+              <Label>Primary doctor *</Label>
+              <Select value={form.primary_doctor_id || undefined} disabled={locked}
                       onValueChange={v => update({ primary_doctor_id: v })}>
-                <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="Select primary doctor" /></SelectTrigger>
                 <SelectContent>
                   {doctorsList.map(d => (
                     <SelectItem key={d.id} value={String(d.id)}>
@@ -498,7 +622,7 @@ const DischargeSummaryEditor = ({
             </div>
             <div>
               <Label>Secondary doctor</Label>
-              <Select value={form.secondary_doctor_id} disabled={locked}
+              <Select value={form.secondary_doctor_id || undefined} disabled={locked}
                       onValueChange={v => update({ secondary_doctor_id: v })}>
                 <SelectTrigger><SelectValue placeholder="Optional" /></SelectTrigger>
                 <SelectContent>
@@ -536,8 +660,32 @@ const DischargeSummaryEditor = ({
             </div>
           )}
           <p className="text-xs text-gray-500">
-            Discharge type and consulting doctors appear on the printed summary.
+            Discharge type and the primary doctor are required. Condition on discharge is required except for a death. These choices stay visible on the later steps and print on the summary.
           </p>
+          {form.discharge_type === 'against_advice' && (
+            <div className="text-xs text-red-900 bg-red-50 border border-red-200 rounded p-3 space-y-1">
+              <p className="font-semibold">Discharge against medical advice (DAMA)</p>
+              <p>
+                The printed summary is titled Discharge Against Medical Advice. On Advice &amp; Review you must record the advice given, the risks explained, and both acknowledgements.
+              </p>
+            </div>
+          )}
+          {form.discharge_type === 'death' && (
+            <div className="text-xs text-slate-900 bg-slate-100 border border-slate-300 rounded p-3 space-y-1">
+              <p className="font-semibold">Death</p>
+              <p>
+                The printed summary is titled Death Summary. On Advice &amp; Review you must record the date and time of death and the cause. Condition on discharge, follow-up, and take-home medicines are left off this summary.
+              </p>
+            </div>
+          )}
+          {form.discharge_type === 'transfer' && (
+            <div className="text-xs text-blue-900 bg-blue-50 border border-blue-200 rounded p-3 space-y-1">
+              <p className="font-semibold">Transfer</p>
+              <p>
+                The printed summary is titled Transfer Summary. On Advice &amp; Review you must record the receiving hospital and the reason for transfer. The clinical advice goes with the patient to that hospital.
+              </p>
+            </div>
+          )}
         </div>
       );
     }
@@ -622,13 +770,94 @@ const DischargeSummaryEditor = ({
 
     return (
       <div className="space-y-4">
-        {hasStandard('discharge_advice') && (
+        {form.discharge_type === 'against_advice' && (
+          <div className="border-2 border-red-300 rounded p-3 bg-red-50 space-y-3 text-sm">
+            <p className="font-semibold text-red-800">Discharge Against Medical Advice</p>
+            <p className="text-xs text-red-900">
+              These fields print only on a DAMA summary. A normal discharge does not ask for them.
+            </p>
+            <div>
+              <Label>Medical advice given *</Label>
+              <Textarea rows={3} disabled={locked} value={form.dama_medical_advice}
+                        onChange={e => update({ dama_medical_advice: e.target.value })}
+                        placeholder="Advice the patient was given and chose not to follow" />
+            </div>
+            <div>
+              <Label>Risks of leaving explained *</Label>
+              <Textarea rows={3} disabled={locked} value={form.dama_risks_explained}
+                        onChange={e => update({ dama_risks_explained: e.target.value })}
+                        placeholder="Risks explained to the patient or guardian" />
+            </div>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input type="checkbox" className="mt-0.5" disabled={locked}
+                     checked={!!form.dama_advice_acknowledged}
+                     onChange={e => update({ dama_advice_acknowledged: e.target.checked })} />
+              <span>
+                Medical advice was given to the patient, and the risks of leaving against advice were explained verbally in a language they understand. *
+              </span>
+            </label>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input type="checkbox" className="mt-0.5" disabled={locked}
+                     checked={!!form.dama_absolves_acknowledged}
+                     onChange={e => update({ dama_absolves_acknowledged: e.target.checked })} />
+              <span>
+                Patient / guardian absolves the hospital and treating doctors of any consequences arising from leaving against medical advice. *
+              </span>
+            </label>
+          </div>
+        )}
+        {form.discharge_type === 'death' && (
+          <div className="border-2 border-slate-400 rounded p-3 bg-slate-50 space-y-3 text-sm">
+            <p className="font-semibold text-slate-900">Death during admission</p>
+            <p className="text-xs text-slate-700">
+              These fields print on the death summary and fill the mortality record when the patient is discharged. Body handover, MLC, and the certificate number are recorded after discharge.
+            </p>
+            <div>
+              <Label>Date and time of death *</Label>
+              <Input type="datetime-local" disabled={locked} value={form.time_of_death}
+                     onChange={e => update({ time_of_death: e.target.value })} />
+            </div>
+            <div>
+              <Label>Cause of death *</Label>
+              <Textarea rows={3} disabled={locked} value={form.cause_of_death}
+                        onChange={e => update({ cause_of_death: e.target.value })}
+                        placeholder="Immediate cause, and antecedent causes if known" />
+            </div>
+          </div>
+        )}
+        {form.discharge_type === 'transfer' && (
+          <div className="border-2 border-blue-300 rounded p-3 bg-blue-50 space-y-3 text-sm">
+            <p className="font-semibold text-blue-900">Transfer to another hospital</p>
+            <p className="text-xs text-blue-900">
+              These fields print only on a transfer summary.
+            </p>
+            <div>
+              <Label>Transferred to *</Label>
+              <Input disabled={locked} value={form.transfer_facility}
+                     onChange={e => update({ transfer_facility: e.target.value })}
+                     placeholder="Receiving hospital or centre" />
+            </div>
+            <div>
+              <Label>Reason for transfer *</Label>
+              <Textarea rows={3} disabled={locked} value={form.transfer_reason}
+                        onChange={e => update({ transfer_reason: e.target.value })}
+                        placeholder="Why further care is needed elsewhere" />
+            </div>
+            <div>
+              <Label>Referred to</Label>
+              <Input disabled={locked} value={form.transfer_contact}
+                     onChange={e => update({ transfer_contact: e.target.value })}
+                     placeholder="Accepting doctor or contact, if known" />
+            </div>
+          </div>
+        )}
+        {form.discharge_type !== 'death' && hasStandard('discharge_advice') && (
           <Section title={standardLabel('discharge_advice', 'Discharge Advice')}>
             <Textarea rows={3} disabled={locked} value={form.discharge_advice}
                       onChange={e => update({ discharge_advice: e.target.value })} />
           </Section>
         )}
-        {hasBlockType('follow_up') && (
+        {form.discharge_type !== 'death' && hasBlockType('follow_up') && (
         <Section title={
           (template?.blocks || []).find((b) => b.type === 'follow_up')?.label
           || 'Follow Up'
@@ -694,7 +923,7 @@ const DischargeSummaryEditor = ({
             <p className="text-xs text-gray-400">Printed on every discharge summary (hospital note)</p>
           </div>
         ))}
-        {hasBlockType('medications_table') && (
+        {form.discharge_type !== 'death' && hasBlockType('medications_table') && (
         <Section title={
           (template?.blocks || []).find((b) => b.type === 'medications_table')?.label
           || 'Take-home medications'
@@ -738,13 +967,42 @@ const DischargeSummaryEditor = ({
           <>
             <SummaryStepper
               step={step}
-              onStepClick={setStep}
+              onStepClick={goToStep}
               locked={locked}
             />
             <div className="flex-1 overflow-y-auto min-h-0 py-1 pr-1">
               {isSubmittedReady && !editingSubmitted && (
                 <div className="mb-3 text-xs text-green-800 bg-green-50 border border-green-200 rounded p-2">
                   This summary is marked <b>ready for print</b>. Click <b>Edit submitted summary</b> to make changes.
+                </div>
+              )}
+              {step > 1 && (
+                <div className={
+                  'mb-3 text-xs rounded border p-2 flex flex-wrap gap-x-4 gap-y-1 ' +
+                  (form.discharge_type === 'against_advice'
+                    ? 'bg-red-50 border-red-200 text-red-900'
+                    : 'bg-slate-50 border-slate-200 text-gray-700')
+                }>
+                  <span>
+                    <span className="text-gray-500">Discharge type: </span>
+                    <span className="font-medium">{DISCHARGE_TYPE_LABELS[form.discharge_type] || 'Not selected'}</span>
+                  </span>
+                  {form.discharge_type !== 'death' && (
+                    <span>
+                      <span className="text-gray-500">Condition: </span>
+                      <span className="font-medium">{CONDITION_ON_DISCHARGE_LABELS[form.condition_on_discharge] || 'Not selected'}</span>
+                    </span>
+                  )}
+                  <span>
+                    <span className="text-gray-500">Primary doctor: </span>
+                    <span className="font-medium">{doctorLabel(form.primary_doctor_id) || 'Not selected'}</span>
+                  </span>
+                  {form.secondary_doctor_id && (
+                    <span>
+                      <span className="text-gray-500">Secondary doctor: </span>
+                      <span className="font-medium">{doctorLabel(form.secondary_doctor_id)}</span>
+                    </span>
+                  )}
                 </div>
               )}
               {renderStep()}

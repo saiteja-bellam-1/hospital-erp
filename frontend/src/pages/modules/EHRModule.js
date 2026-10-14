@@ -23,10 +23,11 @@ import ReferralSelectWithCreate from '../../components/ReferralSelectWithCreate'
 import EhrExportDialog from '../../components/EhrExportDialog';
 import { useToast } from '../../hooks/use-toast';
 import { applyDobToForm, formatPatientAge } from '../../utils/patientAge';
+import { aadhaarInputError } from '../../components/PatientRegisterFormFields';
 
 const EMPTY_EDIT_FORM = {
   first_name: '', last_name: '', date_of_birth: '', age: '', age_months: '', gender: '',
-  blood_group: '', marital_status: '', abha_id: '', gstin: '', email: '', referred_by: '',
+  blood_group: '', marital_status: '', abha_id: '', aadhaar_number: '', gstin: '', email: '', referred_by: '',
   emergency_contact_name: '', emergency_contact_phone: '', emergency_contact_relation: '',
   address_line1: '', address_line2: '', village: '', mandal: '', district: '',
 };
@@ -216,6 +217,7 @@ const EHRPage = () => {
         blood_group: data.blood_group || '',
         marital_status: data.marital_status || '',
         abha_id: data.abha_id || '',
+        aadhaar_number: data.aadhaar_number || '',
         gstin: data.gstin || '',
         email: data.email || '',
         referred_by: data.referred_by || '',
@@ -239,6 +241,11 @@ const EHRPage = () => {
 
   const handleUpdatePatient = async () => {
     if (!selectedPatient?.patient_id) return;
+    const aadhaarError = aadhaarInputError(editPatientForm.aadhaar_number);
+    if (aadhaarError) {
+      toast({ title: 'Update Failed', description: aadhaarError, variant: 'destructive' });
+      return;
+    }
     setEditLoading(true);
     try {
       const updateData = {};
@@ -1658,6 +1665,19 @@ const EHRPage = () => {
                   value={editPatientForm.abha_id}
                   onChange={(e) => setEditPatientForm({ ...editPatientForm, abha_id: e.target.value })}
                   placeholder="14-digit ABHA number"
+                />
+              </div>
+              <div>
+                <Label>Aadhaar Number</Label>
+                <Input
+                  inputMode="numeric"
+                  maxLength={12}
+                  value={editPatientForm.aadhaar_number || ''}
+                  onChange={(e) => setEditPatientForm({
+                    ...editPatientForm,
+                    aadhaar_number: e.target.value.replace(/\D/g, '').slice(0, 12),
+                  })}
+                  placeholder="12-digit Aadhaar"
                 />
               </div>
               <div>

@@ -216,6 +216,18 @@ class AdmissionDischargeSummary(Base):
 
     discharge_type = Column(String(20), default="normal")
     condition_on_discharge = Column(String(20), default="stable")
+    # Filled only when discharge_type is against_advice (DAMA).
+    dama_medical_advice = Column(Text, nullable=True)
+    dama_risks_explained = Column(Text, nullable=True)
+    dama_advice_acknowledged = Column(Boolean, default=False, nullable=False)
+    dama_absolves_acknowledged = Column(Boolean, default=False, nullable=False)
+    # Filled only when discharge_type is death.
+    time_of_death = Column(DateTime(timezone=True), nullable=True)
+    cause_of_death = Column(Text, nullable=True)
+    # Filled only when discharge_type is transfer.
+    transfer_facility = Column(String(200), nullable=True)
+    transfer_reason = Column(Text, nullable=True)
+    transfer_contact = Column(String(200), nullable=True)
     take_home_medications = Column(JSON, nullable=True)
     follow_up_date = Column(DateTime(timezone=True), nullable=True)
     diet_instructions = Column(Text, nullable=True)

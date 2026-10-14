@@ -4,7 +4,7 @@ import { Button } from '../../../../components/ui/button';
 import { CheckCircle2, Circle, FileText, Pencil, Printer, AlertTriangle } from 'lucide-react';
 
 import { DISCHARGE_SUMMARY_STATUS } from './constants';
-import { summaryIsReadyForPrint } from './dischargeSummaryUtils';
+import { summaryIsReadyForPrint, DISCHARGE_TYPE_LABELS, CONDITION_ON_DISCHARGE_LABELS } from './dischargeSummaryUtils';
 
 const STATUS = DISCHARGE_SUMMARY_STATUS;
 
@@ -112,8 +112,27 @@ export default function DischargeSummaryPreviewCard({
           </div>
         )}
 
-        {(summary?.payer_label || summary?.department_name || summary?.surgery_date) && (
+        {(summary?.payer_label || summary?.department_name || summary?.surgery_date
+          || summary?.discharge_type || summary?.condition_on_discharge || summary?.primary_doctor_name) && (
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600">
+            {summary.discharge_type && (
+              <span>
+                <span className="text-gray-400">Type:</span>{' '}
+                {DISCHARGE_TYPE_LABELS[summary.discharge_type] || summary.discharge_type}
+              </span>
+            )}
+            {summary.condition_on_discharge && summary.discharge_type !== 'death' && (
+              <span>
+                <span className="text-gray-400">Condition:</span>{' '}
+                {CONDITION_ON_DISCHARGE_LABELS[summary.condition_on_discharge] || summary.condition_on_discharge}
+              </span>
+            )}
+            {summary.primary_doctor_name && (
+              <span><span className="text-gray-400">Doctor:</span> {summary.primary_doctor_name}</span>
+            )}
+            {summary.secondary_doctor_name && (
+              <span><span className="text-gray-400">Secondary:</span> {summary.secondary_doctor_name}</span>
+            )}
             {summary.department_name && (
               <span><span className="text-gray-400">Dept:</span> {summary.department_name}</span>
             )}
@@ -123,6 +142,37 @@ export default function DischargeSummaryPreviewCard({
             {summary.surgery_date && (
               <span><span className="text-gray-400">Surgery:</span> {summary.surgery_date}</span>
             )}
+          </div>
+        )}
+
+        {summary?.discharge_type === 'against_advice' && (
+          <div className="text-xs bg-red-50 border border-red-100 rounded px-2 py-1.5 text-red-900">
+            <span className="font-medium">DAMA: </span>
+            {(summary.dama_medical_advice || '').trim() ? 'advice recorded' : 'advice missing'}
+            {' · '}
+            {(summary.dama_risks_explained || '').trim() ? 'risks recorded' : 'risks missing'}
+            {' · '}
+            {summary.dama_advice_acknowledged && summary.dama_absolves_acknowledged
+              ? 'acknowledgements complete'
+              : 'acknowledgements incomplete'}
+          </div>
+        )}
+
+        {summary?.discharge_type === 'death' && (
+          <div className="text-xs bg-slate-100 border border-slate-200 rounded px-2 py-1.5 text-slate-900">
+            <span className="font-medium">Death: </span>
+            {summary.time_of_death ? 'time recorded' : 'time missing'}
+            {' · '}
+            {(summary.cause_of_death || '').trim() ? 'cause recorded' : 'cause missing'}
+          </div>
+        )}
+
+        {summary?.discharge_type === 'transfer' && (
+          <div className="text-xs bg-blue-50 border border-blue-100 rounded px-2 py-1.5 text-blue-900">
+            <span className="font-medium">Transfer: </span>
+            {(summary.transfer_facility || '').trim() || 'receiving hospital missing'}
+            {' · '}
+            {(summary.transfer_reason || '').trim() ? 'reason recorded' : 'reason missing'}
           </div>
         )}
 

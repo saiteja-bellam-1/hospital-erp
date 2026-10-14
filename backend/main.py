@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.orm import Session
 import uvicorn
 import os
@@ -451,9 +451,26 @@ def _ensure_modules():
     heal_system_modules()
 
 
+def _website_index_path():
+    """Introduction page shipped inside the frontend build at website/index.html."""
+    built = os.path.join(get_frontend_dir(), "website", "index.html")
+    if os.path.isfile(built):
+        return built
+    if not is_bundled():
+        public = os.path.join(
+            os.path.dirname(get_frontend_dir()), "public", "website", "index.html"
+        )
+        if os.path.isfile(public):
+            return public
+    return None
+
+
 @app.get("/")
 async def root():
-    # If frontend build exists, serve it
+    # Home URL is the introduction page. The hospital app is /login and /dashboard.
+    site_index = _website_index_path()
+    if site_index:
+        return FileResponse(site_index)
     frontend_index = os.path.join(get_frontend_dir(), "index.html")
     if os.path.isfile(frontend_index):
         return FileResponse(frontend_index)
@@ -531,6 +548,10 @@ if os.path.isdir(_frontend_dir):
     async def serve_spa(request: Request, full_path: str):
         if full_path.startswith("api/") or full_path.startswith("uploads/"):
             raise HTTPException(status_code=404, detail="Not found")
+
+        # Old introduction URL now lives at /.
+        if full_path.strip("/") == "website":
+            return RedirectResponse(url="/", status_code=307)
 
         # Try to serve the exact file first (e.g., favicon.ico, manifest.json)
         file_path = os.path.join(_frontend_dir, full_path)
