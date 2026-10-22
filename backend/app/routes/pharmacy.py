@@ -1962,6 +1962,7 @@ def download_inventory_label_pdf(
     sheet_mode: Optional[str] = None,
     sheet_width_mm: Optional[float] = None,
     sheet_height_mm: Optional[float] = None,
+    dpi: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_inventory")),
 ):
@@ -1976,6 +1977,7 @@ def download_inventory_label_pdf(
         sheet_mode=sheet_mode,
         sheet_width_mm=sheet_width_mm,
         sheet_height_mm=sheet_height_mm,
+        dpi=dpi,
     )
     pdf_bytes = _inventory_label_pdf(
         db, current_user.hospital_id, [inventory_id], current_user,
@@ -2006,6 +2008,7 @@ def download_inventory_label_html(
     sheet_mode: Optional[str] = None,
     sheet_width_mm: Optional[float] = None,
     sheet_height_mm: Optional[float] = None,
+    dpi: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_inventory")),
 ):
@@ -2020,6 +2023,7 @@ def download_inventory_label_html(
         sheet_mode=sheet_mode or "thermal",
         sheet_width_mm=sheet_width_mm,
         sheet_height_mm=sheet_height_mm,
+        dpi=dpi,
     )
     html_body = _inventory_label_html(
         db, current_user.hospital_id, [inventory_id], current_user,
@@ -2047,6 +2051,7 @@ def download_inventory_labels_batch_pdf(
     sheet_mode: Optional[str] = None,
     sheet_width_mm: Optional[float] = None,
     sheet_height_mm: Optional[float] = None,
+    dpi: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_inventory")),
 ):
@@ -2061,6 +2066,7 @@ def download_inventory_labels_batch_pdf(
         sheet_mode=sheet_mode,
         sheet_width_mm=sheet_width_mm,
         sheet_height_mm=sheet_height_mm,
+        dpi=dpi,
     )
     pdf_bytes = _inventory_label_pdf(
         db, current_user.hospital_id, body.inventory_ids, current_user,
@@ -2091,6 +2097,7 @@ def download_inventory_labels_batch_html(
     sheet_mode: Optional[str] = None,
     sheet_width_mm: Optional[float] = None,
     sheet_height_mm: Optional[float] = None,
+    dpi: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_inventory")),
 ):
@@ -2105,6 +2112,7 @@ def download_inventory_labels_batch_html(
         sheet_mode=sheet_mode or "thermal",
         sheet_width_mm=sheet_width_mm,
         sheet_height_mm=sheet_height_mm,
+        dpi=dpi,
     )
     html_body = _inventory_label_html(
         db, current_user.hospital_id, body.inventory_ids, current_user,

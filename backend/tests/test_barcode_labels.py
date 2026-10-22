@@ -15,18 +15,19 @@ from app.utils.barcode_draw import (
     MIN_MODULE_DOTS,
     barcode_module_ok,
     barcode_payload,
+    dot_size_pt,
     measure_fitted_size,
+    normalize_label_dpi,
     resolve_label_symbology,
 )
 from app.utils.label_pdf_service import (
     TEST_LABEL_BARCODE,
-    TEXT_BARCODE_GAP,
     LabelLayoutConfig,
     build_label_html,
     build_label_pdf,
+    font_pt_for_band,
+    pharmacy_sticker_bands,
     _label_positions,
-    _pt_to_mm,
-    _text_ascent_mm,
 )
 
 
@@ -374,45 +375,68 @@ def test_patient_file_label_html_endpoint(client, auth_headers, seed_data):
     assert b"<svg" in res.content.lower()
 
 
-def test_patient_file_body_starts_below_barcode_band():
-    """Body text ascent must stay below the barcode band (no overlap)."""
-    h = 40 * mm
-    pad = max(0.8 * mm, min(1.8 * mm, h * 0.04, 70 * mm * 0.03))
-    label_pt = max(5.0, min(7.0, 40 * 0.16))
-    line = max(2.4 * mm, min(3.8 * mm, h * 0.085))
-    body_lines = 4
-    body_budget = (
-        _text_ascent_mm(label_pt)
-        + max(0, body_lines - 1) * line
-        + _pt_to_mm(label_pt * 0.28)
-        + 0.4 * mm
-    )
-    digit_pt = max(4.5, min(6.0, 40 * 0.14))
-    digit_reserve = _text_ascent_mm(digit_pt) + _pt_to_mm(digit_pt * 0.28) + 0.4 * mm
-    bar_h = max(5.0 * mm, min(11.0 * mm, h - body_budget - digit_reserve - 2 * pad - TEXT_BARCODE_GAP))
-    bar_bottom_from_top = pad + bar_h
-    first_baseline_from_top = bar_bottom_from_top + TEXT_BARCODE_GAP + _text_ascent_mm(label_pt)
-    glyph_top_from_top = first_baseline_from_top - _text_ascent_mm(label_pt)
-    assert glyph_top_from_top + 1e-6 >= bar_bottom_from_top + TEXT_BARCODE_GAP
+def test_pharmacy_type_scales_with_sticker_and_fills_it():
+    """Text and bands are shares of the sticker, so a taller sticker gets larger type."""
+    small = pharmacy_sticker_bands(38, 25, show_header=True)
+    large = pharmacy_sticker_bands(70, 40, show_header=True)
+    for bands, height in ((small, 25), (large, 40)):
+        used = (
+            bands.pad_y_mm * 2
+            + bands.gap_mm * bands.gap_count
+            + bands.header_mm
+            + bands.barcode_mm
+            + bands.footer_mm
+        )
+        assert abs(used - height) < 0.05
+    name_small = font_pt_for_band(small.footer_mm / 3, 0.88)
+    name_large = font_pt_for_band(large.footer_mm / 3, 0.88)
+    assert name_small >= 9.0
+    assert name_large > name_small * 1.4
 
 
-def test_lab_bands_leave_gap_around_barcode():
-    h = 30 * mm
-    pad = max(1.0 * mm, min(1.8 * mm, h * 0.05, 50 * mm * 0.03))
-    name_pt, meta_pt = 7.0, 6.0
-    line_gap = 2.4 * mm
-    header_content = (
-        _text_ascent_mm(name_pt) + line_gap + _text_ascent_mm(meta_pt) + _pt_to_mm(meta_pt * 0.28)
-    )
-    header_h = max(header_content + 0.4 * mm, min(10.0 * mm, h * 0.28))
-    footer_h = max(_text_ascent_mm(meta_pt) + _pt_to_mm(meta_pt * 0.28) + 0.4 * mm, min(5.0 * mm, h * 0.14))
-    usable = h - 2 * pad
-    bar_h = usable - header_h - footer_h - 2 * TEXT_BARCODE_GAP
-    assert bar_h > 3 * mm
-    sample_baseline_from_top = pad + _text_ascent_mm(name_pt) + line_gap
-    sample_bottom = sample_baseline_from_top + _pt_to_mm(meta_pt * 0.28)
-    barcode_top = pad + header_h + TEXT_BARCODE_GAP
-    assert barcode_top + 1e-6 >= sample_bottom
+def test_label_dpi_snaps_to_printer_head():
+    assert normalize_label_dpi(300) == 300
+    assert normalize_label_dpi(280) == 300
+    assert normalize_label_dpi("nope") == 203
+    layout = LabelLayoutConfig.from_dict({"width_mm": 50, "height_mm": 25, "dpi": 600})
+    assert layout.dpi == 600
+    code = generate_batch_ean13(10)
+    measured = measure_fitted_size(code, 40 * mm, 10 * mm, dpi=300)
+    assert measured is not None
+    _w, _h, _sym, module = measured
+    dots = module / dot_size_pt(300)
+    assert abs(dots - round(dots)) < 0.08
+    assert barcode_module_ok(module, 300)
+
+
+def test_wide_barcode_uses_the_sticker_width():
+    code = generate_batch_ean13(10)
+    measured = measure_fitted_size(code, 90 * mm, 8 * mm)
+    assert measured is not None
+    w, h, _sym, _module = measured
+    assert w >= 0.90 * 90 * mm
+    assert h <= 8 * mm + 0.5
+
+
+def test_pharmacy_html_font_and_barcode_follow_sticker():
+    payload = {
+        "name": "Paracetamol 500mg",
+        "batch_number": "BATCH-A",
+        "expiry_date": "2027-12-31",
+        "batch_barcode": generate_batch_ean13(10),
+    }
+    small = build_label_html([payload], LabelLayoutConfig(width_mm=38, height_mm=25), "pharmacy_batch")
+    large = build_label_html([payload], LabelLayoutConfig(width_mm=70, height_mm=40), "pharmacy_batch")
+    assert 'width="' in small and "mm" in small.split('width="', 1)[1][:12]
+    assert "font-size: 5.5pt" not in small
+    assert "font-size: 7pt" not in small
+
+    def name_pt(html):
+        marker = ".name { font-size: "
+        start = html.index(marker) + len(marker)
+        return float(html[start:html.index("pt", start)])
+
+    assert name_pt(large) > name_pt(small) * 1.4
 
 
 def test_build_labels_still_pdf_after_band_fix():

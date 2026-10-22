@@ -6,14 +6,14 @@
   <title>KT HEALTH ERP — Hospital work, held in one place</title>
   <meta name="description" content="KT HEALTH ERP is the hospital program for reception, wards, laboratory, pharmacy, and billing. Records remain on a computer in the hospital.">
   <meta name="theme-color" content="#245f99">
-  <link rel="icon" href="/website/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="logo.jpg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;600;700&family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=Plus+Jakarta+Sans:wght@500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/website/styles.css">
+  <link rel="stylesheet" href="styles.css">
   <!--
-    Introduction page for the frontend home URL (/).
-    Assets stay in frontend/public/website and are copied into the production build.
+    Introduction site. Hosted on port 8080.
+    Log in links are rewritten to the ERP on port 3000 (__ERP_ORIGIN__).
   -->
 </head>
 <body id="top">
@@ -22,7 +22,7 @@
   <header class="site-header">
     <div class="wrap header-inner">
       <a class="brand" href="#top">
-        <img src="/website/logo.jpg" alt="" width="56" height="32">
+        <img src="logo.jpg" alt="" width="56" height="32">
         <span class="brand-name">KT HEALTH <span>ERP</span></span>
       </a>
       <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav">
@@ -38,7 +38,7 @@
         <a href="#place">Premises</a>
         <a href="#documents">Documents</a>
         <a href="#questions">Questions</a>
-        <a class="btn btn-primary nav-cta" href="/login">Log in</a>
+        <a class="btn btn-primary nav-cta" href="__ERP_ORIGIN__/login">Log in</a>
       </nav>
     </div>
   </header>
@@ -51,7 +51,7 @@
           <h1>Hospital work, held in <span class="script">one place.</span></h1>
           <p class="hero-lead">KT HEALTH ERP is the program for reception, wards, laboratory, pharmacy, and billing. A patient is entered once. The same record follows the visit.</p>
           <div class="hero-actions">
-            <a class="btn btn-primary" href="/login">Log in</a>
+            <a class="btn btn-primary" href="__ERP_ORIGIN__/login">Log in</a>
             <a class="btn btn-secondary" href="#coverage">View coverage</a>
             <a class="btn btn-secondary" href="#place">Where it runs</a>
           </div>
@@ -310,7 +310,7 @@
         <h2 id="close-title">Request a <span class="script">walk-through.</span></h2>
         <p>Speak with the person who looks after KT HEALTH ERP for your hospital. They can show reception, a bill, and a printed report.</p>
         <div class="hero-actions">
-          <a class="btn btn-primary" href="/login">Log in</a>
+          <a class="btn btn-primary" href="__ERP_ORIGIN__/login">Log in</a>
         </div>
         <p class="fine">This page does not open the program.</p>
       </div>

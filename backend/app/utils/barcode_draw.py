@@ -3,7 +3,7 @@
 Internal hospital codes (prefixes 20–23) print as Code128 with the same digit
 payload so scanners still wedge the stored EAN-13 string. Manufacturer retail
 codes print as EAN-13. Symbols are uniformly scaled (never height-only) and
-module widths are snapped toward 203 dpi dots.
+module widths are snapped to the printer DPI (203, 300, or 600).
 """
 from __future__ import annotations
 
@@ -33,10 +33,30 @@ INTERNAL_PREFIXES = (
     PREFIX_PHARMACY_BATCH,
 )
 
-# 203 dpi thermal: one printer dot ≈ 0.125 mm.
-DOT_PT = 0.125 * mm
+# Thermal heads in common use. Bars are snapped to whole dots at the chosen DPI.
+LABEL_DPI_CHOICES = (203, 300, 600)
+DEFAULT_LABEL_DPI = 203
 MIN_MODULE_DOTS = 2
+MAX_MODULE_DOTS = 80
+# 203 dpi default, kept for callers that have not picked a printer DPI.
+DOT_PT = (25.4 / DEFAULT_LABEL_DPI) * mm
+
+
+def normalize_label_dpi(value: object) -> int:
+    """Snap a requested DPI to 203, 300, or 600."""
+    try:
+        dpi = int(round(float(value)))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return DEFAULT_LABEL_DPI
+    return min(LABEL_DPI_CHOICES, key=lambda choice: abs(choice - dpi))
+
+
+def dot_size_pt(dpi: int = DEFAULT_LABEL_DPI) -> float:
+    """Width of one printer dot in PDF points."""
+    return (25.4 / normalize_label_dpi(dpi)) * mm
 DEFAULT_BAR_WIDTH_PT = 0.33 * mm  # GS1 nominal X before fit/snap
+# Share of a barcode band reserved for the digits under the bars.
+DIGIT_BAND_RATIO = 0.22
 
 
 def digits_only(value: str) -> str:
@@ -160,47 +180,29 @@ def build_barcode_drawing(
     symbology: Optional[Symbology] = None,
     human_readable: bool = False,
     bar_width: float = DEFAULT_BAR_WIDTH_PT,
+    dpi: int = DEFAULT_LABEL_DPI,
 ) -> Optional[Tuple[Drawing, Symbology, float]]:
     """
-    Build a Drawing that fits inside max_width × max_height (points).
+    Build a Drawing that fills max_width × max_height (points).
 
     Returns (drawing, symbology, effective_module_pt) or None.
     Quiet zones are part of the symbol bounds and are never cropped.
-    Module (X) width is chosen as a whole number of 203 dpi dots when possible.
+    Module (X) width prefers a whole number of dots at `dpi`, then grows so the
+    symbol uses the sticker width instead of sitting in a side gap.
     """
     sym = symbology or resolve_label_symbology(value)
     payload = barcode_payload(value, sym)
     if not payload or max_width < 2 * mm or max_height < 1.5 * mm:
         return None
 
-    bar_h = max(max_height * 0.92, 2 * mm)
+    dot = dot_size_pt(dpi)
+    bar_h = max(max_height * 0.98, 2 * mm)
 
-    # Prefer the largest whole-dot module that still fits the box.
-    chosen = None
-    for dots in range(8, MIN_MODULE_DOTS - 1, -1):
-        trial_w = dots * DOT_PT
+    def _make(module_pt: float):
         src = _raw_barcode_drawing(
             payload,
             sym,
-            bar_width=trial_w,
-            bar_height=bar_h,
-            human_readable=human_readable,
-        )
-        if src is None:
-            continue
-        nat_w = float(getattr(src, "width", 0) or 0)
-        nat_h = float(getattr(src, "height", 0) or 0)
-        if nat_w <= 0 or nat_h <= 0:
-            continue
-        if nat_w <= max_width + 1e-6 and nat_h <= max_height + 1e-6:
-            chosen = (src, trial_w, 1.0)
-            break
-
-    if chosen is None:
-        src = _raw_barcode_drawing(
-            payload,
-            sym,
-            bar_width=bar_width,
+            bar_width=module_pt,
             bar_height=bar_h,
             human_readable=human_readable,
         )
@@ -210,29 +212,68 @@ def build_barcode_drawing(
         nat_h = float(getattr(src, "height", 0) or 0)
         if nat_w <= 0 or nat_h <= 0:
             return None
-        scale, module_pt = _fit_scale(nat_w, nat_h, max_width, max_height, bar_width)
+        return src
+
+    # Largest whole-dot module that still fits the sticker.
+    best_src = None
+    best_module = 0.0
+    lo, hi = MIN_MODULE_DOTS, MAX_MODULE_DOTS
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        src = _make(mid * dot)
+        if src is not None and src.width <= max_width + 1e-6 and src.height <= max_height + 1e-6:
+            best_src = src
+            best_module = mid * dot
+            lo = mid + 1
+        else:
+            hi = mid - 1
+
+    if best_src is None:
+        src = _make(bar_width)
+        if src is None:
+            return None
+        scale, module_pt = _fit_scale(
+            float(src.width), float(src.height), max_width, max_height, bar_width, dot,
+        )
         if scale <= 0:
             return None
-        chosen_src = src
-        chosen_module = module_pt
-        chosen_scale = scale
-    else:
-        chosen_src, chosen_module, chosen_scale = chosen[0], chosen[1], chosen[2]
-        nat_w = float(chosen_src.width)
-        nat_h = float(chosen_src.height)
-        if nat_h > max_height + 1e-6 or nat_w > max_width + 1e-6:
-            chosen_scale = min(max_width / nat_w, max_height / nat_h)
-            chosen_module = chosen_module * chosen_scale
+        return _scaled_drawing(src, scale), sym, module_pt
 
-    out_w = float(chosen_src.width) * chosen_scale
-    out_h = float(chosen_src.height) * chosen_scale
-    if abs(chosen_scale - 1.0) < 1e-9:
-        return chosen_src, sym, chosen_module
-    group = Group(chosen_src)
-    group.scale(chosen_scale, chosen_scale)
+    # Stay on whole printer dots. A wider whole-dot module is used when it
+    # still fits; a fractional module would blur on the thermal head.
+    src = best_src
+    module_pt = best_module
+    if src.width < max_width * 0.92:
+        grown_module = best_module * (max_width / float(src.width))
+        nearest = max(MIN_MODULE_DOTS, int(round(grown_module / dot)))
+        nearest = min(MAX_MODULE_DOTS, nearest)
+        snapped = _make(nearest * dot)
+        if (
+            snapped is not None
+            and snapped.height <= max_height + 1e-6
+            and snapped.width <= max_width + 1e-6
+            and snapped.width + 1e-6 >= float(src.width)
+        ):
+            src = snapped
+            module_pt = nearest * dot
+
+    if src.width > max_width + 1e-6 or src.height > max_height + 1e-6:
+        scale = min(max_width / float(src.width), max_height / float(src.height))
+        module_pt *= scale
+        return _scaled_drawing(src, scale), sym, module_pt
+    return src, sym, module_pt
+
+
+def _scaled_drawing(src: Drawing, scale: float) -> Drawing:
+    if abs(scale - 1.0) < 1e-9:
+        return src
+    out_w = float(src.width) * scale
+    out_h = float(src.height) * scale
+    group = Group(src)
+    group.scale(scale, scale)
     out = Drawing(out_w, out_h)
     out.add(group)
-    return out, sym, chosen_module
+    return out
 
 
 def _fit_scale(
@@ -241,6 +282,7 @@ def _fit_scale(
     max_w: float,
     max_h: float,
     base_bar_width: float,
+    dot: float = DOT_PT,
 ) -> Tuple[float, float]:
     """Best-effort uniform scale; snap module down to whole dots without upsizing."""
     if nat_w <= 0 or nat_h <= 0 or max_w <= 0 or max_h <= 0:
@@ -249,19 +291,19 @@ def _fit_scale(
     if scale <= 0:
         return 0.0, 0.0
     effective = base_bar_width * scale
-    min_module = MIN_MODULE_DOTS * DOT_PT
+    min_module = MIN_MODULE_DOTS * dot
     if effective + 1e-9 < min_module:
         return scale, effective
-    dots = max(MIN_MODULE_DOTS, int(effective / DOT_PT))
-    snapped = dots * DOT_PT
+    dots = max(MIN_MODULE_DOTS, int(effective / dot))
+    snapped = dots * dot
     scale_snapped = snapped / base_bar_width
     final = min(scale, scale_snapped)
     return final, base_bar_width * final
 
 
-def barcode_module_ok(module_pt: float) -> bool:
-    """True when the narrowest bar is at least ~2 dots at 203 dpi."""
-    return module_pt + 1e-9 >= (MIN_MODULE_DOTS * DOT_PT)
+def barcode_module_ok(module_pt: float, dpi: int = DEFAULT_LABEL_DPI) -> bool:
+    """True when the narrowest bar is at least ~2 dots at the printer DPI."""
+    return module_pt + 1e-9 >= (MIN_MODULE_DOTS * dot_size_pt(dpi))
 
 
 def draw_linear_barcode(
@@ -276,6 +318,7 @@ def draw_linear_barcode(
     human_readable: bool = False,
     align: Literal["left", "center", "right"] = "left",
     area_width: Optional[float] = None,
+    dpi: int = DEFAULT_LABEL_DPI,
 ) -> Optional[Tuple[float, float, Symbology]]:
     """
     Draw a fitted linear barcode with bottom-left at (x, y).
@@ -288,6 +331,7 @@ def draw_linear_barcode(
         max_height=max_height,
         symbology=symbology,
         human_readable=human_readable,
+        dpi=dpi,
     )
     if not built:
         return None
@@ -313,6 +357,7 @@ def draw_barcode_with_digits_below(
     zone_height: float,
     *,
     symbology: Optional[Symbology] = None,
+    dpi: int = DEFAULT_LABEL_DPI,
 ) -> Optional[Symbology]:
     """Pharmacy-style: bars centered in zone, human-readable digits under bars.
 
@@ -320,25 +365,21 @@ def draw_barcode_with_digits_below(
     """
     if zone_height < 2.0 * mm or zone_width < 4.0 * mm:
         return None
-    payload_preview = digits_only(value) or (value or "").strip()
-    digit_pt = max(3.2, min(4.8, (zone_height / mm) * 1.15))
+    payload_preview = (value or "").strip()
+    # Digits take a fixed share of the band so they grow with the sticker.
+    digit_band = zone_height * DIGIT_BAND_RATIO
+    digit_pt = (digit_band / mm) * 0.78 * 72.0 / 25.4
     ascent = digit_pt * 0.72 * (25.4 / 72.0)
     descent = digit_pt * 0.28 * (25.4 / 72.0)
-    digit_gap = 0.35 * mm
-    digit_band = ascent + descent + digit_gap
-    if digit_band > zone_height * 0.45:
-        digit_band = zone_height * 0.35
-        digit_pt = max(3.0, min(digit_pt, (digit_band - digit_gap) / ((0.72 + 0.28) * (25.4 / 72.0))))
-        ascent = digit_pt * 0.72 * (25.4 / 72.0)
-        descent = digit_pt * 0.28 * (25.4 / 72.0)
     bars_h = max(1.0, zone_height - digit_band)
-    max_bar_w = zone_width * 0.95
+    max_bar_w = zone_width
     built = build_barcode_drawing(
         value,
         max_width=max_bar_w,
         max_height=bars_h,
         symbology=symbology,
         human_readable=False,
+        dpi=dpi,
     )
     if not built:
         return None
@@ -367,6 +408,7 @@ def barcode_svg_markup(
     max_height_mm: float,
     symbology: Optional[Symbology] = None,
     human_readable: bool = False,
+    dpi: int = DEFAULT_LABEL_DPI,
 ) -> Optional[str]:
     """SVG fragment for HTML thermal print (same fit rules as PDF)."""
     built = build_barcode_drawing(
@@ -375,6 +417,7 @@ def barcode_svg_markup(
         max_height=max_height_mm * mm,
         symbology=symbology,
         human_readable=human_readable,
+        dpi=dpi,
     )
     if not built:
         return None
@@ -427,6 +470,7 @@ def measure_fitted_size(
     max_height: float,
     *,
     symbology: Optional[Symbology] = None,
+    dpi: int = DEFAULT_LABEL_DPI,
 ) -> Optional[Tuple[float, float, Symbology, float]]:
     """Test helper: (width, height, symbology, module_pt) after fit."""
     built = build_barcode_drawing(
@@ -435,6 +479,7 @@ def measure_fitted_size(
         max_height=max_height,
         symbology=symbology,
         human_readable=False,
+        dpi=dpi,
     )
     if not built:
         return None

@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
 import { Button } from '../ui/button';
@@ -11,10 +12,12 @@ import { printThermalLabelHtml } from '../../utils/printThermalLabel';
 import { usePdfPrintSettings } from '../../hooks/usePdfPrintSettings';
 import { applyThermalRollLayout } from '../../utils/labelPageSize';
 import {
+  LABEL_DPI_OPTIONS,
   LABEL_SIZE_PRESETS,
   layoutPageLabel,
+  normalizeLabelDpi,
+  forgetLabelPrintLayout,
   layoutToQueryParams,
-  rememberLabelPrintLayout,
   seedLabelPrintLayout,
 } from '../../utils/labelPrintLayout';
 
@@ -170,7 +173,7 @@ export default function PurchaseLabelsDialog({
     setError('');
     setBusy(inventoryId);
     try {
-      rememberLabelPrintLayout('pharmacy', layout);
+      forgetLabelPrintLayout('pharmacy');
       const params = labelRequestParams(layoutToQueryParams(layout, { forceSingle: true }));
       const ok = await printThermalLabelHtml(labelHtmlPath(inventoryId), {
         params,
@@ -193,7 +196,7 @@ export default function PurchaseLabelsDialog({
     setBusy('combined');
     setError('');
     try {
-      rememberLabelPrintLayout('pharmacy', layout);
+      forgetLabelPrintLayout('pharmacy');
       const params = labelRequestParams(layoutParams);
       const ok = await printThermalLabelHtml(BULK_LABEL_HTML_PATH, {
         method: 'post',
@@ -220,7 +223,7 @@ export default function PurchaseLabelsDialog({
   const printAllSequential = async () => {
     setBusy('sequence');
     setError('');
-    rememberLabelPrintLayout('pharmacy', layout);
+    forgetLabelPrintLayout('pharmacy');
     const singleParams = layoutToQueryParams(layout, { forceSingle: true });
     for (const line of printable) {
       const params = labelRequestParams(singleParams);
@@ -325,6 +328,25 @@ export default function PurchaseLabelsDialog({
                 />
               </div>
               <div>
+                <Label className="text-xs">DPI</Label>
+                <Select
+                  value={String(normalizeLabelDpi(layout.dpi))}
+                  onValueChange={(v) => {
+                    updateLayout({ dpi: normalizeLabelDpi(v) });
+                    setLoadKey(Date.now());
+                  }}
+                >
+                  <SelectTrigger className="h-8 w-44 text-xs bg-white">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {LABEL_DPI_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
                 <Label className="text-xs">Across</Label>
                 <Select
                   value={String(Math.max(1, Number(layout.labels_per_row) || 1))}
@@ -347,6 +369,13 @@ export default function PurchaseLabelsDialog({
                 <RefreshCw className="h-3.5 w-3.5 mr-1" /> Update preview
               </Button>
             </div>
+            <p className="text-xs text-muted-foreground">
+              Pharmacy sticker size is saved under{' '}
+              <Link to="/dashboard/print-settings" className="underline hover:text-foreground">
+                Customisations → Labels
+              </Link>
+              . A change here applies to this print only.
+            </p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 min-h-0 flex-1 overflow-hidden">
               <div className="border rounded-lg overflow-hidden flex flex-col min-h-[12rem] md:max-h-[22rem]">

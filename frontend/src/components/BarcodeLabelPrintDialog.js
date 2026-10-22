@@ -11,11 +11,13 @@ import { printPdfFromUrl } from '../utils/printPdf';
 import { labelPdfPathToHtml, printThermalLabelHtml } from '../utils/printThermalLabel';
 import { usePdfPrintSettings } from '../hooks/usePdfPrintSettings';
 import {
+  LABEL_DPI_OPTIONS,
   LABEL_SIZE_PRESETS,
   hospitalSettingsPayloadKey,
+  normalizeLabelDpi,
   layoutPageLabel,
   layoutToQueryParams,
-  rememberLabelPrintLayout,
+  forgetLabelPrintLayout,
   seedLabelPrintLayout,
 } from '../utils/labelPrintLayout';
 import { applyThermalRollLayout } from '../utils/labelPageSize';
@@ -47,7 +49,6 @@ export default function BarcodeLabelPrintDialog({
   const { settings, isLoading: settingsLoading, refetch } = usePdfPrintSettings();
   const [layout, setLayout] = React.useState(() => seedLabelPrintLayout(labelKind, null, { allowMultiUp: true }));
   const [layoutReady, setLayoutReady] = React.useState(false);
-  const [rememberSize, setRememberSize] = React.useState(true);
   const [saveHospitalDefault, setSaveHospitalDefault] = React.useState(false);
   const [savingDefault, setSavingDefault] = React.useState(false);
   const [pdfUrl, setPdfUrl] = React.useState(null);
@@ -159,7 +160,7 @@ export default function BarcodeLabelPrintDialog({
   const reloadPreview = () => setLoadKey(Date.now());
 
   const persistBeforePrint = async () => {
-    if (rememberSize) rememberLabelPrintLayout(labelKind, layout);
+    forgetLabelPrintLayout(labelKind);
     if (saveHospitalDefault) {
       setSavingDefault(true);
       try {
@@ -264,11 +265,11 @@ export default function BarcodeLabelPrintDialog({
 
         <div className="space-y-4">
           <p className="text-xs text-muted-foreground">
-            Hospital defaults live under{' '}
-            <Link to="/dashboard/hospital-admin/appearance" className="underline hover:text-foreground">
-              Appearance → Label printing
+            Saved sizes for outpatient, lab, and pharmacy live under{' '}
+            <Link to="/dashboard/print-settings" className="underline hover:text-foreground">
+              Customisations → Labels
             </Link>
-            . Change size below to match your physical stickers — preview regenerates for this print only.
+            . A change here applies to this print. Tick save below to store it for every computer.
           </p>
 
           <div className="rounded-lg border bg-slate-50/80 p-3 space-y-3">
@@ -334,6 +335,25 @@ export default function BarcodeLabelPrintDialog({
                   </SelectContent>
                 </Select>
               </div>
+              <div>
+                <Label className="text-xs">DPI</Label>
+                <Select
+                  value={String(normalizeLabelDpi(layout.dpi))}
+                  onValueChange={(v) => {
+                    updateLayout({ dpi: normalizeLabelDpi(v) });
+                    setLoadKey(Date.now());
+                  }}
+                >
+                  <SelectTrigger className="h-8 w-44 text-xs bg-white">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {LABEL_DPI_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
               {isThermal && (
                 <div>
                   <Label className="text-xs">Across</Label>
@@ -366,19 +386,10 @@ export default function BarcodeLabelPrintDialog({
                 <input
                   type="checkbox"
                   className="h-3.5 w-3.5 rounded border-gray-300"
-                  checked={rememberSize}
-                  onChange={(e) => setRememberSize(e.target.checked)}
-                />
-                Remember size on this browser
-              </label>
-              <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  className="h-3.5 w-3.5 rounded border-gray-300"
                   checked={saveHospitalDefault}
                   onChange={(e) => setSaveHospitalDefault(e.target.checked)}
                 />
-                Also save as hospital default
+                Save this size for this label on every computer
               </label>
             </div>
           </div>

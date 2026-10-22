@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models.permissions import HospitalSettings
+from app.utils.barcode_draw import DEFAULT_LABEL_DPI, normalize_label_dpi
 
 PRINT_SETTING_CATEGORY = "print"
 PRINT_INCLUDE_HEADER_KEY = "include_header_on_pdfs"
@@ -51,6 +52,7 @@ DEFAULT_LAB_LABEL_SETTINGS: dict[str, Any] = {
     "sheet_height_mm": 297.0,
     "show_lab_name": True,
     "lab_name_override": None,
+    "dpi": DEFAULT_LABEL_DPI,
 }
 
 DEFAULT_PHARMACY_LABEL_SETTINGS: dict[str, Any] = {
@@ -68,6 +70,7 @@ DEFAULT_PHARMACY_LABEL_SETTINGS: dict[str, Any] = {
     "lab_name_override": None,
     "show_pharmacy_name": True,
     "pharmacy_name_override": None,
+    "dpi": DEFAULT_LABEL_DPI,
 }
 
 DEFAULT_PATIENT_FILE_LABEL_SETTINGS: dict[str, Any] = {
@@ -83,6 +86,7 @@ DEFAULT_PATIENT_FILE_LABEL_SETTINGS: dict[str, Any] = {
     "sheet_height_mm": 297.0,
     "show_lab_name": False,
     "lab_name_override": None,
+    "dpi": DEFAULT_LABEL_DPI,
 }
 
 LABEL_SHEET_MODES = frozenset({"thermal", "avery"})
@@ -692,6 +696,7 @@ def normalize_label_settings(raw: dict[str, Any] | None, defaults: dict[str, Any
     merged["sheet_mode"] = mode if mode in LABEL_SHEET_MODES else "thermal"
     merged["sheet_width_mm"] = max(50.0, min(500.0, float(merged.get("sheet_width_mm", 210))))
     merged["sheet_height_mm"] = max(50.0, min(500.0, float(merged.get("sheet_height_mm", 297))))
+    merged["dpi"] = normalize_label_dpi(merged.get("dpi", defaults.get("dpi", DEFAULT_LABEL_DPI)))
     merged["show_lab_name"] = bool(merged.get("show_lab_name", defaults.get("show_lab_name", True)))
     override = merged.get("lab_name_override")
     merged["lab_name_override"] = str(override).strip() if override else None

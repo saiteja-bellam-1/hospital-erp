@@ -9,9 +9,11 @@ import { Label } from '../../components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs';
 import { useToast } from '../../hooks/use-toast';
 import { useAuth } from '../../contexts/AuthContext';
-import { Printer, Save, ArrowLeft, Eye, ChevronUp, ChevronDown, Receipt, FileText, LayoutTemplate, Users } from 'lucide-react';
+import { Printer, Save, ArrowLeft, Eye, ChevronUp, ChevronDown, Receipt, FileText, LayoutTemplate, Users, Tag } from 'lucide-react';
 import { invalidatePdfPrintSettingsCache, resolveIncludeHeaderForReport, resolveIncludeFooterForReport } from '../../hooks/usePdfPrintSettings';
 import PrintSettingsPreviewDialog from '../../components/PrintSettingsPreviewDialog';
+import LabelSettingsFields from '../../components/LabelSettingsFields';
+import { forgetLabelPrintLayout } from '../../utils/labelPrintLayout';
 
 const MODULE_ORDER = ['outpatient', 'laboratory', 'billing', 'inpatient', 'pharmacy'];
 const FOOTER_MODULE_ORDER = ['outpatient', 'laboratory'];
@@ -22,6 +24,57 @@ const MODULE_LABELS = {
   inpatient: 'Inpatient',
   pharmacy: 'Pharmacy',
 };
+
+const DEFAULT_LAB_LABELS = {
+  width_mm: 50, height_mm: 30, labels_per_row: 1, labels_per_column: 1,
+  margin_top_mm: 2, margin_left_mm: 2, gutter_mm: 2, sheet_mode: 'thermal',
+  sheet_width_mm: 210, sheet_height_mm: 297, show_lab_name: true, lab_name_override: null,
+  dpi: 203,
+};
+
+const DEFAULT_PHARMACY_LABELS = {
+  width_mm: 38, height_mm: 25, labels_per_row: 1, labels_per_column: 1,
+  margin_top_mm: 2, margin_left_mm: 2, gutter_mm: 2, sheet_mode: 'thermal',
+  sheet_width_mm: 210, sheet_height_mm: 297, show_lab_name: false, lab_name_override: null,
+  dpi: 203,
+};
+
+const DEFAULT_OUTPATIENT_LABELS = {
+  width_mm: 70, height_mm: 40, labels_per_row: 1, labels_per_column: 1,
+  margin_top_mm: 2, margin_left_mm: 2, gutter_mm: 2, sheet_mode: 'thermal',
+  sheet_width_mm: 210, sheet_height_mm: 297, show_lab_name: false, lab_name_override: null,
+  dpi: 203,
+};
+
+const LABEL_SIZE_SECTIONS = [
+  {
+    key: 'patient_file_label_settings',
+    kind: 'patient_file',
+    title: 'Outpatient',
+    hint: 'Patient file stickers from reception and appointments.',
+    defaults: DEFAULT_OUTPATIENT_LABELS,
+  },
+  {
+    key: 'lab_label_settings',
+    kind: 'lab',
+    title: 'Laboratory',
+    hint: 'Sample tube labels.',
+    defaults: DEFAULT_LAB_LABELS,
+    showLabName: true,
+  },
+  {
+    key: 'pharmacy_label_settings',
+    kind: 'pharmacy',
+    title: 'Pharmacy',
+    hint: 'Medicine and batch stickers.',
+    defaults: DEFAULT_PHARMACY_LABELS,
+  },
+];
+
+function mergeLabelSettings(defaults, raw) {
+  if (!raw || typeof raw !== 'object') return { ...defaults };
+  return { ...defaults, ...raw };
+}
 
 const OVERRIDE_OPTIONS = [
   { value: 'inherit', label: 'Default' },
@@ -249,6 +302,10 @@ const PrintSettingsPage = () => {
   const [footerOverrides, setFooterOverrides] = useState({});
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewReport, setPreviewReport] = useState({ key: 'opd_bill', label: 'OPD Bill' });
+  const [labelSettings, setLabelSettings] = useState(() => (
+    Object.fromEntries(LABEL_SIZE_SECTIONS.map((section) => [section.key, { ...section.defaults }]))
+  ));
+  const [savingLabelKey, setSavingLabelKey] = useState(null);
 
   const roles = user?.roles || [user?.role];
   const canEdit = roles.some((r) =>
@@ -324,6 +381,13 @@ const PrintSettingsPage = () => {
         setFooterReportCatalog(res.data.footer_report_catalog || []);
         setOverrides(res.data.report_header_overrides || {});
         setFooterOverrides(res.data.report_footer_overrides || {});
+        setLabelSettings((prev) => {
+          const next = { ...prev };
+          LABEL_SIZE_SECTIONS.forEach((section) => {
+            next[section.key] = mergeLabelSettings(section.defaults, res.data[section.key]);
+          });
+          return next;
+        });
       } catch {
         toast({
           variant: 'destructive',
@@ -410,6 +474,34 @@ const PrintSettingsPage = () => {
     });
   };
 
+  const saveOneLabel = async (section) => {
+    setSavingLabelKey(section.key);
+    try {
+      const res = await axios.put('/api/hospital/print-settings', {
+        [section.key]: labelSettings[section.key],
+      });
+      setLabelSettings((prev) => ({
+        ...prev,
+        [section.key]: mergeLabelSettings(section.defaults, res.data?.[section.key]),
+      }));
+      forgetLabelPrintLayout(section.kind);
+      invalidatePdfPrintSettingsCache();
+      queryClient.invalidateQueries({ queryKey: ['hospital-print-settings'] });
+      toast({
+        title: `${section.title} size saved`,
+        description: 'Every computer on this hospital uses this sticker size.',
+      });
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: err.response?.data?.detail || `Failed to save ${section.title} size`,
+      });
+    } finally {
+      setSavingLabelKey(null);
+    }
+  };
+
   const handleSave = async () => {
     const gap = parseFloat(letterheadGapMm);
     if (Number.isNaN(gap) || gap < 0 || gap > 80) {
@@ -468,7 +560,11 @@ const PrintSettingsPage = () => {
         footer_gap_mm: footerGap,
         report_header_overrides: overrides,
         report_footer_overrides: footerOverrides,
+        patient_file_label_settings: labelSettings.patient_file_label_settings,
+        lab_label_settings: labelSettings.lab_label_settings,
+        pharmacy_label_settings: labelSettings.pharmacy_label_settings,
       });
+      LABEL_SIZE_SECTIONS.forEach((section) => forgetLabelPrintLayout(section.kind));
       invalidatePdfPrintSettingsCache();
       queryClient.invalidateQueries({ queryKey: ['hospital-vitals-config'] });
       queryClient.invalidateQueries({ queryKey: ['hospital-print-settings'] });
@@ -514,8 +610,8 @@ const PrintSettingsPage = () => {
               Customisations
             </h1>
             <p className="text-sm text-muted-foreground mt-1 max-w-xl">
-              Bills, letterhead, prescription vitals, and per-document overrides.
-              Label sizes live under Administration → Appearance.
+              Bills, letterhead, prescription vitals, label sizes, and per-document overrides.
+              Outpatient, laboratory, and pharmacy sticker sizes are saved separately.
             </p>
           </div>
         </div>
@@ -536,7 +632,7 @@ const PrintSettingsPage = () => {
       ) : (
         <>
           <Tabs value={settingsTab} onValueChange={setSettingsTab} className="w-full">
-            <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 h-auto gap-1">
+            <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 h-auto gap-1">
               <TabsTrigger value="bills" className="gap-1.5 text-xs sm:text-sm">
                 <Receipt className="h-4 w-4 shrink-0" /> Bills
               </TabsTrigger>
@@ -551,6 +647,9 @@ const PrintSettingsPage = () => {
               </TabsTrigger>
               <TabsTrigger value="footers" className="gap-1.5 text-xs sm:text-sm">
                 <Users className="h-4 w-4 shrink-0" /> Footers
+              </TabsTrigger>
+              <TabsTrigger value="labels" className="gap-1.5 text-xs sm:text-sm">
+                <Tag className="h-4 w-4 shrink-0" /> Labels
               </TabsTrigger>
             </TabsList>
 
@@ -839,6 +938,43 @@ const PrintSettingsPage = () => {
                   />
                 </CardContent>
               </Card>
+            </TabsContent>
+
+            <TabsContent value="labels" className="mt-4 space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-lg">Label sizes</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-sm text-muted-foreground">
+                    Each label keeps its own sticker size, DPI, and layout. Saving writes to this
+                    hospital, so every computer on the network prints that size.
+                  </p>
+                </CardContent>
+              </Card>
+              {LABEL_SIZE_SECTIONS.map((section) => (
+                <div key={section.key} className="space-y-2">
+                  <LabelSettingsFields
+                    title={section.title}
+                    settings={labelSettings[section.key]}
+                    onChange={(next) => setLabelSettings((prev) => ({ ...prev, [section.key]: next }))}
+                    showLabName={!!section.showLabName}
+                  />
+                  <p className="text-xs text-muted-foreground px-1">{section.hint}</p>
+                  <div className="flex justify-end">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      disabled={saving || savingLabelKey === section.key}
+                      onClick={() => saveOneLabel(section)}
+                    >
+                      <Save className="h-4 w-4 mr-2" />
+                      {savingLabelKey === section.key ? 'Saving…' : `Save ${section.title} size`}
+                    </Button>
+                  </div>
+                </div>
+              ))}
             </TabsContent>
           </Tabs>
 

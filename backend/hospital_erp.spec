@@ -11,6 +11,8 @@ block_cipher = None
 
 # Path to frontend build output
 frontend_build = os.path.join('..', 'frontend', 'build')
+# Introduction site, served on its own port (not inside the ERP login app).
+website_dir = os.path.join('..', 'frontend', 'website')
 
 # ReportLab barcode widgets (code128, eanbc, …) are loaded from
 # reportlab.graphics.barcode.__init__ via a dynamic _reset() import graph
@@ -26,9 +28,9 @@ a = Analysis(
     binaries=reportlab_binaries,
     datas=[
         # Bundle the React frontend build.
-        # The public introduction site ships inside it at website/
-        # (frontend/public/website is copied by the production build).
         (frontend_build, 'frontend_build'),
+        # Introduction site (frontend/website), served on port 8080.
+        (website_dir, 'website'),
         # Bundle the app icon
         ('assets/icon.ico', 'assets'),
         ('assets/icon.png', 'assets'),

@@ -20,18 +20,21 @@ const DEFAULT_LAB_LABELS = {
   width_mm: 50, height_mm: 30, labels_per_row: 1, labels_per_column: 1,
   margin_top_mm: 2, margin_left_mm: 2, gutter_mm: 2, sheet_mode: 'thermal',
   sheet_width_mm: 210, sheet_height_mm: 297, show_lab_name: true, lab_name_override: null,
+  dpi: 203,
 };
 
 const DEFAULT_PHARMACY_LABELS = {
   width_mm: 38, height_mm: 25, labels_per_row: 1, labels_per_column: 1,
   margin_top_mm: 2, margin_left_mm: 2, gutter_mm: 2, sheet_mode: 'thermal',
   sheet_width_mm: 210, sheet_height_mm: 297, show_lab_name: false, lab_name_override: null,
+  dpi: 203,
 };
 
 const DEFAULT_PATIENT_FILE_LABELS = {
   width_mm: 70, height_mm: 40, labels_per_row: 1, labels_per_column: 1,
   margin_top_mm: 2, margin_left_mm: 2, gutter_mm: 2, sheet_mode: 'thermal',
   sheet_width_mm: 210, sheet_height_mm: 297, show_lab_name: false, lab_name_override: null,
+  dpi: 203,
 };
 
 function mergeLabelSettings(defaults, raw) {
@@ -456,11 +459,10 @@ export default function AppearanceSettingsPanel() {
             </CardHeader>
             <CardContent className="space-y-4">
               <p className="text-sm text-muted-foreground">
-                Configure dimensions for lab sample tube labels and pharmacy batch stickers.
-                Match the preset to your physical roll — 2-column rolls need labels/row = 2.
-                Internal barcodes print as Code128 (same digits as before). Manufacturer retail
-                EAN-13 stickers need about 30&nbsp;mm+ width to stay scannable on 203&nbsp;dpi printers.
-                Use Print in the label dialog (browser @page) for thermal rolls; Download PDF for Avery.
+                The same sizes are on Customisations → Labels, saved separately for
+                outpatient, laboratory, and pharmacy. Match the preset to your physical roll.
+                Match Printer DPI to the label printer (203 standard, 300 or 600 for a sharper barcode).
+                EAN-13 stickers need about 30&nbsp;mm+ width to stay scannable.
               </p>
               <LabelSettingsFields
                 title="Lab sample labels"
@@ -474,7 +476,7 @@ export default function AppearanceSettingsPanel() {
                 onChange={setPharmacyLabelSettings}
               />
               <LabelSettingsFields
-                title="Patient file labels"
+                title="Outpatient labels"
                 settings={patientFileLabelSettings}
                 onChange={setPatientFileLabelSettings}
               />

@@ -14,7 +14,7 @@ import axios from 'axios';
 import {
   Receipt, Search, Download, DollarSign, TrendingUp, Clock,
   CheckCircle2, Loader2, XCircle,   Ban, CreditCard, Eye,
-  Building2, Stethoscope, FlaskConical, BedDouble, Pill, Printer, FileText, ChevronDown, Trash2, Pencil
+  Building2, Stethoscope, FlaskConical, BedDouble, Pill, Printer, FileText, ChevronDown, Trash2, Pencil, Utensils
 } from 'lucide-react';
 import { printPdfFromUrl } from '../../utils/printPdf';
 import PdfPreviewDialog from '../../components/PdfPreviewDialog';
@@ -28,6 +28,50 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../../components/ui/dropdown-menu';
+
+const METHOD_LABELS = {
+  cash: 'Cash',
+  card: 'Card',
+  upi: 'UPI',
+  cheque: 'Cheque',
+  online: 'Online',
+  insurance: 'Insurance',
+  bank_transfer: 'Bank transfer',
+};
+const METHOD_ORDER = ['cash', 'card', 'upi', 'cheque', 'online', 'insurance', 'bank_transfer'];
+
+function methodLabel(method) {
+  const key = String(method || '').trim().toLowerCase();
+  if (!key) return '';
+  return METHOD_LABELS[key] || key.replace(/_/g, ' ');
+}
+
+function formatMethods(value) {
+  if (!value) return '—';
+  return String(value).split(',').map((part) => methodLabel(part)).filter(Boolean).join(', ');
+}
+
+function receivedEntries(summary) {
+  const map = summary?.received_by_method || {};
+  return Object.keys(map)
+    .filter((key) => Math.abs(Number(map[key] || 0)) >= 0.005)
+    .sort((a, b) => {
+      const ia = METHOD_ORDER.indexOf(a);
+      const ib = METHOD_ORDER.indexOf(b);
+      return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib) || a.localeCompare(b);
+    })
+    .map((key) => [key, Number(map[key] || 0)]);
+}
+
+const REPORT_MODULE_FOR_TAB = {
+  all: 'all',
+  outpatient: 'opd',
+  lab: 'lab',
+  pharmacy: 'pharmacy',
+  inpatient: 'inpatient',
+  physiotherapy: 'physiotherapy',
+  canteen: 'canteen',
+};
 
 const BillingModule = () => {
   const navigate = useNavigate();
@@ -124,6 +168,7 @@ const BillingModule = () => {
     else if (activeTab === 'pharmacy') params.set('bill_type', 'pharmacy');
     else if (activeTab === 'inpatient') params.set('bill_type', 'admission');
     else if (activeTab === 'physiotherapy') params.set('bill_type', 'physiotherapy');
+    else if (activeTab === 'canteen') params.set('bill_type', 'canteen');
     if (paymentStatus !== 'all') params.set('payment_status', paymentStatus);
     if (doctorFilter !== 'all') params.set('doctor_id', doctorFilter);
     if (referralFilter !== 'all') params.set('referred_by', referralFilter);
@@ -171,6 +216,7 @@ const BillingModule = () => {
     { id: 'pharmacy', label: 'Pharmacy', module: 'pharmacy', icon: Pill },
     { id: 'inpatient', label: 'Inpatient', module: 'inpatient', icon: BedDouble },
     { id: 'physiotherapy', label: 'Physiotherapy', module: 'physiotherapy' },
+    { id: 'canteen', label: 'Canteen', module: 'inpatient', icon: Utensils },
     { id: 'reports', label: 'Reports', module: null, icon: TrendingUp },
   ];
   // While enabledModules is still empty (loading), show all tabs.
@@ -198,6 +244,7 @@ const BillingModule = () => {
       case 'lab': return <FlaskConical className="h-3 w-3" />;
       case 'pharmacy': return <Pill className="h-3 w-3" />;
       case 'admission': return <BedDouble className="h-3 w-3" />;
+      case 'canteen': return <Utensils className="h-3 w-3" />;
       default: return <Receipt className="h-3 w-3" />;
     }
   };
@@ -210,6 +257,7 @@ const BillingModule = () => {
       case 'admission': return 'border-teal-200 text-teal-700 bg-teal-50';
       case 'physiotherapy': return 'border-cyan-200 text-cyan-700 bg-cyan-50';
       case 'day_care': return 'border-indigo-200 text-indigo-700 bg-indigo-50';
+      case 'canteen': return 'border-amber-200 text-amber-800 bg-amber-50';
       default: return 'border-gray-200 text-gray-700';
     }
   };
@@ -850,7 +898,7 @@ const BillingModule = () => {
               icon={Receipt}
               label="Total Bills"
               value={summary.total_bills}
-              sub={`${summary.appointment_count} consult + ${summary.lab_count} lab${summary.pharmacy_count > 0 ? ` + ${summary.pharmacy_count} pharmacy` : ''}${summary.admission_count > 0 ? ` + ${summary.admission_count} admission` : ''}${(summary.physiotherapy_count || 0) > 0 ? ` + ${summary.physiotherapy_count} physio` : ''}`}
+              sub={`${summary.appointment_count} consult + ${summary.lab_count} lab${summary.pharmacy_count > 0 ? ` + ${summary.pharmacy_count} pharmacy` : ''}${summary.admission_count > 0 ? ` + ${summary.admission_count} admission` : ''}${(summary.physiotherapy_count || 0) > 0 ? ` + ${summary.physiotherapy_count} physio` : ''}${(summary.canteen_count || 0) > 0 ? ` + ${summary.canteen_count} canteen` : ''}`}
               tone="purple"
               onClick={() => setPaymentStatus('all')}
             />
@@ -863,6 +911,57 @@ const BillingModule = () => {
               onClick={() => setPaymentStatus('cancelled')}
             />
           </div>
+          {activeTab !== 'reports' && (
+            <Card>
+              <CardContent className="pt-4 pb-4">
+                <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+                  <div>
+                    <p className="text-sm font-medium text-gray-900">Received by payment type</p>
+                    <p className="text-[11px] text-gray-500 mt-0.5">
+                      Money received in this date range, net of refunds.
+                      {activeTab === 'all' && ' Each module’s own till is included, not only the central payment ledger.'}
+                      {activeTab === 'pharmacy' && ' Credit sales are outstanding, not received.'}
+                      {activeTab === 'inpatient' && ' Scheme approvals are not cash received.'}
+                      {(summary.received_refunds || 0) > 0
+                        ? ` Refunds ${formatCurrency(summary.received_refunds)}.`
+                        : ''}
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const params = new URLSearchParams({
+                        kind: 'daily-collection',
+                        module: REPORT_MODULE_FOR_TAB[activeTab] || 'all',
+                        date_from: dateFrom,
+                        date_to: dateTo,
+                      });
+                      navigate(`/dashboard/billing/reports?${params.toString()}`);
+                    }}
+                  >
+                    Daily breakdown
+                  </Button>
+                </div>
+                {receivedEntries(summary).length === 0 ? (
+                  <p className="text-sm text-gray-500">No money received in this range.</p>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-2">
+                    {receivedEntries(summary).map(([method, amount]) => (
+                      <div key={method} className="rounded-md border bg-gray-50 px-3 py-2">
+                        <p className="text-[11px] text-gray-500">{methodLabel(method)}</p>
+                        <p className="text-base font-semibold text-gray-900">{formatCurrency(amount)}</p>
+                      </div>
+                    ))}
+                    <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2">
+                      <p className="text-[11px] text-green-700">Received</p>
+                      <p className="text-base font-semibold text-green-800">{formatCurrency(summary.received_total)}</p>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
           {activeTab === 'physiotherapy' && summary.physio_revenue_by_type && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Card>
@@ -1017,7 +1116,7 @@ const BillingModule = () => {
         </TabsContent>
 
         {/* Bills Table - same content for all tabs, filtered by activeTab */}
-        {['all', 'outpatient', 'lab', 'pharmacy', 'inpatient', 'physiotherapy'].map(tab => (
+        {['all', 'outpatient', 'lab', 'pharmacy', 'inpatient', 'physiotherapy', 'canteen'].map(tab => (
           <TabsContent key={tab} value={tab} className="mt-4">
             <Card>
               <CardContent className="pt-4">
@@ -1039,6 +1138,7 @@ const BillingModule = () => {
                           <th className="pb-2 pr-3">Patient</th>
                           <th className="pb-2 pr-3">Items</th>
                           <th className="pb-2 pr-3 text-right">Amount</th>
+                          <th className="pb-2 pr-3">Method</th>
                           <th className="pb-2 pr-3">Doctor</th>
                           <th className="pb-2 pr-3">Status</th>
                           <th className="pb-2">Actions</th>
@@ -1068,6 +1168,7 @@ const BillingModule = () => {
                                 <p className="text-[10px] text-blue-600">Paid: {formatCurrency(bill.amount_paid)}</p>
                               )}
                             </td>
+                            <td className="py-2.5 pr-3 text-xs text-gray-700 whitespace-nowrap">{formatMethods(bill.payment_method)}</td>
                             <td className="py-2.5 pr-3 text-xs text-gray-600">{bill.doctor_name || '-'}</td>
                             <td className="py-2.5 pr-3">
                               <Badge className={`text-[10px] ${getStatusBadge(bill.payment_status)}`}>

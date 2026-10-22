@@ -771,6 +771,7 @@ async def download_test_label_pdf(
     sheet_mode: Optional[str] = None,
     sheet_width_mm: Optional[float] = None,
     sheet_height_mm: Optional[float] = None,
+    dpi: Optional[int] = None,
     label_kind: Optional[str] = Query("pharmacy"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -807,6 +808,7 @@ async def download_test_label_pdf(
             sheet_mode=sheet_mode or "thermal",
             sheet_width_mm=sheet_width_mm,
             sheet_height_mm=sheet_height_mm,
+            dpi=dpi,
         ),
         single_label=True,
     )
@@ -834,6 +836,7 @@ async def download_test_label_html(
     sheet_mode: Optional[str] = None,
     sheet_width_mm: Optional[float] = None,
     sheet_height_mm: Optional[float] = None,
+    dpi: Optional[int] = None,
     label_kind: Optional[str] = Query("pharmacy"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -871,6 +874,7 @@ async def download_test_label_html(
             sheet_mode=sheet_mode or "thermal",
             sheet_width_mm=sheet_width_mm,
             sheet_height_mm=sheet_height_mm,
+            dpi=dpi,
         ),
         single_label=True,
     )
@@ -2214,6 +2218,33 @@ async def delete_cancelled_bill(
     return {"message": f"Cancelled bill deleted: {label}"}
 
 
+def _methods_from_payments(payments) -> str:
+    """Comma-separated tender names on a bill, in the order they were taken."""
+    seen = []
+    for payment in payments or []:
+        if abs(float(payment.amount_paid or 0)) < 0.005:
+            continue
+        name = (payment.payment_method_name or "cash").strip().lower()
+        if name in ("credit_note", "scheme_approval"):
+            continue
+        if name not in seen:
+            seen.append(name)
+    return ", ".join(seen)
+
+
+def _admission_tender_label(deposit_children, split_received: float) -> str:
+    """Tenders on an admission: deposits, plus insurance when a payer split was received."""
+    seen = []
+    for deposit in deposit_children or []:
+        name = (deposit.get("method") or "cash").strip().lower()
+        if name in ("scheme_approval", "") or name in seen:
+            continue
+        seen.append(name)
+    if float(split_received or 0) > 0.01 and "insurance" not in seen:
+        seen.append("insurance")
+    return ", ".join(seen)
+
+
 @router.get("/billing")
 async def get_all_bills(
     date_from: Optional[str] = None,
@@ -2515,6 +2546,58 @@ async def get_all_bills(
                 "cancelled_at": sale.voided_at.isoformat() if sale.voided_at else "",
             })
 
+    # --- Canteen counter sales (not already represented by a catch-up bill) ---
+    if bill_type in (None, 'canteen') and not doctor_id and not referred_by:
+        from app.models.canteen import CanteenSale
+        linked_canteen = {
+            row[0]
+            for row in db.query(Bill.reference_id).filter(
+                Bill.hospital_id == hospital_id,
+                Bill.bill_type == "canteen",
+                Bill.reference_id.isnot(None),
+            ).all()
+        }
+        canteen_query = db.query(CanteenSale).filter(
+            CanteenSale.hospital_id == hospital_id,
+            CanteenSale.status == "completed",
+            sql_func.date(CanteenSale.sale_date) >= d_from,
+            sql_func.date(CanteenSale.sale_date) <= d_to,
+        )
+        if patient_search:
+            q = f"%{patient_search}%"
+            canteen_query = canteen_query.filter(
+                (CanteenSale.customer_name.ilike(q)) | (CanteenSale.customer_phone.ilike(q))
+            )
+        for sale in canteen_query.order_by(CanteenSale.sale_date.desc()).all():
+            if sale.id in linked_canteen:
+                continue
+            item_names = [item.item_name for item in (sale.items or [])[:3] if item.item_name]
+            items_text = ", ".join(item_names)
+            if len(sale.items or []) > 3:
+                items_text += f" +{len(sale.items) - 3} more"
+            bills.append({
+                "id": f"CAN-{sale.id}",
+                "bill_id": sale.id,
+                "type": "canteen",
+                "date": sale.sale_date.isoformat() if sale.sale_date else "",
+                "patient_name": sale.customer_name or "Walk-in",
+                "patient_phone": sale.customer_phone or "",
+                "patient_id": "",
+                "_doctor_id": None,
+                "doctor_name": "",
+                "reference": sale.sale_number,
+                "items": items_text or "Canteen sale",
+                "subtotal": float(sale.subtotal or 0),
+                "discount": float(sale.discount_amount or 0),
+                "amount": float(sale.grand_total or 0),
+                "payment_status": "paid",
+                "payment_method": sale.payment_type or "cash",
+                "referred_by": "",
+                "cancel_reason": "",
+                "cancelled_by": "",
+                "cancelled_at": "",
+            })
+
     # --- Admission (inpatient) bills — one summary row per admission ---
     # Each admission is represented by a single row whose amount = total of all
     # non-cancelled bills for that admission (no double-counting across interim
@@ -2670,7 +2753,7 @@ async def get_all_bills(
                 "discount": 0,
                 "amount": total_charges,
                 "payment_status": adm_status,
-                "payment_method": "",
+                "payment_method": _admission_tender_label(deposit_children, split_recv_sum),
                 "referred_by": "",
                 "cancel_reason": "",
                 "cancelled_by": "",
@@ -2727,7 +2810,7 @@ async def get_all_bills(
                 "discount": float(b.discount_amount or 0),
                 "amount": float(b.total_amount or 0),
                 "payment_status": b.status or "pending",
-                "payment_method": "",
+                "payment_method": _methods_from_payments(b.payments),
                 "referred_by": b.referred_by or "",
                 "cancel_reason": "",
                 "cancelled_by": "",
@@ -2776,7 +2859,7 @@ async def get_all_bills(
                 "discount": float(b.discount_amount or 0),
                 "amount": float(b.total_amount or 0),
                 "payment_status": b.status or "pending",
-                "payment_method": "",
+                "payment_method": _methods_from_payments(b.payments),
                 "referred_by": b.referred_by or "",
                 "cancel_reason": "",
                 "cancelled_by": "",
@@ -2825,7 +2908,7 @@ async def get_all_bills(
                 "discount": float(b.discount_amount or 0),
                 "amount": float(b.total_amount or 0),
                 "payment_status": b.status or "pending",
-                "payment_method": "",
+                "payment_method": _methods_from_payments(b.payments),
                 "referred_by": "",
                 "cancel_reason": "",
                 "cancelled_by": "",
@@ -2897,7 +2980,7 @@ async def get_all_bills(
                     "discount": float(b.discount_amount or 0),
                     "amount": float(b.total_amount or 0),
                     "payment_status": b.status or "pending",
-                    "payment_method": "",
+                    "payment_method": _methods_from_payments(b.payments),
                     "referred_by": b.referred_by or "",
                     "cancel_reason": "",
                     "cancelled_by": "",
@@ -2927,6 +3010,8 @@ async def get_all_bills(
     pharmacy_count = sum(1 for b in bills if b["type"] == "pharmacy")
     adm_count = sum(1 for b in bills if b["type"] == "admission")
     physio_count = sum(1 for b in bills if b["type"] == "physiotherapy")
+
+    canteen_count = sum(1 for b in bills if b["type"] == "canteen")
 
     from app.services.physio_revenue import (
         classify_billing_hub_physio_rows,
@@ -2971,6 +3056,18 @@ async def get_all_bills(
     for b in bills:
         b.pop("_doctor_id", None)
 
+    from app.services.collection_by_method import collection_by_method, sources_for
+    received = collection_by_method(
+        db,
+        hospital_id,
+        date.fromisoformat(d_from),
+        date.fromisoformat(d_to),
+        sources=sources_for(bill_type=bill_type),
+        patient_search=patient_search,
+        doctor_id=doctor_id,
+        referred_by=referred_by,
+    )
+
     return {
         "bills": bills,
         "summary": {
@@ -2983,8 +3080,12 @@ async def get_all_bills(
             "pharmacy_count": pharmacy_count,
             "admission_count": adm_count,
             "physiotherapy_count": physio_count,
+            "canteen_count": canteen_count,
             "physio_revenue_by_type": physio_revenue_by_type,
             "cancelled_count": cancelled_count,
+            "received_by_method": received["by_method"],
+            "received_total": received["totals"]["net_collected"],
+            "received_refunds": received["totals"]["refunds"],
         },
         "doctors": doctor_list,
         "referrals": referral_list,
@@ -3133,8 +3234,12 @@ def _build_billing_export_xlsx(
         ("Pharmacy bills", summary.get("pharmacy_count", 0)),
         ("Admission bills", summary.get("admission_count", 0)),
         ("Physiotherapy bills", summary.get("physiotherapy_count", 0)),
+        ("Canteen bills", summary.get("canteen_count", 0)),
         ("Cancelled", summary.get("cancelled_count", 0)),
+        ("Received (net)", float(summary.get("received_total") or 0)),
     ]
+    for method, amount in (summary.get("received_by_method") or {}).items():
+        metrics.append((f"Received — {method}", float(amount or 0)))
     by_type: dict = {}
     for b in bills:
         if b.get("payment_status") == "cancelled":
@@ -4313,46 +4418,23 @@ async def report_daily_collection(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Per-day collection grouped by payment method. Refund rows
-    (negative amount_paid) net against collections so the row reflects net cash in."""
+    """Per-day collection grouped by payment method.
+
+    Includes the central payment ledger plus tills that store the tender on
+    their own rows (OPD, lab, pharmacy cash, canteen, admission deposits).
+    Refund rows net against collections so the row reflects net cash in.
+    """
     _report_auth(current_user)
     d_from, d_to = _parse_date_range(date_from, date_to)
-
-    pay_q = db.query(Payment).join(Bill, Payment.bill_id == Bill.id).filter(
-        Bill.hospital_id == current_user.hospital_id,
-        sql_func.date(Payment.payment_date) >= d_from,
-        sql_func.date(Payment.payment_date) <= d_to,
+    from app.services.collection_by_method import collection_by_method, sources_for
+    return collection_by_method(
+        db,
+        current_user.hospital_id,
+        d_from,
+        d_to,
+        sources=sources_for(module=module),
+        patient_id=patient_id,
     )
-    if patient_id:
-        pay_q = pay_q.filter(Bill.patient_id == patient_id)
-    pay_q = _filter_bills_by_module(pay_q, module)
-    payments = pay_q.all()
-
-    by_day: dict = {}
-    methods_seen = set()
-    for p in payments:
-        if not p.payment_date:
-            continue
-        day = p.payment_date.date().isoformat()
-        method = (p.payment_method_name or "cash").lower()
-        methods_seen.add(method)
-        by_day.setdefault(day, {"date": day, "total": 0.0, "refunds": 0.0, "by_method": {}})
-        amt = float(p.amount_paid or 0)
-        by_day[day]["total"] += amt
-        if amt < 0:
-            by_day[day]["refunds"] += -amt
-        by_day[day]["by_method"][method] = by_day[day]["by_method"].get(method, 0.0) + amt
-
-    rows = sorted(by_day.values(), key=lambda r: r["date"])
-    grand_total = round(sum(r["total"] for r in rows), 2)
-    grand_refunds = round(sum(r["refunds"] for r in rows), 2)
-    return {
-        "date_from": d_from.isoformat(), "date_to": d_to.isoformat(),
-        "methods": sorted(methods_seen),
-        "rows": [{**r, "total": round(r["total"], 2), "refunds": round(r["refunds"], 2),
-                  "by_method": {k: round(v, 2) for k, v in r["by_method"].items()}} for r in rows],
-        "totals": {"net_collected": grand_total, "refunds": grand_refunds, "gross_collected": round(grand_total + grand_refunds, 2)},
-    }
 
 
 @router.get("/billing/reports/doctor-revenue")

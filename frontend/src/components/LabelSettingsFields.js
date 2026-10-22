@@ -2,6 +2,7 @@ import React from 'react';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { normalizeLabelDpi } from '../utils/labelPrintLayout';
 import {
   applyThermalRollLayout,
   computeLabelPageSizeMm,
@@ -113,6 +114,20 @@ function LabelSettingsFields({ title, settings, onChange, showLabName = false })
             onChange={(e) => onChange({ ...settings, gutter_mm: parseFloat(e.target.value) || 0 })} />
         </div>
         <div>
+          <Label className="text-xs">Printer DPI</Label>
+          <Select
+            value={String(normalizeLabelDpi(settings.dpi))}
+            onValueChange={(v) => onChange({ ...settings, dpi: parseInt(v, 10) || 203 })}
+          >
+            <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="203">203 dpi</SelectItem>
+              <SelectItem value="300">300 dpi</SelectItem>
+              <SelectItem value="600">600 dpi</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
           <Label className="text-xs">Printer type</Label>
           <Select
             value={settings.sheet_mode || 'thermal'}
@@ -160,9 +175,9 @@ function LabelSettingsFields({ title, settings, onChange, showLabName = false })
       <p className="text-xs text-muted-foreground">
         {isThermal ? (
           <>
-            Thermal: one PDF row matches one peel line on the roll. Printing 3 purchase batches with
-            &ldquo;3 across&rdquo; places all three barcodes side-by-side — use <strong>Print combined PDF</strong>
-            (not &ldquo;print in sequence&rdquo;). Set the OS print dialog to the computed page size at 100% scale.
+            Thermal: one PDF row matches one peel line on the roll. Set DPI to the printer head
+            (203 standard, 300 or 600 for a sharper barcode). Set the OS print dialog to the
+            computed page size at 100% scale.
           </>
         ) : (
           <>

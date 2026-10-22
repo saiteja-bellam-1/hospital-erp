@@ -1,7 +1,6 @@
 /**
  * Per-print label layout helpers for BarcodeLabelPrintDialog.
- * Hospital Appearance defaults are the seed; dialog can override and remember
- * last-used sizes in localStorage (per label kind).
+ * Hospital customisation sizes are the seed (one saved size per label kind).
  */
 
 import {
@@ -37,10 +36,27 @@ export const LABEL_SIZE_PRESETS = {
 
 const STORAGE_PREFIX = 'kthealth.labelPrint.';
 
+export const LABEL_DPI_OPTIONS = [
+  { value: '203', label: '203 dpi — standard thermal' },
+  { value: '300', label: '300 dpi — sharper' },
+  { value: '600', label: '600 dpi — fine' },
+];
+
+const LABEL_DPI_CHOICES = [203, 300, 600];
+
+export function normalizeLabelDpi(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 203;
+  return LABEL_DPI_CHOICES.reduce(
+    (best, choice) => (Math.abs(choice - n) < Math.abs(best - n) ? choice : best),
+    203,
+  );
+}
+
 const DEFAULTS_BY_KIND = {
-  lab: { width_mm: 50, height_mm: 30, labels_per_row: 1, labels_per_column: 1, gutter_mm: 2, sheet_mode: 'thermal', margin_top_mm: 2, margin_left_mm: 2 },
-  pharmacy: { width_mm: 38, height_mm: 25, labels_per_row: 1, labels_per_column: 1, gutter_mm: 2, sheet_mode: 'thermal', margin_top_mm: 2, margin_left_mm: 2 },
-  patient_file: { width_mm: 70, height_mm: 40, labels_per_row: 1, labels_per_column: 1, gutter_mm: 2, sheet_mode: 'thermal', margin_top_mm: 2, margin_left_mm: 2 },
+  lab: { width_mm: 50, height_mm: 30, labels_per_row: 1, labels_per_column: 1, gutter_mm: 2, sheet_mode: 'thermal', margin_top_mm: 2, margin_left_mm: 2, dpi: 203 },
+  pharmacy: { width_mm: 38, height_mm: 25, labels_per_row: 1, labels_per_column: 1, gutter_mm: 2, sheet_mode: 'thermal', margin_top_mm: 2, margin_left_mm: 2, dpi: 203 },
+  patient_file: { width_mm: 70, height_mm: 40, labels_per_row: 1, labels_per_column: 1, gutter_mm: 2, sheet_mode: 'thermal', margin_top_mm: 2, margin_left_mm: 2, dpi: 203 },
 };
 
 function settingsKeyForKind(kind) {
@@ -53,7 +69,7 @@ export function defaultLayoutForKind(kind) {
   return { ...(DEFAULTS_BY_KIND[kind] || DEFAULTS_BY_KIND.pharmacy) };
 }
 
-/** Seed dialog layout from hospital settings, then browser-remembered overrides. */
+/** Seed dialog layout from the hospital size saved for this label kind. */
 export function seedLabelPrintLayout(kind, printSettings, { allowMultiUp = true } = {}) {
   const key = settingsKeyForKind(kind);
   const hospital = printSettings?.[key] || {};
@@ -61,21 +77,19 @@ export function seedLabelPrintLayout(kind, printSettings, { allowMultiUp = true 
     ...defaultLayoutForKind(kind),
     ...hospital,
   };
-  try {
-    const raw = localStorage.getItem(`${STORAGE_PREFIX}${kind}`);
-    if (raw) {
-      const remembered = JSON.parse(raw);
-      if (remembered && typeof remembered === 'object') {
-        layout = { ...layout, ...remembered };
-      }
-    }
-  } catch {
-    /* ignore */
-  }
   if (!allowMultiUp && (layout.sheet_mode || 'thermal') === 'thermal') {
     layout = { ...layout, labels_per_row: 1, labels_per_column: 1 };
   }
   return applyThermalRollLayout(layout);
+}
+
+/** Drop a browser-only size so the hospital customisation is what prints next. */
+export function forgetLabelPrintLayout(kind) {
+  try {
+    localStorage.removeItem(`${STORAGE_PREFIX}${kind}`);
+  } catch {
+    /* ignore */
+  }
 }
 
 export function rememberLabelPrintLayout(kind, layout) {
@@ -91,6 +105,7 @@ export function rememberLabelPrintLayout(kind, layout) {
       margin_left_mm: Number(layout.margin_left_mm) || 2,
       sheet_width_mm: Number(layout.sheet_width_mm) || 210,
       sheet_height_mm: Number(layout.sheet_height_mm) || 297,
+      dpi: normalizeLabelDpi(layout.dpi),
     };
     localStorage.setItem(`${STORAGE_PREFIX}${kind}`, JSON.stringify(toStore));
   } catch {
@@ -114,6 +129,7 @@ export function layoutToQueryParams(layout, { forceSingle = true } = {}) {
     sheet_mode: s.sheet_mode || 'thermal',
     margin_top_mm: Number(s.margin_top_mm) || 0,
     margin_left_mm: Number(s.margin_left_mm) || 0,
+    dpi: normalizeLabelDpi(s.dpi),
   };
   if (params.sheet_mode === 'avery') {
     params.sheet_width_mm = Number(s.sheet_width_mm) || 210;

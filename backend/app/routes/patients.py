@@ -622,6 +622,7 @@ async def download_patient_file_label_pdf(
     sheet_mode: Optional[str] = None,
     sheet_width_mm: Optional[float] = None,
     sheet_height_mm: Optional[float] = None,
+    dpi: Optional[int] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -665,6 +666,7 @@ async def download_patient_file_label_pdf(
             sheet_mode=sheet_mode,
             sheet_width_mm=sheet_width_mm,
             sheet_height_mm=sheet_height_mm,
+            dpi=dpi,
         ),
         single_label=True,
     )
@@ -801,6 +803,7 @@ async def download_patient_file_label_html(
     sheet_mode: Optional[str] = None,
     sheet_width_mm: Optional[float] = None,
     sheet_height_mm: Optional[float] = None,
+    dpi: Optional[int] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -843,6 +846,7 @@ async def download_patient_file_label_html(
             sheet_mode=sheet_mode or "thermal",
             sheet_width_mm=sheet_width_mm,
             sheet_height_mm=sheet_height_mm,
+            dpi=dpi,
         ),
         single_label=True,
     )

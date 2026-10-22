@@ -2,12 +2,12 @@ from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 import uvicorn
 import os
 
-from app.utils.paths import get_uploads_dir, get_frontend_dir, is_bundled
+from app.utils.paths import get_uploads_dir, get_frontend_dir
 
 from config.database import get_db, create_tables
 from config.settings import settings
@@ -236,6 +236,13 @@ async def startup_event():
             "first launch will apply install_seed.json via bootstrap_from_seed"
         )
 
+    # Introduction site on its own port. ERP login stays on 3000 in development.
+    try:
+        from app.utils.website_server import erp_login_port, start_website_server
+        start_website_server(erp_login_port())
+    except Exception as e:
+        print(f"Website note: {e}")
+
 
 def _ensure_role_permissions():
     """Seed/update roles, module-permission catalog, and role permissions on every startup."""
@@ -451,26 +458,9 @@ def _ensure_modules():
     heal_system_modules()
 
 
-def _website_index_path():
-    """Introduction page shipped inside the frontend build at website/index.html."""
-    built = os.path.join(get_frontend_dir(), "website", "index.html")
-    if os.path.isfile(built):
-        return built
-    if not is_bundled():
-        public = os.path.join(
-            os.path.dirname(get_frontend_dir()), "public", "website", "index.html"
-        )
-        if os.path.isfile(public):
-            return public
-    return None
-
-
 @app.get("/")
 async def root():
-    # Home URL is the introduction page. The hospital app is /login and /dashboard.
-    site_index = _website_index_path()
-    if site_index:
-        return FileResponse(site_index)
+    # Home URL is the hospital app. The introduction site is hosted separately.
     frontend_index = os.path.join(get_frontend_dir(), "index.html")
     if os.path.isfile(frontend_index):
         return FileResponse(frontend_index)
@@ -548,10 +538,6 @@ if os.path.isdir(_frontend_dir):
     async def serve_spa(request: Request, full_path: str):
         if full_path.startswith("api/") or full_path.startswith("uploads/"):
             raise HTTPException(status_code=404, detail="Not found")
-
-        # Old introduction URL now lives at /.
-        if full_path.strip("/") == "website":
-            return RedirectResponse(url="/", status_code=307)
 
         # Try to serve the exact file first (e.g., favicon.ico, manifest.json)
         file_path = os.path.join(_frontend_dir, full_path)

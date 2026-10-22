@@ -1985,6 +1985,7 @@ async def download_sample_label_pdf(
     sheet_mode: Optional[str] = None,
     sheet_width_mm: Optional[float] = None,
     sheet_height_mm: Optional[float] = None,
+    dpi: Optional[int] = None,
     current_user: User = Depends(require_permission(Modules.LAB, "read")),
     db: Session = Depends(get_db),
 ):
@@ -2009,6 +2010,7 @@ async def download_sample_label_pdf(
             sheet_mode=sheet_mode,
             sheet_width_mm=sheet_width_mm,
             sheet_height_mm=sheet_height_mm,
+            dpi=dpi,
         ),
         single_label=len(labels) <= 1,
     )
@@ -2049,6 +2051,7 @@ async def download_sample_label_html(
     sheet_mode: Optional[str] = None,
     sheet_width_mm: Optional[float] = None,
     sheet_height_mm: Optional[float] = None,
+    dpi: Optional[int] = None,
     current_user: User = Depends(require_permission(Modules.LAB, "read")),
     db: Session = Depends(get_db),
 ):
@@ -2074,6 +2077,7 @@ async def download_sample_label_html(
             sheet_mode=sheet_mode or "thermal",
             sheet_width_mm=sheet_width_mm,
             sheet_height_mm=sheet_height_mm,
+            dpi=dpi,
         ),
         single_label=len(labels) <= 1,
     )
@@ -2116,6 +2120,7 @@ async def download_sample_labels_batch_pdf(
     sheet_mode: Optional[str] = None,
     sheet_width_mm: Optional[float] = None,
     sheet_height_mm: Optional[float] = None,
+    dpi: Optional[int] = None,
     current_user: User = Depends(require_permission(Modules.LAB, "read")),
     db: Session = Depends(get_db),
 ):
@@ -2151,6 +2156,7 @@ async def download_sample_labels_batch_pdf(
             sheet_mode=sheet_mode,
             sheet_width_mm=sheet_width_mm,
             sheet_height_mm=sheet_height_mm,
+            dpi=dpi,
         ),
         single_label=len(labels) <= 1,
     )

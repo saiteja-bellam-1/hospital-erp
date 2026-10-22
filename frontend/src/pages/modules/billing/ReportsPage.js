@@ -30,7 +30,7 @@ const BILLING_MODULES_WITH_SCOPE = [
  */
 const REPORT_CATALOG = [
   { id: 'sales', label: 'Sales register', modules: BILLING_MODULES_WITH_SCOPE, scopesModule: true, uses: ['period', 'patient'], hint: 'Invoices for the selected module' },
-  { id: 'daily-collection', label: 'Daily collection', modules: BILLING_MODULES_WITH_SCOPE, scopesModule: true, uses: ['period', 'patient'], hint: 'Cash / UPI / card by day' },
+  { id: 'daily-collection', label: 'Daily collection', modules: BILLING_MODULES_WITH_SCOPE, scopesModule: true, uses: ['period', 'patient'], hint: 'Cash, UPI, card and other tenders by day' },
   { id: 'tax-summary', label: 'Tax summary', modules: BILLING_MODULES_WITH_SCOPE, scopesModule: true, uses: ['period', 'patient'], hint: 'GST register by day' },
   { id: 'outstanding', label: 'Outstanding', modules: BILLING_MODULES_WITH_SCOPE, scopesModule: true, uses: ['period', 'patient'], hint: 'Unpaid billed amounts' },
   { id: 'doctor-revenue', label: 'Doctor revenue', modules: ['all', 'opd', 'inpatient'], scopesModule: true, uses: ['period', 'patient', 'doctor'], hint: 'OPD and IP billed to each doctor' },
@@ -126,8 +126,8 @@ export default function ReportsPage() {
   const [module, setModule] = useState(() => searchParams.get('module') || 'all');
   const [kind, setKind] = useState(() => searchParams.get('kind') || 'sales');
   const [periodMode, setPeriodMode] = useState('range');
-  const [dateFrom, setDateFrom] = useState(range.from);
-  const [dateTo, setDateTo] = useState(range.to);
+  const [dateFrom, setDateFrom] = useState(() => searchParams.get('date_from') || range.from);
+  const [dateTo, setDateTo] = useState(() => searchParams.get('date_to') || range.to);
   const [month, setMonth] = useState(localMonthStart().slice(0, 7));
   const [patient, setPatient] = useState(null);
   const [doctorId, setDoctorId] = useState('');
@@ -1007,7 +1007,7 @@ export default function ReportsPage() {
           <CardHeader>
             <CardTitle className="text-base">Daily collection</CardTitle>
             <p className="text-xs font-normal text-gray-500 mt-1">
-              Net collections by payment method. Refunds are shown separately and already netted in the total.
+              Net money received by payment type, including OPD, lab, pharmacy cash, canteen, day care, physio, and admission deposits. Refunds are shown separately and already netted in the total.
             </p>
           </CardHeader>
           <CardContent>
