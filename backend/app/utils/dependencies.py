@@ -75,15 +75,13 @@ def require_permission(module: str, action: str):
                 detail=f"Module '{module}' is not enabled"
             )
 
-        # Check if module is covered by the license
-        from app.services.license_service import get_current_license
-        license_record = get_current_license(db)
-        if license_record and license_record.features:
-            if module not in license_record.features:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Module '{module}' is not included in your license"
-                )
+        # Check if module is covered by the license or an active trial
+        from app.services.license_service import license_denies_module
+        if license_denies_module(db, module):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Module '{module}' is not included in your license"
+            )
 
         # Import here to avoid circular imports
         from app.models.permissions import RoleModulePermission
@@ -190,15 +188,13 @@ def require_feature_permission(module: str, permission_name: str):
                 detail=f"Module '{module}' is not enabled",
             )
 
-        # License feature gate
-        from app.services.license_service import get_current_license
-        license_record = get_current_license(db)
-        if license_record and license_record.features:
-            if module not in license_record.features:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Module '{module}' is not included in your license",
-                )
+        # License / trial feature gate
+        from app.services.license_service import license_denies_module
+        if license_denies_module(db, module):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Module '{module}' is not included in your license",
+            )
 
         from app.models.permissions import RoleModulePermission
 
@@ -240,11 +236,9 @@ def user_has_feature_permission(
     if sys_module and not sys_module.is_enabled:
         return False
 
-    from app.services.license_service import get_current_license
-    license_record = get_current_license(db)
-    if license_record and license_record.features:
-        if module not in license_record.features:
-            return False
+    from app.services.license_service import license_denies_module
+    if license_denies_module(db, module):
+        return False
 
     from app.models.permissions import RoleModulePermission
 
@@ -286,14 +280,12 @@ def require_feature_permission_any(module: str, *permission_names: str):
                 detail=f"Module '{module}' is not enabled",
             )
 
-        from app.services.license_service import get_current_license
-        license_record = get_current_license(db)
-        if license_record and license_record.features:
-            if module not in license_record.features:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Module '{module}' is not included in your license",
-                )
+        from app.services.license_service import license_denies_module
+        if license_denies_module(db, module):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Module '{module}' is not included in your license",
+            )
 
         for permission_name in names:
             if user_has_feature_permission(db, current_user, module, permission_name):
@@ -337,14 +329,12 @@ def require_canteen_permission(permission_name: str):
                 detail="Inpatient module is not enabled (required for canteen)",
             )
 
-        from app.services.license_service import get_current_license
-        license_record = get_current_license(db)
-        if license_record and license_record.features:
-            if Modules.INPATIENT not in license_record.features:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Inpatient is not included in your license (required for canteen)",
-                )
+        from app.services.license_service import license_denies_module
+        if license_denies_module(db, Modules.INPATIENT):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Inpatient is not included in your license (required for canteen)",
+            )
 
         from app.models.permissions import RoleModulePermission
 

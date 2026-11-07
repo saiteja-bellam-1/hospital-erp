@@ -1,5 +1,6 @@
 import React from 'react';
 import { Routes, Route } from 'react-router-dom';
+import ReferralManagementPage from './reception/ReferralManagementPage';
 import BillingModule from './BillingModule';
 import SalesSummaryPage from './billing/SalesSummaryPage';
 import PurchaseSummaryPage from './billing/PurchaseSummaryPage';
@@ -20,6 +21,7 @@ export default function BillingHub() {
       <Route path="purchase-summary" element={<PurchaseSummaryPage />} />
       <Route path="gst" element={<GstReportsPage />} />
       <Route path="gst-export" element={<GstAuditExportPage />} />
+      <Route path="referrals" element={<ReferralManagementPage />} />
       <Route path="*" element={<BillingModule />} />
     </Routes>
   );

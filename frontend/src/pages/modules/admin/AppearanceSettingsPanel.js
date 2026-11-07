@@ -72,6 +72,7 @@ export default function AppearanceSettingsPanel() {
     favicon_url: '',
   });
   const [customisationLicensed, setCustomisationLicensed] = useState(false);
+  const [vendorLogoUrl, setVendorLogoUrl] = useState('');
 
   useEffect(() => {
     setAppearanceLayout(navLayout === 'header' ? 'header' : 'sidebar');
@@ -98,6 +99,7 @@ export default function AppearanceSettingsPanel() {
         setShowPatientBarcodeOnPdfs(!!printRes.data.show_patient_barcode_on_pdfs);
         if (isSuperAdmin && results[1]) {
           setCustomisationLicensed(!!results[1].data.customisation_licensed);
+          setVendorLogoUrl(results[1].data.vendor_logo_url || '');
           setBrandingForm({
             name: results[1].data.name || '',
             logo_url: results[1].data.logo_url || '',
@@ -303,6 +305,11 @@ export default function AppearanceSettingsPanel() {
                   PDFs and bills use the hospital logo from Hospital Info — upload a separate
                   app logo here when you want different artwork in the product UI.
                 </p>
+                {vendorLogoUrl && !brandingForm.logo_url && (
+                  <p className="text-sm text-muted-foreground">
+                    A vendor logo is currently shown on login and navigation. Uploading an app logo here replaces it in the app. Bills and PDFs still use the hospital letterhead.
+                  </p>
+                )}
 
                 <div>
                   <Label htmlFor="branding-name">Hospital / app name</Label>

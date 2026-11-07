@@ -1,20 +1,25 @@
 """Referral (affiliate) management endpoints."""
 from fastapi import APIRouter, HTTPException, Depends
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import func as sql_func, or_
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
 from config.database import get_db
 from app.models.user import User
-from app.models.referral import Referral, ReferralCommission
+from app.models.referral import Referral, ReferralCommission, ReferralLabCategoryRate
 from app.models.outpatient import Appointment
-from app.models.lab import PatientLabOrder
+from app.models.lab import LabTest, LabTestCategory, PatientLabOrder
 from app.models.patient import Patient
 from app.models.billing import Bill
 from app.models.pharmacy import PharmacySale, PharmacySaleReturn
 from app.utils.dependencies import get_current_user
 
 router = APIRouter()
+
+
+class CategoryRateIn(BaseModel):
+    category_id: int
+    commission_pct: float = Field(..., ge=0, le=100)
 
 
 class ReferralCreate(BaseModel):
@@ -27,6 +32,7 @@ class ReferralCreate(BaseModel):
     lab_commission_pct: float = Field(0, ge=0, le=100)
     ip_commission_pct: float = Field(0, ge=0, le=100)
     pharmacy_commission_pct: float = Field(0, ge=0, le=100)
+    category_rates: List[CategoryRateIn] = Field(default_factory=list)
 
 
 class ReferralUpdate(BaseModel):
@@ -40,6 +46,21 @@ class ReferralUpdate(BaseModel):
     lab_commission_pct: Optional[float] = Field(None, ge=0, le=100)
     ip_commission_pct: Optional[float] = Field(None, ge=0, le=100)
     pharmacy_commission_pct: Optional[float] = Field(None, ge=0, le=100)
+    category_rates: Optional[List[CategoryRateIn]] = None
+
+
+class CategoryRateOut(BaseModel):
+    category_id: int
+    commission_pct: float = 0
+    category_name: Optional[str] = None
+
+    @field_validator("commission_pct", mode="before")
+    @classmethod
+    def _null_category_rate_is_zero(cls, value):
+        return 0 if value is None else value
+
+    class Config:
+        from_attributes = True
 
 
 class ReferralResponse(BaseModel):
@@ -54,6 +75,7 @@ class ReferralResponse(BaseModel):
     lab_commission_pct: float = 0
     ip_commission_pct: float = 0
     pharmacy_commission_pct: float = 0
+    category_rates: List[CategoryRateOut] = Field(default_factory=list)
 
     @field_validator(
         "op_commission_pct",
@@ -76,8 +98,44 @@ class CommissionCreate(BaseModel):
     notes: Optional[str] = None
 
 
-ALLOWED_ROLES = ['receptionist', 'hospital_admin', 'super_admin']
-ADMIN_ROLES = ['hospital_admin', 'super_admin']
+ALLOWED_ROLES = ['receptionist', 'billing_admin', 'hospital_admin', 'super_admin']
+ADMIN_ROLES = ['billing_admin', 'hospital_admin', 'super_admin']
+
+
+def _referral_query(db: Session):
+    return db.query(Referral).options(
+        selectinload(Referral.category_rates).joinedload(ReferralLabCategoryRate.category)
+    )
+
+
+def _replace_category_rates(db: Session, referral: Referral, hospital_id: int, rates: List[CategoryRateIn]):
+    """Replace this referrer's category overrides. Omitted categories use the lab default."""
+    seen = []
+    for rate in rates:
+        if rate.category_id in seen:
+            raise HTTPException(status_code=400, detail="Each lab category can only be set once")
+        seen.append(rate.category_id)
+    if seen:
+        found = {
+            row.id
+            for row in db.query(LabTestCategory).filter(
+                LabTestCategory.hospital_id == hospital_id,
+                LabTestCategory.id.in_(seen),
+            ).all()
+        }
+        if found != set(seen):
+            raise HTTPException(status_code=400, detail="Unknown lab category")
+    db.query(ReferralLabCategoryRate).filter(
+        ReferralLabCategoryRate.referral_id == referral.id
+    ).delete(synchronize_session=False)
+    db.flush()
+    for rate in rates:
+        db.add(ReferralLabCategoryRate(
+            referral_id=referral.id,
+            category_id=rate.category_id,
+            commission_pct=float(rate.commission_pct),
+        ))
+    db.expire(referral, ["category_rates"])
 
 
 @router.get("", response_model=List[ReferralResponse])
@@ -86,11 +144,29 @@ async def list_referrals(
     db: Session = Depends(get_db)
 ):
     """List all active referrals for the hospital."""
-    referrals = db.query(Referral).filter(
+    referrals = _referral_query(db).filter(
         Referral.hospital_id == current_user.hospital_id,
         Referral.is_active == True
     ).order_by(Referral.name).all()
     return referrals
+
+
+@router.get("/lab-categories")
+async def list_referral_lab_categories(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Active lab categories for the referral rate form.
+
+    Kept on this router so reception can set rates without the lab read permission.
+    """
+    if not any(r in current_user.role_names for r in ALLOWED_ROLES):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    categories = db.query(LabTestCategory).filter(
+        LabTestCategory.hospital_id == current_user.hospital_id,
+        LabTestCategory.is_active == True,
+    ).order_by(LabTestCategory.name).all()
+    return [{"id": category.id, "name": category.name} for category in categories]
 
 
 @router.get("/all", response_model=List[ReferralResponse])
@@ -101,10 +177,42 @@ async def list_all_referrals(
     """List all referrals including inactive (admin view)."""
     if not any(r in current_user.role_names for r in ALLOWED_ROLES):
         raise HTTPException(status_code=403, detail="Not authorized")
-    referrals = db.query(Referral).filter(
+    referrals = _referral_query(db).filter(
         Referral.hospital_id == current_user.hospital_id
     ).order_by(Referral.name).all()
     return referrals
+
+
+@router.get("/dashboard")
+async def referral_dashboard(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Revenue and commission totals for every referrer at this hospital."""
+    if not any(r in current_user.role_names for r in ALLOWED_ROLES):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    referrals = _referral_query(db).filter(
+        Referral.hospital_id == current_user.hospital_id
+    ).all()
+    revenue = 0.0
+    earned = 0.0
+    paid = 0.0
+    for referral in referrals:
+        summary = _assemble_referral_details(db, referral)["summary"]
+        revenue += summary["total_revenue"]
+        earned += summary["total_commission_earned"]
+        paid += summary["total_commission_paid"]
+    revenue = round(revenue, 2)
+    earned = round(earned, 2)
+    paid = round(paid, 2)
+    return {
+        "referral_count": len(referrals),
+        "active_count": sum(1 for referral in referrals if referral.is_active),
+        "revenue_generated": revenue,
+        "commission_earned": earned,
+        "commission_paid": paid,
+        "commission_due": round(earned - paid, 2),
+    }
 
 
 @router.post("", response_model=ReferralResponse)
@@ -129,6 +237,9 @@ async def create_referral(
         hospital_id=current_user.hospital_id,
     )
     db.add(referral)
+    db.flush()
+    if data.category_rates:
+        _replace_category_rates(db, referral, current_user.hospital_id, data.category_rates)
     db.commit()
     db.refresh(referral)
     return referral
@@ -145,11 +256,13 @@ async def update_referral(
         raise HTTPException(status_code=403, detail="Not authorized")
 
     changes = data.model_dump(exclude_unset=True)
-    edits_details = any(key != "is_active" for key in changes)
+    rates_set = "category_rates" in data.model_fields_set
+    changes.pop("category_rates", None)
+    edits_details = any(key != "is_active" for key in changes) or rates_set
     if edits_details and not any(r in current_user.role_names for r in ADMIN_ROLES):
         raise HTTPException(status_code=403, detail="Only a hospital admin can edit a referral")
 
-    referral = db.query(Referral).filter(
+    referral = _referral_query(db).filter(
         Referral.id == referral_id,
         Referral.hospital_id == current_user.hospital_id
     ).first()
@@ -158,6 +271,8 @@ async def update_referral(
 
     for key, val in changes.items():
         setattr(referral, key, val)
+    if rates_set:
+        _replace_category_rates(db, referral, current_user.hospital_id, data.category_rates or [])
 
     db.commit()
     db.refresh(referral)
@@ -201,6 +316,51 @@ def _commission_amount(revenue: float, pct: float) -> float:
     return round(_money(revenue) * _pct(pct) / 100.0, 2)
 
 
+def _stamp_flat_commission(rows: list, pct: float) -> None:
+    """OP, IP, and pharmacy use one rate on each row's amount."""
+    for row in rows:
+        row["commission_pct"] = pct
+        row["commission"] = _commission_amount(row.get("amount"), pct)
+
+
+def _lab_commission_base(order) -> float:
+    """Send-out uses hospital margin. In-house and receive-in use the billed amount."""
+    amount = _money(getattr(order, "amount", 0))
+    if (getattr(order, "fulfillment", None) or "") == "send_out":
+        return round(max(amount - _money(getattr(order, "partner_cost", 0)), 0.0), 2)
+    return amount
+
+
+def _category_rate_map(referral: Referral) -> dict:
+    return {
+        row.category_id: _pct(row.commission_pct)
+        for row in (referral.category_rates or [])
+    }
+
+
+def _lab_category_breakdown(lab_bills: list) -> list:
+    grouped = {}
+    for bill in lab_bills:
+        key = bill.get("category_id")
+        row = grouped.get(key)
+        if row is None:
+            row = {
+                "category_id": key,
+                "category_name": bill.get("category_name") or "Uncategorised",
+                "billed": 0.0,
+                "base": 0.0,
+                "percent": bill.get("commission_pct") or 0,
+                "commission": 0.0,
+                "order_count": 0,
+            }
+            grouped[key] = row
+        row["billed"] = round(row["billed"] + _money(bill.get("amount")), 2)
+        row["base"] = round(row["base"] + _money(bill.get("commission_base")), 2)
+        row["commission"] = round(row["commission"] + _money(bill.get("commission")), 2)
+        row["order_count"] += 1
+    return sorted(grouped.values(), key=lambda row: (row["category_name"] or "").lower())
+
+
 def _patient_label(patient) -> str:
     if not patient:
         return "Unknown"
@@ -222,20 +382,26 @@ async def get_referral_details(
     A patient has one referral, saved on `patients.referred_by`. Outpatient
     visits, walk-in lab orders, admission bills, and counter pharmacy sales
     for those patients are listed separately. Lab and pharmacy already
-    consumed by an admission bill stay inside that IP total.
+    consumed by an admission bill stay inside that IP total. Each lab order
+    uses its category rate, or the referrer's lab default. Send-out orders
+    are commissioned on invoice minus partner cost.
     """
     if not any(r in current_user.role_names for r in ALLOWED_ROLES):
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    referral = db.query(Referral).filter(
+    referral = _referral_query(db).filter(
         Referral.id == referral_id,
         Referral.hospital_id == current_user.hospital_id
     ).first()
     if not referral:
         raise HTTPException(status_code=404, detail="Referral not found")
 
+    return _assemble_referral_details(db, referral)
+
+
+def _assemble_referral_details(db: Session, referral: Referral):
     ref_name = (referral.name or "").strip()
-    hospital_id = current_user.hospital_id
+    hospital_id = referral.hospital_id
 
     patients = []
     if ref_name:
@@ -283,7 +449,9 @@ async def get_referral_details(
                 "reference": apt.appointment_number,
             })
 
-        lab_orders = db.query(PatientLabOrder).filter(
+        lab_orders = db.query(PatientLabOrder).options(
+            joinedload(PatientLabOrder.test).joinedload(LabTest.category)
+        ).filter(
             PatientLabOrder.patient_id.in_(patient_ids),
             PatientLabOrder.admission_id.is_(None),
             PatientLabOrder.inpatient_bill_id.is_(None),
@@ -292,8 +460,18 @@ async def get_referral_details(
             _not_cancelled(PatientLabOrder.status),
         ).order_by(PatientLabOrder.order_date.desc()).all()
 
+        category_rates = _category_rate_map(referral)
+        default_lab_pct = _pct(referral.lab_commission_pct)
         for lo in lab_orders:
-            test_name = lo.test.name if lo.test else ""
+            test = lo.test
+            category = test.category if test and test.category_id else None
+            category_id = test.category_id if test else None
+            category_name = category.name if category else "Uncategorised"
+            test_name = test.name if test else ""
+            billed = _money(lo.amount)
+            base = _lab_commission_base(lo)
+            pct = category_rates.get(category_id, default_lab_pct) if category_id is not None else default_lab_pct
+            fulfillment = getattr(lo, "fulfillment", None) or "in_house"
             lab_bills.append({
                 "type": "lab",
                 "id": lo.id,
@@ -302,7 +480,15 @@ async def get_referral_details(
                 "doctor_name": "",
                 "detail": test_name,
                 "test_name": test_name,
-                "amount": _money(lo.amount),
+                "category_id": category_id,
+                "category_name": category_name,
+                "fulfillment": fulfillment,
+                "partner_cost": _money(lo.partner_cost) if fulfillment == "send_out" else None,
+                "commission_base": base,
+                "commission_pct": pct,
+                "commission": _commission_amount(base, pct),
+                "lab_bill_group_id": lo.lab_bill_group_id,
+                "amount": billed,
                 "status": lo.payment_status or "pending",
                 "reference": lo.order_number,
             })
@@ -324,6 +510,7 @@ async def get_referral_details(
                 "patient_name": _patient_label(patient_by_id.get(bill.patient_id)),
                 "detail": subtype,
                 "amount": _money(bill.total_amount),
+                "admission_id": bill.reference_id,
                 "status": bill.status or "pending",
                 "reference": bill.bill_number,
             })
@@ -370,7 +557,7 @@ async def get_referral_details(
             })
 
     commissions = db.query(ReferralCommission).filter(
-        ReferralCommission.referral_id == referral_id
+        ReferralCommission.referral_id == referral.id
     ).order_by(ReferralCommission.payment_date.desc()).all()
 
     payer_ids = {c.paid_by_id for c in commissions if c.paid_by_id}
@@ -395,15 +582,20 @@ async def get_referral_details(
     lab_pct = _pct(referral.lab_commission_pct)
     ip_pct = _pct(referral.ip_commission_pct)
     pharmacy_pct = _pct(referral.pharmacy_commission_pct)
+    _stamp_flat_commission(apt_bills, op_pct)
+    _stamp_flat_commission(ip_bills, ip_pct)
+    _stamp_flat_commission(pharmacy_bills, pharmacy_pct)
 
     op_revenue = round(sum(b["amount"] for b in apt_bills), 2)
     lab_revenue = round(sum(b["amount"] for b in lab_bills), 2)
+    lab_commission_base = round(sum(b["commission_base"] for b in lab_bills), 2)
     ip_revenue = round(sum(b["amount"] for b in ip_bills), 2)
     pharmacy_revenue = round(sum(b["amount"] for b in pharmacy_bills), 2)
     op_commission = _commission_amount(op_revenue, op_pct)
-    lab_commission = _commission_amount(lab_revenue, lab_pct)
+    lab_commission = round(sum(b["commission"] for b in lab_bills), 2)
     ip_commission = _commission_amount(ip_revenue, ip_pct)
     pharmacy_commission = _commission_amount(pharmacy_revenue, pharmacy_pct)
+    lab_by_category = _lab_category_breakdown(lab_bills)
     total_revenue = round(op_revenue + lab_revenue + ip_revenue + pharmacy_revenue, 2)
     total_earned = round(op_commission + lab_commission + ip_commission + pharmacy_commission, 2)
     total_paid = round(sum(c["amount"] for c in commission_list), 2)
@@ -426,6 +618,8 @@ async def get_referral_details(
             "pharmacy_commission_pct": pharmacy_pct,
             "op_revenue": op_revenue,
             "lab_revenue": lab_revenue,
+            "lab_commission_base": lab_commission_base,
+            "lab_by_category": lab_by_category,
             "ip_revenue": ip_revenue,
             "pharmacy_revenue": pharmacy_revenue,
             "op_commission": op_commission,

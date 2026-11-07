@@ -3,13 +3,7 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from config.database import SessionLocal
-from app.services.license_service import (
-    get_current_license,
-    compute_license_status,
-    verify_license_machine_binding,
-    STATUS_EXPIRED,
-    STATUS_MACHINE_MISMATCH,
-)
+from app.services.license_service import get_license_status
 
 # Cache license status for 5 minutes to avoid DB hits on every request
 _license_cache = {"status": None, "checked_at": 0}
@@ -51,16 +45,8 @@ class LicenseMiddleware(BaseHTTPMiddleware):
         if now - _license_cache["checked_at"] > CACHE_TTL_SECONDS:
             try:
                 db = SessionLocal()
-                license_record = get_current_license(db)
-                if license_record:
-                    base_status = compute_license_status(license_record.expires_at)
-                    binding_ok, _, _ = verify_license_machine_binding(license_record)
-                    if not binding_ok:
-                        _license_cache["status"] = STATUS_MACHINE_MISMATCH
-                    else:
-                        _license_cache["status"] = base_status
-                else:
-                    _license_cache["status"] = "no_license"
+                info = get_license_status(db)
+                _license_cache["status"] = info.get("status") or "no_license"
                 _license_cache["checked_at"] = now
                 db.close()
             except Exception:

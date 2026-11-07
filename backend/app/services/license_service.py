@@ -20,6 +20,8 @@ from app.services.license_inspect import (
     compute_license_status,
     verify_license_machine_binding,
     inspect_license_file,
+    resolve_support_contact,
+    seller_public_info,
 )
 
 
@@ -43,6 +45,47 @@ FEATURE_CUSTOMISATION = "customisation"
 def get_current_license(db: Session) -> License | None:
     """Get the most recent license from DB."""
     return db.query(License).order_by(License.id.desc()).first()
+
+
+def _license_authoritative(license_record) -> bool:
+    """A paid license wins over the trial only while it is still usable here.
+
+    Expired and machine-mismatched rows do not count. Grace period does.
+    """
+    if not license_record:
+        return False
+    if compute_license_status(license_record.expires_at) == STATUS_EXPIRED:
+        return False
+    binding_ok, _, _ = verify_license_machine_binding(license_record)
+    return bool(binding_ok)
+
+
+def licensed_feature_names(db: Session) -> set | None:
+    """Module names the current grant allows.
+
+    ``None`` means there is no feature filter: no usable license and no active
+    trial. Callers then keep today's no-license behavior (admin toggle only).
+    An active trial allows every product module and not the paid add-ons.
+    """
+    from app.services.trial import STATUS_TRIAL, TRIAL_FEATURES, trial_status
+
+    record = get_current_license(db)
+    if _license_authoritative(record):
+        return set(record.features or [])
+    trial = trial_status(touch=False)
+    if trial.get("status") == STATUS_TRIAL:
+        return set(TRIAL_FEATURES)
+    if record and record.features:
+        return set(record.features)
+    return None
+
+
+def license_denies_module(db: Session, module: str) -> bool:
+    """True when this module is outside the current license or trial grant."""
+    names = licensed_feature_names(db)
+    if names is None:
+        return False
+    return module not in names
 
 
 def license_has_feature(db: Session, feature: str) -> bool:
@@ -114,20 +157,54 @@ def build_rebind_request_payload(
     }
 
 
-def get_license_status(db: Session) -> dict:
-    """Get current license status info for API responses."""
-    license_record = get_current_license(db)
-    if not license_record:
-        return {
-            "status": STATUS_NO_LICENSE,
-            "message": "No license installed",
-            "days_remaining": 0,
-            "expires_at": None,
-            "plan": None,
-            "max_users": 0,
-            "features": [],
-        }
+def _no_license_status() -> dict:
+    return {
+        "status": STATUS_NO_LICENSE,
+        "message": "No license installed",
+        "days_remaining": 0,
+        "expires_at": None,
+        "plan": None,
+        "max_users": 0,
+        "features": [],
+        "support_contact": None,
+    }
 
+
+def _trial_status_payload(trial: dict, *, expired: bool) -> dict:
+    from app.services.trial import STATUS_TRIAL, STATUS_TRIAL_EXPIRED, TRIAL_FEATURES
+
+    days = int(trial.get("days_remaining") or 0)
+    if expired:
+        message = (
+            "Trial ended on this computer. "
+            "Upload a license from License Management to restore staff access."
+        )
+        status = STATUS_TRIAL_EXPIRED
+        days = 0
+    else:
+        message = (
+            f"Trial active. {days} days remaining. "
+            "Upload a license to keep access after the trial ends."
+        )
+        status = STATUS_TRIAL
+    return {
+        "status": status,
+        "message": message,
+        "days_remaining": days,
+        "expires_at": trial.get("expires_at"),
+        "plan": "trial",
+        "max_users": 0,
+        "features": list(TRIAL_FEATURES),
+        "hospital_name": None,
+        "license_id": None,
+        "issued_at": trial.get("started_at"),
+        "seller_info": None,
+        "support_contact": None,
+        "machine_match": True,
+    }
+
+
+def _license_record_status(db: Session, license_record) -> dict:
     status = compute_license_status(license_record.expires_at)
     days_remaining = (license_record.expires_at - datetime.utcnow()).days
 
@@ -153,11 +230,37 @@ def get_license_status(db: Session) -> dict:
         "hospital_name": license_record.hospital_name,
         "license_id": license_record.license_id,
         "issued_at": license_record.issued_at.isoformat(),
-        "seller_info": license_record.seller_info,
+        "seller_info": seller_public_info(license_record.seller_info),
+        "support_contact": resolve_support_contact(
+            license_record.seller_info,
+            license_record.support_info,
+        ),
         "machine_match": binding_ok,
         "license_machine_id": license_machine_id,
         "current_machine_id": current_machine_id,
     }
+
+
+def get_license_status(db: Session) -> dict:
+    """Get current license status info for API responses.
+
+    A usable paid license wins. Otherwise an active trial unlocks every
+    product module. An expired trial on this PC stays expired across reinstalls.
+    """
+    from app.services.trial import STATUS_TRIAL, STATUS_TRIAL_EXPIRED, trial_status
+
+    license_record = get_current_license(db)
+    if _license_authoritative(license_record):
+        return _license_record_status(db, license_record)
+
+    trial = trial_status(touch=True)
+    if trial.get("status") == STATUS_TRIAL:
+        return _trial_status_payload(trial, expired=False)
+    if license_record:
+        return _license_record_status(db, license_record)
+    if trial.get("status") == STATUS_TRIAL_EXPIRED:
+        return _trial_status_payload(trial, expired=True)
+    return _no_license_status()
 
 
 def upload_license(db: Session, file_content: str, uploaded_by: int = None) -> dict:
@@ -199,6 +302,14 @@ def upload_license(db: Session, file_content: str, uploaded_by: int = None) -> d
         License.license_id == license_data["license_id"]
     ).first()
 
+    from app.utils.vendor_logo import materialize_seller
+
+    raw_seller = license_data.get("seller")
+    seller_info = materialize_seller(raw_seller if isinstance(raw_seller, dict) else None)
+    support_info = None
+    if not seller_info:
+        support_info = resolve_support_contact(None, license_data.get("support"))
+
     if existing:
         # Update existing record
         existing.hospital_id = license_data.get("hospital_id", existing.hospital_id)
@@ -206,7 +317,8 @@ def upload_license(db: Session, file_content: str, uploaded_by: int = None) -> d
         existing.plan = license_data.get("plan", existing.plan)
         existing.max_users = license_data.get("max_users", existing.max_users)
         existing.features = license_data.get("features", existing.features)
-        existing.seller_info = license_data.get("seller", existing.seller_info)
+        existing.seller_info = seller_info
+        existing.support_info = support_info
         existing.gdrive_config = _build_gdrive_config(license_data)
         existing.issued_at = issued_at
         existing.expires_at = expires_at
@@ -223,7 +335,8 @@ def upload_license(db: Session, file_content: str, uploaded_by: int = None) -> d
             plan=license_data.get("plan", "standard"),
             max_users=license_data.get("max_users", 50),
             features=license_data.get("features", []),
-            seller_info=license_data.get("seller", None),
+            seller_info=seller_info,
+            support_info=support_info,
             gdrive_config=_build_gdrive_config(license_data),
             issued_at=issued_at,
             expires_at=expires_at,
@@ -268,23 +381,37 @@ def is_license_valid_for_login(db: Session, role_name: str) -> tuple[bool, str]:
     if role_name in ("super_admin", "hospital_admin"):
         return True, ""
 
+    from app.services.trial import STATUS_TRIAL, STATUS_TRIAL_EXPIRED, trial_status
+
     license_record = get_current_license(db)
-    if not license_record:
-        return False, "No valid license installed. Contact your administrator."
+    if _license_authoritative(license_record):
+        return True, ""
 
-    status = compute_license_status(license_record.expires_at)
-    if status == STATUS_EXPIRED:
-        return False, "License has expired. Contact your administrator to renew."
+    trial = trial_status(touch=False)
+    if trial.get("status") == STATUS_TRIAL:
+        return True, ""
 
-    binding_ok, _, _ = verify_license_machine_binding(license_record)
-    if not binding_ok:
+    if license_record:
+        status = compute_license_status(license_record.expires_at)
+        if status == STATUS_EXPIRED:
+            return False, "License has expired. Contact your administrator to renew."
+
+        binding_ok, _, _ = verify_license_machine_binding(license_record)
+        if not binding_ok:
+            return False, (
+                "This database appears to have been moved to a different computer. "
+                "The installed license is not valid for this machine. "
+                "Contact your administrator to request a license rebind."
+            )
+        return True, ""
+
+    if trial.get("status") == STATUS_TRIAL_EXPIRED:
         return False, (
-            "This database appears to have been moved to a different computer. "
-            "The installed license is not valid for this machine. "
-            "Contact your administrator to request a license rebind."
+            "The 14-day trial on this computer has ended. "
+            "Contact your administrator to install a license."
         )
 
-    return True, ""
+    return False, "No valid license installed. Contact your administrator."
 
 
 def _status_message(status: str, days_remaining: int) -> str:

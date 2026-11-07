@@ -10,7 +10,7 @@ from config.database import get_db
 from app.models.system import SystemModule
 from app.utils.dependencies import get_current_user
 from app.models.user import User
-from app.services.license_service import get_current_license
+from app.services.license_service import licensed_feature_names
 
 router = APIRouter()
 
@@ -28,17 +28,14 @@ async def get_enabled_modules(
     """
     modules = db.query(SystemModule).all()
 
-    # Get licensed features
-    license_record = get_current_license(db)
-    licensed_features = set()
-    if license_record and license_record.features:
-        licensed_features = set(license_record.features)
+    # None means no license and no active trial: admin toggle only.
+    # An active trial supplies every product module. A paid license wins.
+    licensed_features = licensed_feature_names(db)
 
     result = []
     for module in modules:
-        # Module is enabled only if admin enabled it AND license covers it
-        # If no license exists, fall back to admin toggle only (grace/first-time setup)
-        if licensed_features:
+        # Module is enabled only if admin enabled it AND the grant covers it.
+        if licensed_features is not None:
             enabled = module.is_enabled and module.module_name in licensed_features
         else:
             enabled = module.is_enabled
@@ -205,7 +202,12 @@ async def post_install_health_check(
     from app.utils.paths import get_frontend_dir
     from app.utils.schema_migrations import get_last_failure
     from config.database import engine as _engine
-    from app.services.license_service import get_current_license, compute_license_status, STATUS_EXPIRED
+    from app.services.license_service import (
+        get_current_license,
+        compute_license_status,
+        STATUS_EXPIRED,
+        get_license_status,
+    )
 
     checks: list[dict] = []
 
@@ -242,17 +244,23 @@ async def post_install_health_check(
     except Exception as e:
         _add("Schema migrations succeeded", False, str(e))
 
-    # 4. License present and not expired
+    # 4. License present and not expired. An active trial counts as installed.
     try:
-        lic = get_current_license(db)
-        if not lic:
-            _add("License is installed", False, "No license found — upload one from Dashboard > License")
+        info = get_license_status(db)
+        if info.get("status") == "trial":
+            _add("License is installed", True, f"Trial — {info.get('days_remaining', 0)} days remaining")
+        elif info.get("status") == "trial_expired":
+            _add("License is installed", False, "Trial ended — upload a license from Dashboard > License")
         else:
-            status = compute_license_status(lic.expires_at)
-            if status == STATUS_EXPIRED:
-                _add("License is installed", False, f"License {lic.license_id} has expired")
+            lic = get_current_license(db)
+            if not lic:
+                _add("License is installed", False, "No license found — upload one from Dashboard > License")
             else:
-                _add("License is installed", True, f"{lic.hospital_name} — status {status}")
+                status = compute_license_status(lic.expires_at)
+                if status == STATUS_EXPIRED:
+                    _add("License is installed", False, f"License {lic.license_id} has expired")
+                else:
+                    _add("License is installed", True, f"{lic.hospital_name} — status {status}")
     except Exception as e:
         _add("License is installed", False, str(e))
 

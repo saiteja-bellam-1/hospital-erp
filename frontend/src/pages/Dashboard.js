@@ -5,6 +5,7 @@ import {
   Phone,
   Headphones,
   Mail,
+  MapPin,
   X as XIcon,
   Wifi,
   Menu,
@@ -12,6 +13,7 @@ import {
 } from 'lucide-react';
 import axios from 'axios';
 
+import { phoneTel } from '../utils/supportContact';
 import { useAuth } from '../contexts/AuthContext';
 import { useBranding } from '../contexts/BrandingContext';
 import {
@@ -46,7 +48,6 @@ import DoctorAvailabilityPage from './modules/reception/DoctorAvailabilityPage';
 import ReceptionReportsPage from './modules/reception/ReceptionReportsPage';
 import ReceptionPackagesPage from './modules/reception/ReceptionPackagesPage';
 import ProceduresBillingPage from './modules/reception/ProceduresBillingPage';
-import ReferralManagementPage from './modules/reception/ReferralManagementPage';
 import ReceptionLabOrdersPage from './modules/reception/ReceptionLabOrdersPage';
 import NurseDashboard from './modules/NurseDashboard';
 import AvailabilityModule from './modules/AvailabilityModule';
@@ -230,6 +231,7 @@ const DashboardShell = () => {
               ...(prev || {}),
               ...res.data,
               seller_info: res.data.seller_info ?? prev?.seller_info ?? null,
+              support_contact: res.data.support_contact ?? prev?.support_contact ?? null,
               expires_at: res.data.expires_at ?? prev?.expires_at ?? null,
             };
             try {
@@ -323,7 +325,7 @@ const DashboardShell = () => {
     ? user.full_name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
     : 'U';
 
-  const { navLayout } = useLayoutPreferences();
+  const { navLayout, layoutResolved } = useLayoutPreferences();
   const isHeaderMode = navLayout === 'header';
 
   const sidebarProps = {
@@ -342,6 +344,12 @@ const DashboardShell = () => {
     userInitials,
     roleLabel: getRoleLabel(),
   };
+
+  // Without a cached layout, wait for the server value. Painting the sidebar
+  // default first is what flashed the side menu on every refresh.
+  if (!layoutResolved) {
+    return <div className="h-screen" style={{ background: 'hsl(var(--background))' }} />;
+  }
 
   return (
     <div
@@ -423,7 +431,7 @@ const DashboardShell = () => {
               <Route path="/reception/packages" element={<ReceptionPackagesPage />} />
               <Route path="/reception/lab-orders" element={<ReceptionLabOrdersPage />} />
               <Route path="/reception/procedures" element={<ProceduresBillingPage />} />
-              <Route path="/reception/referrals" element={<ReferralManagementPage />} />
+              <Route path="/reception/referrals" element={<Navigate to="/dashboard/billing/referrals" replace />} />
               <Route path="/patients/*" element={<PatientsModule />} />
               <Route
                 path="lab/*"
@@ -466,7 +474,7 @@ const DashboardShell = () => {
               <Route path="/software-update" element={<SoftwareUpdate />} />
               <Route path="/audit" element={<AuditLogsPage />} />
               <Route path="/support-contact" element={
-                <SupportContactPage sellerInfo={licenseStatus?.seller_info} />
+                <SupportContactPage contact={licenseStatus?.support_contact} />
               } />
             </Routes>
             </div>
@@ -480,13 +488,17 @@ const DashboardShell = () => {
               <span className="inline-flex items-center gap-1.5">
                 <span className="text-gray-300" aria-hidden>·</span>
                 <Shield className="h-3 w-3 text-gray-400" />
-                <span>License:</span>
+                <span>{licenseStatus.status === 'trial' || licenseStatus.status === 'trial_expired' ? 'Trial:' : 'License:'}</span>
                 <span className={`font-semibold ${
+                  licenseStatus.status === 'trial_expired' ? 'text-amber-700' :
+                  licenseStatus.status === 'trial' ? 'text-blue-700' :
                   licenseStatus.days_remaining > 30 ? 'text-green-600' :
                   licenseStatus.days_remaining > 0 ? 'text-amber-600' :
                   'text-red-600'
                 }`}>
-                  {licenseStatus.days_remaining > 0
+                  {licenseStatus.status === 'trial_expired'
+                    ? 'Trial ended'
+                    : licenseStatus.days_remaining > 0
                     ? `${licenseStatus.days_remaining} days remaining`
                     : licenseStatus.status === 'grace_period'
                       ? `Grace period — ${Math.abs(licenseStatus.days_remaining)} days overdue`
@@ -497,6 +509,22 @@ const DashboardShell = () => {
                   <span>
                     (expires {new Date(licenseStatus.expires_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })})
                   </span>
+                )}
+              </span>
+            )}
+            {licenseStatus?.support_contact?.name && (
+              <span className="inline-flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
+                <span className="text-gray-300" aria-hidden>·</span>
+                <span className="font-medium text-gray-500">{licenseStatus.support_contact.name}</span>
+                {licenseStatus.support_contact.phone && (
+                  <a href={phoneTel(licenseStatus.support_contact.phone)} className="text-primary hover:underline">
+                    {licenseStatus.support_contact.phone}
+                  </a>
+                )}
+                {licenseStatus.support_contact.email && (
+                  <a href={`mailto:${licenseStatus.support_contact.email}`} className="text-primary hover:underline">
+                    {licenseStatus.support_contact.email}
+                  </a>
                 )}
               </span>
             )}
@@ -533,15 +561,31 @@ const DashboardShell = () => {
                     Support
                   </p>
                   <div className="bg-gray-50 rounded-xl p-3.5 space-y-2">
-                    <p className="font-semibold text-sm text-gray-900">KT Health Soft</p>
-                    <div className="flex items-center gap-2">
-                      <Phone className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
-                      <a href="tel:+919876543210" className="text-xs text-primary font-medium hover:underline">+91 98765 43210</a>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Mail className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
-                      <a href="mailto:support@kthealthsoft.com" className="text-xs text-primary font-medium hover:underline">support@kthealthsoft.com</a>
-                    </div>
+                    {licenseStatus?.support_contact?.name ? (
+                      <>
+                        <p className="font-semibold text-sm text-gray-900">{licenseStatus.support_contact.name}</p>
+                        {licenseStatus.support_contact.address && (
+                          <div className="flex items-start gap-2">
+                            <MapPin className="h-3.5 w-3.5 text-gray-400 flex-shrink-0 mt-0.5" />
+                            <p className="text-xs text-gray-600">{licenseStatus.support_contact.address}</p>
+                          </div>
+                        )}
+                        {licenseStatus.support_contact.phone && (
+                          <div className="flex items-center gap-2">
+                            <Phone className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
+                            <a href={phoneTel(licenseStatus.support_contact.phone)} className="text-xs text-primary font-medium hover:underline">{licenseStatus.support_contact.phone}</a>
+                          </div>
+                        )}
+                        {licenseStatus.support_contact.email && (
+                          <div className="flex items-center gap-2">
+                            <Mail className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
+                            <a href={`mailto:${licenseStatus.support_contact.email}`} className="text-xs text-primary font-medium hover:underline">{licenseStatus.support_contact.email}</a>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-xs text-gray-500">No support contact on this license.</p>
+                    )}
                   </div>
                 </div>
 

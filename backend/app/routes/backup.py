@@ -170,6 +170,18 @@ async def get_system_info(current_user: User = Depends(get_current_user)):
         if hospital and hospital.logo_url:
             image_usage[hospital.logo_url] = image_usage.get(hospital.logo_url, [])
             image_usage[hospital.logo_url].append("Hospital Logo (Bills, Prescriptions)")
+        if hospital and getattr(hospital, "app_logo_url", None):
+            image_usage[hospital.app_logo_url] = image_usage.get(hospital.app_logo_url, [])
+            image_usage[hospital.app_logo_url].append("App logo")
+
+        from app.models.license import License
+        lic = _db.query(License).order_by(License.id.desc()).first()
+        vendor_url = None
+        if lic and isinstance(lic.seller_info, dict):
+            vendor_url = lic.seller_info.get("logo_url")
+        if isinstance(vendor_url, str) and vendor_url.strip():
+            image_usage[vendor_url.strip()] = image_usage.get(vendor_url.strip(), [])
+            image_usage[vendor_url.strip()].append("Vendor logo")
 
         for setting in _db.query(HospitalSettings).filter(
             HospitalSettings.setting_key.in_(["provider_logo", "signature_image"])

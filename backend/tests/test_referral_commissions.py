@@ -7,7 +7,7 @@ from app.models.lab import LabTest, LabTestCategory, PatientLabOrder
 from app.models.outpatient import Appointment
 from app.models.patient import Patient
 from app.models.pharmacy import PharmacySale, PharmacySaleReturn
-from app.models.referral import Referral, ReferralCommission
+from app.models.referral import Referral, ReferralCommission, ReferralLabCategoryRate
 
 
 def _patient(db_session, seed_data, name, referred_by):
@@ -211,10 +211,27 @@ def test_referral_payout_uses_patient_referral_across_op_lab_ip_pharmacy(
     assert summary["commission_balance"] == 242.5
     assert len(body["consultations"]) == 1
     assert body["consultations"][0]["reference"] == f"OP-{suffix}"
+    assert body["consultations"][0]["commission"] == 100
+    assert body["consultations"][0]["commission_pct"] == 10
     assert len(body["lab_orders"]) == 1
+    assert body["lab_orders"][0]["commission"] == 80
     assert len(body["inpatient_bills"]) == 2
+    ip_by_ref = {row["reference"]: row for row in body["inpatient_bills"]}
+    assert ip_by_ref[f"ADM-{suffix}"]["commission"] == 100
+    assert ip_by_ref[f"ADM-INT-{suffix}"]["commission"] == 25
     assert len(body["pharmacy_sales"]) == 1
     assert body["pharmacy_sales"][0]["amount"] == 250
+    assert body["pharmacy_sales"][0]["commission"] == 37.5
+
+    board = client.get("/api/referrals/dashboard", headers=auth_headers)
+    assert board.status_code == 200, board.text
+    totals = board.json()
+    assert totals["referral_count"] == 1
+    assert totals["active_count"] == 1
+    assert totals["revenue_generated"] == 4150
+    assert totals["commission_earned"] == 342.5
+    assert totals["commission_paid"] == 100
+    assert totals["commission_due"] == 242.5
 
 
 def _book(client, headers, patient, doctor_id, referred_by):
@@ -281,7 +298,8 @@ def test_existing_patient_referral_is_kept_when_booking_sends_another(
     assert booked["appointment_number"] not in other_refs
 
 
-def test_only_hospital_admin_can_edit_a_referral(client, auth_headers, db_session, seed_data):
+def test_billing_admin_can_edit_a_referral_and_reception_cannot(client, auth_headers, db_session, seed_data):
+    from app.models.user import User, UserRole
     from app.utils.auth import create_access_token
 
     created = client.post("/api/referrals", json={
@@ -295,17 +313,227 @@ def test_only_hospital_admin_can_edit_a_referral(client, auth_headers, db_sessio
     blocked = client.put(f"/api/referrals/{referral_id}", json={"name": "Changed"}, headers=reception)
     assert blocked.status_code == 403
 
-    kept = client.get("/api/referrals/all", headers=auth_headers)
-    row = next(item for item in kept.json() if item["id"] == referral_id)
-    assert row["name"].startswith("Edit Gate")
+    billing_role = db_session.query(UserRole).filter_by(name="billing_admin").first()
+    if billing_role is None:
+        billing_role = UserRole(name="billing_admin", is_system_role=True)
+        db_session.add(billing_role)
+        db_session.flush()
+    suffix = uuid.uuid4().hex[:6]
+    billing_user = User(
+        username=f"billadmin{suffix}",
+        email=f"billadmin{suffix}@test.com",
+        password_hash="x",
+        first_name="Bill",
+        last_name="Admin",
+        role_id=billing_role.id,
+        hospital_id=seed_data["hospital_id"],
+        is_active=True,
+    )
+    db_session.add(billing_user)
+    db_session.commit()
 
+    billing = {"Authorization": f"Bearer {create_access_token(data={'sub': billing_user.username})}"}
     updated = client.put(
         f"/api/referrals/{referral_id}",
         json={"op_commission_pct": 12},
-        headers=auth_headers,
+        headers=billing,
     )
     assert updated.status_code == 200, updated.text
     assert updated.json()["op_commission_pct"] == 12
+
+
+def _lab_test(db_session, seed_data, category, name, code):
+    test = LabTest(
+        test_code=code,
+        name=name,
+        category_id=category.id,
+        cost=100,
+        hospital_id=seed_data["hospital_id"],
+    )
+    db_session.add(test)
+    db_session.flush()
+    return test
+
+
+def test_lab_commission_uses_category_rates_and_send_out_margin(
+    client, auth_headers, db_session, seed_data
+):
+    suffix = uuid.uuid4().hex[:8]
+    ref_name = f"Dr Lab {suffix}"
+    referral = Referral(
+        name=ref_name,
+        hospital_id=seed_data["hospital_id"],
+        lab_commission_pct=20,
+    )
+    db_session.add(referral)
+    db_session.flush()
+
+    hematology = LabTestCategory(name=f"Hematology {suffix}", hospital_id=seed_data["hospital_id"])
+    biochemistry = LabTestCategory(name=f"Biochemistry {suffix}", hospital_id=seed_data["hospital_id"])
+    db_session.add_all([hematology, biochemistry])
+    db_session.flush()
+    db_session.add(ReferralLabCategoryRate(
+        referral_id=referral.id,
+        category_id=hematology.id,
+        commission_pct=10,
+    ))
+
+    heme = _lab_test(db_session, seed_data, hematology, f"CBC {suffix}", f"H{suffix[:5]}")
+    chem = _lab_test(db_session, seed_data, biochemistry, f"LFT {suffix}", f"B{suffix[:5]}")
+    patient = _patient(db_session, seed_data, "Esha", ref_name)
+
+    db_session.add_all([
+        PatientLabOrder(
+            order_number=f"LAB-IN-{suffix}",
+            patient_id=patient.id,
+            test_id=heme.id,
+            amount=400,
+            payment_status="paid",
+            fulfillment="in_house",
+        ),
+        PatientLabOrder(
+            order_number=f"LAB-CHEM-{suffix}",
+            patient_id=patient.id,
+            test_id=chem.id,
+            amount=500,
+            payment_status="paid",
+            fulfillment="in_house",
+        ),
+        PatientLabOrder(
+            order_number=f"LAB-OUT-{suffix}",
+            patient_id=patient.id,
+            test_id=heme.id,
+            amount=1000,
+            partner_cost=700,
+            payment_status="paid",
+            fulfillment="send_out",
+        ),
+        PatientLabOrder(
+            order_number=f"LAB-IN2-{suffix}",
+            patient_id=patient.id,
+            test_id=chem.id,
+            amount=200,
+            payment_status="paid",
+            fulfillment="receive_in",
+            bill_to="partner",
+        ),
+        PatientLabOrder(
+            order_number=f"LAB-NOCOST-{suffix}",
+            patient_id=patient.id,
+            test_id=chem.id,
+            amount=100,
+            partner_cost=None,
+            payment_status="paid",
+            fulfillment="send_out",
+        ),
+        PatientLabOrder(
+            order_number=f"LAB-ADM-{suffix}",
+            patient_id=patient.id,
+            test_id=heme.id,
+            amount=800,
+            payment_status="paid",
+            fulfillment="in_house",
+            admission_id=1,
+        ),
+    ])
+    db_session.commit()
+
+    response = client.get(f"/api/referrals/{referral.id}/details", headers=auth_headers)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    summary = body["summary"]
+
+    assert summary["lab_revenue"] == 2200
+    assert summary["lab_commission_base"] == 1500
+    assert summary["lab_commission"] == 230
+    assert summary["total_lab_orders"] == 5
+    assert len(body["lab_orders"]) == 5
+
+    by_name = {row["category_name"]: row for row in summary["lab_by_category"]}
+    assert by_name[hematology.name]["percent"] == 10
+    assert by_name[hematology.name]["billed"] == 1400
+    assert by_name[hematology.name]["base"] == 700
+    assert by_name[hematology.name]["commission"] == 70
+    assert by_name[hematology.name]["order_count"] == 2
+    assert by_name[biochemistry.name]["percent"] == 20
+    assert by_name[biochemistry.name]["billed"] == 800
+    assert by_name[biochemistry.name]["base"] == 800
+    assert by_name[biochemistry.name]["commission"] == 160
+
+    send_out = next(row for row in body["lab_orders"] if row["reference"] == f"LAB-OUT-{suffix}")
+    assert send_out["amount"] == 1000
+    assert send_out["partner_cost"] == 700
+    assert send_out["commission_base"] == 300
+    assert send_out["commission_pct"] == 10
+    assert send_out["commission"] == 30
+
+    received = next(row for row in body["lab_orders"] if row["reference"] == f"LAB-IN2-{suffix}")
+    assert received["commission_base"] == 200
+    assert received["commission"] == 40
+
+    missing_cost = next(row for row in body["lab_orders"] if row["reference"] == f"LAB-NOCOST-{suffix}")
+    assert missing_cost["commission_base"] == 100
+    assert missing_cost["commission"] == 20
+
+
+def test_referral_category_rates_round_trip(client, auth_headers, db_session, seed_data):
+    suffix = uuid.uuid4().hex[:8]
+    category = LabTestCategory(name=f"Serology {suffix}", hospital_id=seed_data["hospital_id"])
+    db_session.add(category)
+    db_session.commit()
+
+    listed = client.get("/api/referrals/lab-categories", headers=auth_headers)
+    assert listed.status_code == 200, listed.text
+    names = {row["name"] for row in listed.json()}
+    assert category.name in names
+
+    created = client.post("/api/referrals", json={
+        "name": f"Rate Cat {suffix}",
+        "lab_commission_pct": 5,
+        "category_rates": [{"category_id": category.id, "commission_pct": 12.5}],
+    }, headers=auth_headers)
+    assert created.status_code == 200, created.text
+    body = created.json()
+    assert body["category_rates"][0]["category_id"] == category.id
+    assert body["category_rates"][0]["commission_pct"] == 12.5
+    assert body["category_rates"][0]["category_name"] == category.name
+
+    cleared = client.put(
+        f"/api/referrals/{body['id']}",
+        json={"category_rates": []},
+        headers=auth_headers,
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["category_rates"] == []
+
+    replaced = client.put(
+        f"/api/referrals/{body['id']}",
+        json={"category_rates": [{"category_id": category.id, "commission_pct": 8}]},
+        headers=auth_headers,
+    )
+    assert replaced.status_code == 200, replaced.text
+    assert replaced.json()["category_rates"] == [{
+        "category_id": category.id,
+        "commission_pct": 8.0,
+        "category_name": category.name,
+    }]
+
+    unknown = client.put(
+        f"/api/referrals/{body['id']}",
+        json={"category_rates": [{"category_id": 0, "commission_pct": 4}]},
+        headers=auth_headers,
+    )
+    assert unknown.status_code == 400
+
+    duplicate = client.put(
+        f"/api/referrals/{body['id']}",
+        json={"category_rates": [
+            {"category_id": category.id, "commission_pct": 4},
+            {"category_id": category.id, "commission_pct": 6},
+        ]},
+        headers=auth_headers,
+    )
+    assert duplicate.status_code == 400
 
 
 def test_referral_rejects_commission_rate_above_100(client, auth_headers, db_session, seed_data):

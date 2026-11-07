@@ -88,6 +88,26 @@ def _emit(payload: dict, ok: bool) -> int:
     return 0 if ok else 1
 
 
+def cmd_trial_status(_args) -> int:
+    """Read the machine trial clock. Does not create a record."""
+    try:
+        from app.services.trial import trial_status
+        info = trial_status(touch=False)
+        return _emit(info, bool(info.get("ok")))
+    except Exception as e:
+        return _emit({"ok": False, "error": f"trial status unavailable: {e}"}, False)
+
+
+def cmd_trial_begin(_args) -> int:
+    """Start the 14-day clock, or report the existing one without resetting it."""
+    try:
+        from app.services.trial import trial_begin
+        info = trial_begin()
+        return _emit(info, bool(info.get("ok")))
+    except Exception as e:
+        return _emit({"ok": False, "error": f"trial begin failed: {e}"}, False)
+
+
 def cmd_machine_id(_args) -> int:
     try:
         # Reuse the backend's machine-id implementation when available so the
@@ -395,6 +415,8 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("machine-id", help="Print the current machine ID")
+    sub.add_parser("trial-status", help="Read the 14-day trial clock without starting it")
+    sub.add_parser("trial-begin", help="Start the 14-day trial, or keep the existing clock")
 
     p_db = sub.add_parser("check-db", help="Validate an existing data folder")
     p_db.add_argument("folder")
@@ -436,6 +458,10 @@ def main(argv=None) -> int:
 
     if args.cmd == "machine-id":
         return cmd_machine_id(args)
+    if args.cmd == "trial-status":
+        return cmd_trial_status(args)
+    if args.cmd == "trial-begin":
+        return cmd_trial_begin(args)
     if args.cmd == "check-db":
         return cmd_check_db(args)
     if args.cmd == "validate-license":

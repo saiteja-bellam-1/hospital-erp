@@ -72,6 +72,41 @@ def verify_license_machine_binding(license_record) -> tuple[bool, str, str]:
     return (license_machine_id == current_machine_id), license_machine_id, current_machine_id
 
 
+def seller_public_info(seller) -> dict | None:
+    """Seller fields safe to return to the hospital UI.
+
+    Drops embedded logo bytes. ``logo_url`` is the file written at upload time.
+    """
+    if not isinstance(seller, dict):
+        return None
+    out: dict = {}
+    for key in ("name", "address", "phone", "email", "logo_url"):
+        value = seller.get(key)
+        if isinstance(value, str) and value.strip():
+            out[key] = value.strip()
+    if seller.get("logo") and "logo_url" not in out:
+        out["has_logo"] = True
+    return out or None
+
+
+def resolve_support_contact(seller, support) -> dict | None:
+    """Contact shown in the hospital app.
+
+    A vendor license uses the seller block. A direct or customisation license
+    uses the product support block written into the file by License Manager.
+    """
+    seller_info = seller_public_info(seller)
+    if seller_info and seller_info.get("name"):
+        seller_info.pop("has_logo", None)
+        return seller_info
+    support_info = seller_public_info(support)
+    if not support_info or not support_info.get("name"):
+        return None
+    support_info.pop("logo_url", None)
+    support_info.pop("has_logo", None)
+    return support_info or None
+
+
 def inspect_license_file(file_content: str) -> dict:
     """Dry-run: parse + verify a .lic file and report compatibility WITHOUT
     touching the database. Never raises on machine-ID mismatch — instead the
@@ -114,7 +149,11 @@ def inspect_license_file(file_content: str) -> dict:
         "plan": license_data.get("plan"),
         "max_users": license_data.get("max_users"),
         "features": license_data.get("features", []),
-        "seller_info": license_data.get("seller"),
+        "seller_info": seller_public_info(license_data.get("seller")),
+        "support_contact": resolve_support_contact(
+            license_data.get("seller"),
+            license_data.get("support"),
+        ),
         "issued_at": issued_at.isoformat() if issued_at else None,
         "expires_at": expires_at.isoformat() if expires_at else None,
         "status": status,

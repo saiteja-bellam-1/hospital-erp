@@ -1259,10 +1259,10 @@ async def update_branding(
     db.commit()
     db.refresh(hospital)
 
-    from app.utils.branding import resolve_branding
+    from app.utils.branding import get_branding_payload
     from app.services.audit_service import log_action
 
-    payload = resolve_branding(hospital, customisation_licensed=True)
+    payload = get_branding_payload(db)
     log_action(db, current_user, "update_branding", "hospital", details=payload)
     db.commit()
     return {"message": "Branding updated", **payload}

@@ -191,6 +191,11 @@ def init_db():
         conn.execute("ALTER TABLE customers ADD COLUMN gst_number TEXT")
     except Exception:
         pass
+    for _col, _typedef in (("logo_mime", "TEXT"), ("logo_data", "TEXT"), ("email", "TEXT")):
+        try:
+            conn.execute(f"ALTER TABLE sellers ADD COLUMN {_col} {_typedef}")
+        except Exception:
+            pass
     _seed_default_admin(conn)
     conn.commit()
     conn.close()
@@ -381,10 +386,105 @@ class PaymentCreate(BaseModel):
     description: Optional[str] = None
 
 
+MAX_VENDOR_LOGO_BYTES = 150 * 1024
+
+
+def _sniff_image_mime(raw: bytes) -> Optional[str]:
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def canonical_vendor_logo(logo: str, mime: Optional[str]) -> tuple:
+    """Return (base64, mime) or raise ValueError. Empty input is rejected."""
+    text = (logo or "").strip()
+    declared = (mime or "").split(";")[0].strip().lower()
+    if text.startswith("data:"):
+        header, _, b64part = text.partition(",")
+        header_mime = header[5:].split(";")[0].strip().lower()
+        if not declared:
+            declared = header_mime
+        text = b64part
+    if declared == "image/jpg":
+        declared = "image/jpeg"
+    compact = "".join(text.split())
+    if not compact or len(compact) > MAX_VENDOR_LOGO_BYTES * 2:
+        raise ValueError("Vendor logo must be 150 KB or smaller")
+    try:
+        raw = base64.b64decode(compact, validate=True)
+    except Exception as exc:
+        raise ValueError("Vendor logo image is invalid") from exc
+    if not raw or len(raw) > MAX_VENDOR_LOGO_BYTES:
+        raise ValueError("Vendor logo must be 150 KB or smaller")
+    sniffed = _sniff_image_mime(raw)
+    if sniffed is None:
+        raise ValueError("Vendor logo must be PNG, JPEG, or WebP")
+    if declared and declared != sniffed:
+        raise ValueError("Vendor logo type does not match the file")
+    return base64.b64encode(raw).decode("ascii"), sniffed
+
+
+def _blank_to_none(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return value
+
+
+def _clean_email(value):
+    value = _blank_to_none(value)
+    if value is None:
+        return None
+    if "@" not in value or "." not in value.split("@")[-1]:
+        raise ValueError("Enter a valid email")
+    return value
+
+
 class SellerInfo(BaseModel):
     name: str = Field(..., max_length=200)
     address: Optional[str] = Field(None, max_length=500)
-    phone: Optional[str] = Field(None, max_length=20)
+    phone: Optional[str] = Field(None, max_length=40)
+    email: Optional[str] = Field(None, max_length=200)
+    logo: Optional[str] = None
+    logo_mime: Optional[str] = None
+
+    @field_validator("address", "phone", mode="before")
+    @classmethod
+    def _blank_text(cls, value):
+        return _blank_to_none(value)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _email(cls, value):
+        return _clean_email(value)
+
+    @field_validator("logo", mode="before")
+    @classmethod
+    def _blank_logo(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @model_validator(mode="after")
+    def _check_logo(self):
+        if not self.logo:
+            self.logo_mime = None
+            return self
+        try:
+            encoded, mime = canonical_vendor_logo(self.logo, self.logo_mime)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        self.logo = encoded
+        self.logo_mime = mime
+        return self
 
 
 def add_months(dt: datetime, months: int) -> datetime:
@@ -961,6 +1061,7 @@ def list_licenses(
             computed_status = "expiring_soon"
 
         record = dict(r)
+        record.pop("lic_file_content", None)
         record["days_left"] = days_left
         record["computed_status"] = computed_status
         record["features"] = json.loads(record["features"]) if record["features"] else []
@@ -977,6 +1078,48 @@ def list_licenses(
         results.append(record)
 
     return results
+
+
+def _product_support_from_db(conn) -> Optional[dict]:
+    """Product support contact stored in License Manager settings."""
+    row = conn.execute("SELECT value FROM settings WHERE key='support_contact'").fetchone()
+    if not row or not row[0]:
+        return None
+    try:
+        data = json.loads(row[0])
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    name = _blank_to_none(data.get("name"))
+    if not name:
+        return None
+    out = {"name": name}
+    for key in ("phone", "email", "address"):
+        value = _blank_to_none(data.get(key))
+        if value:
+            out[key] = value
+    return out
+
+
+def _apply_license_contact(license_data: dict, conn, seller) -> None:
+    """Vendor licenses carry the seller. Direct and customisation licenses carry the stored product contact."""
+    dumped = None
+    if seller is not None:
+        dumped = seller.model_dump(exclude_none=True) if hasattr(seller, "model_dump") else dict(seller)
+        dumped = {key: value for key, value in dumped.items() if value is not None}
+        if not _blank_to_none(dumped.get("name")):
+            dumped = None
+    if dumped:
+        license_data["seller"] = dumped
+        license_data.pop("support", None)
+        return
+    license_data.pop("seller", None)
+    support = _product_support_from_db(conn)
+    if support:
+        license_data["support"] = support
+    else:
+        license_data.pop("support", None)
 
 
 @app.post("/api/licenses")
@@ -1005,8 +1148,7 @@ def create_license(data: LicenseCreate, _admin: dict = Depends(require_admin)):
         "issued_at": now.isoformat(),
         "expires_at": expires_at.isoformat(),
     }
-    if data.seller:
-        license_data["seller"] = data.seller.model_dump()
+    _apply_license_contact(license_data, conn, data.seller)
 
     # Embed Google Drive backup config if enabled
     if data.gdrive_backup_enabled:
@@ -1073,9 +1215,7 @@ def renew_license(license_id: str, data: LicenseRenew, _admin: dict = Depends(re
         "expires_at": expires_at.isoformat(),
     }
 
-    # Seller info
-    if data.seller:
-        license_data["seller"] = data.seller.model_dump()
+    _apply_license_contact(license_data, conn, data.seller)
 
     # Google Drive backup config
     gdrive_enabled = data.gdrive_backup_enabled
@@ -1198,13 +1338,19 @@ async def process_rebind_request(file: UploadFile = File(...), _admin: dict = De
         "issued_at": now.isoformat(),
         "expires_at": old_expires.isoformat(),
     }
-    # Carry seller_info forward if present in the original signed payload
+    # Vendor licenses keep the seller block. Direct sales pick up the current
+    # product support contact, falling back to whatever the old file carried.
+    old_payload = {}
     try:
         old_payload = json.loads(base64.b64decode((row["lic_file_content"] or "").split("\n")[0]).decode("utf-8"))
-        if old_payload.get("seller"):
-            license_data["seller"] = old_payload["seller"]
     except Exception:
-        pass
+        old_payload = {}
+    if isinstance(old_payload, dict) and old_payload.get("seller"):
+        _apply_license_contact(license_data, conn, old_payload["seller"])
+    else:
+        _apply_license_contact(license_data, conn, None)
+        if "support" not in license_data and isinstance(old_payload, dict) and old_payload.get("support"):
+            license_data["support"] = old_payload["support"]
 
     new_lic = sign_license_data(license_data)
 
@@ -1405,7 +1551,48 @@ def delete_customer(customer_id: int, _admin: dict = Depends(require_admin)):
 class SellerCreate(BaseModel):
     name: str = Field(..., max_length=200)
     address: Optional[str] = Field(None, max_length=500)
-    phone: Optional[str] = Field(None, max_length=20)
+    phone: Optional[str] = Field(None, max_length=40)
+    email: Optional[str] = Field(None, max_length=200)
+    logo: Optional[str] = None
+    logo_mime: Optional[str] = None
+
+    @field_validator("address", "phone", mode="before")
+    @classmethod
+    def _blank_text(cls, value):
+        return _blank_to_none(value)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _email(cls, value):
+        return _clean_email(value)
+
+
+def _seller_public(row) -> dict:
+    keys = row.keys()
+    logo = row["logo_data"] if "logo_data" in keys else None
+    mime = row["logo_mime"] if "logo_mime" in keys else None
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "address": row["address"],
+        "phone": row["phone"],
+        "email": row["email"] if "email" in keys else None,
+        "is_active": row["is_active"],
+        "created_at": row["created_at"],
+        "logo": logo or None,
+        "logo_mime": mime or None,
+        "has_logo": bool(logo),
+    }
+
+
+def _logo_to_store(logo: Optional[str], mime: Optional[str], existing_mime=None, existing_data=None):
+    """None keeps the current logo. A blank string clears it."""
+    if logo is None:
+        return existing_mime, existing_data
+    if isinstance(logo, str) and not logo.strip():
+        return None, None
+    encoded, stored_mime = canonical_vendor_logo(logo, mime)
+    return stored_mime, encoded
 
 
 @app.get("/api/sellers")
@@ -1413,14 +1600,20 @@ def list_sellers(_admin: dict = Depends(require_admin)):
     conn = get_db()
     rows = conn.execute("SELECT * FROM sellers WHERE is_active=1 ORDER BY name").fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    return [_seller_public(r) for r in rows]
 
 
 @app.post("/api/sellers")
 def create_seller(data: SellerCreate, _admin: dict = Depends(require_admin)):
+    try:
+        mime, blob = _logo_to_store(data.logo, data.logo_mime)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     conn = get_db()
-    conn.execute("INSERT INTO sellers (name, address, phone) VALUES (?, ?, ?)",
-                 (data.name, data.address, data.phone))
+    conn.execute(
+        "INSERT INTO sellers (name, address, phone, email, logo_mime, logo_data) VALUES (?, ?, ?, ?, ?, ?)",
+        (data.name, data.address, data.phone, data.email, mime, blob),
+    )
     conn.commit()
     conn.close()
     return {"message": "Seller created"}
@@ -1429,8 +1622,19 @@ def create_seller(data: SellerCreate, _admin: dict = Depends(require_admin)):
 @app.put("/api/sellers/{seller_id}")
 def update_seller(seller_id: int, data: SellerCreate, _admin: dict = Depends(require_admin)):
     conn = get_db()
-    conn.execute("UPDATE sellers SET name=?, address=?, phone=? WHERE id=?",
-                 (data.name, data.address, data.phone, seller_id))
+    row = conn.execute("SELECT logo_mime, logo_data FROM sellers WHERE id=?", (seller_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Seller not found")
+    try:
+        mime, blob = _logo_to_store(data.logo, data.logo_mime, row["logo_mime"], row["logo_data"])
+    except ValueError as exc:
+        conn.close()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    conn.execute(
+        "UPDATE sellers SET name=?, address=?, phone=?, email=?, logo_mime=?, logo_data=? WHERE id=?",
+        (data.name, data.address, data.phone, data.email, mime, blob, seller_id),
+    )
     conn.commit()
     conn.close()
     return {"message": "Seller updated"}
@@ -1443,6 +1647,62 @@ def delete_seller(seller_id: int, _admin: dict = Depends(require_admin)):
     conn.commit()
     conn.close()
     return {"message": "Seller deactivated"}
+
+
+# ============================================================
+# Product support contact (direct sales and customisation licenses)
+# ============================================================
+
+class SupportContactIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    phone: Optional[str] = Field(None, max_length=40)
+    email: Optional[str] = Field(None, max_length=200)
+    address: Optional[str] = Field(None, max_length=500)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _name(cls, value):
+        value = _blank_to_none(value)
+        if not value:
+            raise ValueError("Name is required")
+        return value
+
+    @field_validator("phone", "address", mode="before")
+    @classmethod
+    def _blank_text(cls, value):
+        return _blank_to_none(value)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _email(cls, value):
+        return _clean_email(value)
+
+
+@app.get("/api/settings/support")
+def get_support_contact(_admin: dict = Depends(require_admin)):
+    conn = get_db()
+    payload = _product_support_from_db(conn)
+    conn.close()
+    return payload or {"name": "", "phone": "", "email": "", "address": ""}
+
+
+@app.put("/api/settings/support")
+def update_support_contact(data: SupportContactIn, _admin: dict = Depends(require_admin)):
+    stored = {
+        "name": data.name,
+    }
+    for key in ("phone", "email", "address"):
+        value = getattr(data, key)
+        if value:
+            stored[key] = value
+    conn = get_db()
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('support_contact', ?)",
+        (json.dumps(stored),),
+    )
+    conn.commit()
+    conn.close()
+    return stored
 
 
 # ============================================================

@@ -4,6 +4,7 @@ import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
 import { Upload, Shield, CheckCircle, AlertTriangle, XCircle, Clock, Cpu, Send, Download } from 'lucide-react';
 import axios from 'axios';
+import { phoneTel } from '../../utils/supportContact';
 
 const LicenseManagement = () => {
   const [license, setLicense] = useState(null);
@@ -128,6 +129,8 @@ const LicenseManagement = () => {
       grace_period: { variant: 'default', className: 'bg-red-100 text-red-800', icon: <Clock className="h-3 w-3" />, label: 'Grace Period' },
       expired: { variant: 'destructive', className: '', icon: <XCircle className="h-3 w-3" />, label: 'Expired' },
       machine_mismatch: { variant: 'destructive', className: '', icon: <Cpu className="h-3 w-3" />, label: 'Machine Mismatch' },
+      trial: { variant: 'default', className: 'bg-blue-100 text-blue-800', icon: <Clock className="h-3 w-3" />, label: 'Trial' },
+      trial_expired: { variant: 'default', className: 'bg-amber-100 text-amber-800', icon: <AlertTriangle className="h-3 w-3" />, label: 'Trial Ended' },
       no_license: { variant: 'secondary', className: '', icon: <Shield className="h-3 w-3" />, label: 'No License' },
     };
     const config = configs[status] || configs.no_license;
@@ -194,6 +197,39 @@ const LicenseManagement = () => {
         <CardContent>
           {license?.status === 'no_license' ? (
             <p className="text-gray-500">No license installed. Upload a license file to activate the system.</p>
+          ) : license?.status === 'trial' || license?.status === 'trial_expired' ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <p className="text-sm text-gray-500">Plan</p>
+                <p className="font-medium">14-day trial</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">Max Users</p>
+                <p className="font-medium">Unlimited</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">Started</p>
+                <p className="font-medium">{license?.issued_at ? new Date(license.issued_at).toLocaleDateString() : '-'}</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">Ends</p>
+                <p className="font-medium">{license?.expires_at ? new Date(license.expires_at).toLocaleDateString() : '-'}</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">Days Remaining</p>
+                <p className={`font-medium ${license?.status === 'trial_expired' ? 'text-amber-700' : license?.days_remaining <= 0 ? 'text-red-600' : 'text-blue-700'}`}>
+                  {license?.status === 'trial_expired' ? 'Trial ended' : `${license?.days_remaining} days`}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">Modules</p>
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {(license?.features || []).map(f => (
+                    <Badge key={f} variant="outline" className="text-xs capitalize">{f}</Badge>
+                  ))}
+                </div>
+              </div>
+            </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
@@ -243,8 +279,26 @@ const LicenseManagement = () => {
       {license?.message && (
         <Card>
           <CardContent className="pt-6">
-            <p className={`text-sm ${license.status === 'active' ? 'text-green-700' : license.status === 'expiring_soon' ? 'text-yellow-700' : 'text-red-700'}`}>
+            <p className={`text-sm ${license.status === 'active' ? 'text-green-700' : license.status === 'trial' ? 'text-blue-800' : license.status === 'trial_expired' ? 'text-amber-800' : license.status === 'expiring_soon' ? 'text-yellow-700' : 'text-red-700'}`}>
               {license.message}
+              {license.status === 'trial_expired' && license.support_contact?.name && (
+                <>
+                  {' '}Call {license.support_contact.name}
+                  {license.support_contact.phone && (
+                    <>
+                      {' '}at{' '}
+                      <a href={phoneTel(license.support_contact.phone)} className="font-medium underline underline-offset-2">{license.support_contact.phone}</a>
+                    </>
+                  )}
+                  {license.support_contact.email && (
+                    <>
+                      {' '}or{' '}
+                      <a href={`mailto:${license.support_contact.email}`} className="font-medium underline underline-offset-2">{license.support_contact.email}</a>
+                    </>
+                  )}
+                  .
+                </>
+              )}
             </p>
           </CardContent>
         </Card>

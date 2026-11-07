@@ -29,6 +29,7 @@ const MODULE_CHIPS = [
 const Login = () => {
   const [loading, setLoading] = useState(false);
   const [hospitalInfo, setHospitalInfo] = useState(null);
+  const [supportContact, setSupportContact] = useState(null);
   const { login } = useAuth();
   const { toast } = useToast();
 
@@ -41,6 +42,7 @@ const Login = () => {
         if (response.data.hospital) {
           setHospitalInfo(response.data.hospital);
         }
+        setSupportContact(response.data.support_contact || null);
       } catch (error) {
         console.error('Failed to fetch hospital info:', error);
       }
@@ -52,9 +54,18 @@ const Login = () => {
     setLoading(true);
     const result = await login(data);
     if (!result.success) {
-      toast({
-        variant: "destructive",
-        title: "Login Failed",
+      const trialEnded = typeof result.error === 'string' && result.error.toLowerCase().includes('trial');
+      const contactBits = supportContact?.name
+        ? [supportContact.name, supportContact.phone, supportContact.email].filter(Boolean).join(', ')
+        : '';
+      toast(trialEnded ? {
+        variant: 'default',
+        className: 'border-amber-300 bg-amber-50 text-amber-950',
+        title: 'Trial ended',
+        description: contactBits ? `${result.error} ${contactBits}.` : result.error,
+      } : {
+        variant: 'destructive',
+        title: 'Login Failed',
         description: result.error,
       });
     }
