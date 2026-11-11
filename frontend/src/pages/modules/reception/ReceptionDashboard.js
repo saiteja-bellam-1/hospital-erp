@@ -35,7 +35,8 @@ import {
   Download,
   ArrowRight,
   Package,
-  XCircle
+  XCircle,
+  Banknote,
 } from 'lucide-react';
 import { localDateString } from '../../../utils/localDate';
 import ActionKpiCard from '../../../components/dashboard/ActionKpiCard';
@@ -461,6 +462,9 @@ const ReceptionDashboard = () => {
             <Package className="h-4 w-4 text-indigo-600" />
             <span className="font-semibold text-indigo-700 text-sm">{pkg.name}</span>
             <Badge className="bg-indigo-100 text-indigo-700 text-xs">{pkg.orders.length} tests</Badge>
+            {(first.order_source === 'inpatient' || first.admission_id) && (
+              <Badge className="text-xs bg-orange-100 text-orange-800">Inpatient</Badge>
+            )}
             <span className="text-xs text-gray-500 ml-auto">{first.patient_name} • {first.doctor_name}</span>
           </div>
           <div className="space-y-1.5">
@@ -523,8 +527,11 @@ const ReceptionDashboard = () => {
             <p className="font-medium text-gray-900 truncate">{order.patient_name}</p>
             <Badge className={`text-xs ${getLabStatusColor(order.status)}`}>{order.status}</Badge>
             <Badge className={`text-xs ${order.payment_status === 'paid' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-              {order.payment_status === 'paid' ? 'Paid' : 'Unpaid'}
+              {order.payment_status === 'paid' ? 'Paid' : 'Pending'}
             </Badge>
+            {(order.order_source === 'inpatient' || order.admission_id) && (
+              <Badge className="text-xs bg-orange-100 text-orange-800">Inpatient</Badge>
+            )}
           </div>
           <p className="text-sm text-gray-600 truncate">{order.test_name} — ₹{(order.amount || 0).toFixed(0)}</p>
           <p className="text-xs text-gray-400">#{order.order_number} • {order.doctor_name}</p>
@@ -560,6 +567,14 @@ const ReceptionDashboard = () => {
 
   const unpaidLabOrders = labOrders.filter((o) => o.payment_status !== 'paid' && o.status !== 'cancelled');
   const paidLabOrders = labOrders.filter((o) => o.payment_status === 'paid' && o.status !== 'cancelled');
+  const orderedLabOrders = labOrders.filter((o) => o.status === 'ordered');
+  const completedLabOrders = labOrders.filter((o) => o.status === 'completed');
+
+  const openLabOrders = (status) => {
+    const params = new URLSearchParams({ range: 'today' });
+    if (status && status !== 'all') params.set('status', status);
+    navigate(`/dashboard/reception/lab-orders?${params.toString()}`);
+  };
 
   const getStatusBadge = (status) => {
     const colors = {
@@ -629,6 +644,38 @@ const ReceptionDashboard = () => {
           </Button>
         </div>
       </div>
+
+      {enabledModules.lab && (
+        <div>
+          <h2 className="text-sm font-medium text-gray-700 mb-2">Today&apos;s lab orders</h2>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <ActionKpiCard
+              icon={Banknote}
+              label="Pending payment"
+              value={unpaidLabOrders.length}
+              sub="Unpaid, including inpatient"
+              tone={unpaidLabOrders.length > 0 ? 'red' : 'slate'}
+              onClick={() => openLabOrders('pending')}
+            />
+            <ActionKpiCard
+              icon={Clock}
+              label="Ordered"
+              value={orderedLabOrders.length}
+              sub="Status is ordered"
+              tone={orderedLabOrders.length > 0 ? 'blue' : 'slate'}
+              onClick={() => openLabOrders('ordered')}
+            />
+            <ActionKpiCard
+              icon={CheckCircle}
+              label="Completed"
+              value={completedLabOrders.length}
+              sub="Completed among today's orders"
+              tone="green"
+              onClick={() => openLabOrders('completed')}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Stats Cards */}
       <div className={`grid gap-3 ${enabledModules.outpatient ? 'sm:grid-cols-2 lg:grid-cols-5' : 'sm:grid-cols-2'}`}>
@@ -870,16 +917,13 @@ const ReceptionDashboard = () => {
         {/* Today's Lab Orders */}
         <Card>
           <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle className="flex items-center space-x-2">
+            <div className="flex items-center justify-between gap-2">
+              <CardTitle className="flex items-center gap-2 flex-wrap">
                 <TestTube className="h-5 w-5" />
                 <span>Today's Lab Orders</span>
-                <Badge variant="outline" className="ml-2">{labOrders.length}</Badge>
+                <Badge variant="outline">{labOrders.length}</Badge>
                 {unpaidLabOrders.length > 0 && (
-                  <Badge className="bg-red-100 text-red-800 text-xs">{unpaidLabOrders.length} unpaid</Badge>
-                )}
-                {paidLabOrders.length > 0 && (
-                  <Badge className="bg-green-100 text-green-800 text-xs">{paidLabOrders.length} paid</Badge>
+                  <Badge className="bg-red-100 text-red-800 text-xs">{unpaidLabOrders.length} pending</Badge>
                 )}
               </CardTitle>
               <div className="flex gap-2">
@@ -909,7 +953,7 @@ const ReceptionDashboard = () => {
                     <div className="flex items-center gap-2 mb-2 sticky top-0 bg-white py-1 z-10">
                       <AlertCircle className="h-4 w-4 text-red-600" />
                       <h4 className="text-sm font-semibold text-red-700">
-                        Awaiting Payment ({unpaidLabOrders.length})
+                        Pending payment ({unpaidLabOrders.length})
                       </h4>
                     </div>
                     <div className="space-y-3">{renderLabOrderGroups(unpaidLabOrders)}</div>
