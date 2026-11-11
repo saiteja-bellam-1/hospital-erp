@@ -27,10 +27,20 @@ def _get_session_local():
 
 
 def reinitialize_engine():
-    """Call after setup wizard changes the DB path to point engine at the new location."""
+    """Drop the current engine so the next session opens get_db_path().
+
+    Disposes pooled connections first, so a data-folder move can delete the
+    old database file instead of leaving it locked.
+    """
     global _engine, _SessionLocal
+    old = _engine
     _engine = None
     _SessionLocal = None
+    if old is not None:
+        try:
+            old.dispose()
+        except Exception:
+            pass
 
 
 # Public API — backward compatible

@@ -36,9 +36,12 @@ _LINE_RE = re.compile(
 
 
 def get_logs_dir() -> str:
-    """Same folder the launcher / Diagnostics endpoint use: `{base}/data/logs`."""
-    from app.utils.paths import get_base_dir
-    path = os.path.join(get_base_dir(), "data", "logs")
+    """Same folder the launcher / Diagnostics endpoint use.
+
+    ``<data>/logs``, where data follows a moved data folder.
+    """
+    from app.utils.paths import get_state_dir
+    path = os.path.join(get_state_dir(), "logs")
     os.makedirs(path, exist_ok=True)
     return path
 

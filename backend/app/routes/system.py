@@ -95,13 +95,14 @@ async def get_install_diagnostics(current_user: User = Depends(get_current_user)
 
     import json as _json
     import sys as _sys
-    from app.utils.paths import get_base_dir
+    from app.utils.paths import get_state_dir
     from app.utils.schema_migrations import get_history, get_last_failure
     from config.database import engine as _engine
 
     diagnostics = {"bundled": bool(getattr(_sys, "frozen", False))}
+    state_dir = get_state_dir()
 
-    status_path = os.path.join(get_base_dir(), "data", ".shortcut_status.json")
+    status_path = os.path.join(state_dir, ".shortcut_status.json")
     if os.path.isfile(status_path):
         try:
             with open(status_path) as f:
@@ -120,7 +121,7 @@ async def get_install_diagnostics(current_user: User = Depends(get_current_user)
         diagnostics["migrations"] = {"error": str(e)}
 
     # Upgrade history (written by launcher.check_version_bump)
-    upgrade_path = os.path.join(get_base_dir(), "data", ".upgrade_history.json")
+    upgrade_path = os.path.join(state_dir, ".upgrade_history.json")
     if os.path.isfile(upgrade_path):
         try:
             with open(upgrade_path) as f:
@@ -130,7 +131,7 @@ async def get_install_diagnostics(current_user: User = Depends(get_current_user)
     else:
         diagnostics["upgrade_history"] = []
 
-    version_path = os.path.join(get_base_dir(), "data", "version.txt")
+    version_path = os.path.join(state_dir, "version.txt")
     if os.path.isfile(version_path):
         try:
             with open(version_path) as f:
@@ -159,9 +160,9 @@ async def get_recent_logs(
     if not any(r in current_user.role_names for r in ("super_admin", "hospital_admin")):
         raise HTTPException(status_code=403, detail="Admin access required")
 
-    from app.utils.paths import get_base_dir
+    from app.utils.paths import get_state_dir
     filename = "server.log" if source == "server" else "launcher.log"
-    log_path = os.path.join(get_base_dir(), "data", "logs", filename)
+    log_path = os.path.join(get_state_dir(), "logs", filename)
     if not os.path.isfile(log_path):
         return {"path": log_path, "source": source, "exists": False, "lines": []}
 

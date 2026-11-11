@@ -40,11 +40,11 @@ def website_directory() -> str:
 
 def erp_login_port() -> int:
     """Dev UI is the React server on 3000. The packaged app serves login itself."""
-    from app.utils.paths import get_data_dir, is_bundled
+    from app.utils.paths import get_state_dir, is_bundled
 
     if not is_bundled():
         return DEV_ERP_PORT
-    runtime = os.path.join(get_data_dir(), ".runtime_port")
+    runtime = os.path.join(get_state_dir(), ".runtime_port")
     try:
         with open(runtime, encoding="utf-8") as handle:
             return int(handle.read().strip())

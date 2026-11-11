@@ -6,13 +6,31 @@ import { Label } from '../../components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../components/ui/dialog';
 import { useToast } from '../../hooks/use-toast';
 import axios from 'axios';
+import { useAuth } from '../../contexts/AuthContext';
 import { Badge } from '../../components/ui/badge';
 import {
   FolderSync, FolderOpen, Plus, X, Play, CheckCircle2, AlertCircle, Loader2, RefreshCw,
   Database, HardDrive, MapPin, ShieldCheck, Image, FileText, Settings, Timer, RotateCcw, AlertTriangle, Cloud, Upload, Download, Cpu, ScrollText
 } from 'lucide-react';
 
+function formatBytes(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return `${n} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = n / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const digits = value >= 10 ? 1 : 2;
+  return `${value.toFixed(digits)} ${units[unit]}`;
+}
+
 const BackupManagement = () => {
+  const { user } = useAuth();
+  const roleNames = (user?.roles || []).map((role) => (typeof role === 'string' ? role : role?.name)).filter(Boolean);
+  const isSuperAdmin = roleNames.includes('super_admin');
   const [loading, setLoading] = useState(true);
   const [systemInfo, setSystemInfo] = useState(null);
   const [locations, setLocations] = useState([]);
@@ -44,6 +62,9 @@ const BackupManagement = () => {
   // backup's license belongs to another machine. { context: 'restore'|'upload', message, license_machine_id, current_machine_id }
   const [rebindInfo, setRebindInfo] = useState(null);
   const [rebindBusy, setRebindBusy] = useState(false);
+  const [storage, setStorage] = useState(null);
+  const [storageLoading, setStorageLoading] = useState(false);
+  const [storageError, setStorageError] = useState('');
   const { toast } = useToast();
 
   const fetchSnapshotStatus = async () => {
@@ -124,9 +145,10 @@ const BackupManagement = () => {
     fetchGdriveStatus();
     fetchGdriveLive();
     fetchLogErrors({ openPopup: true });
+    if (isSuperAdmin) fetchStorage();
     const interval = setInterval(() => { fetchMirrorStatus(); fetchSnapshotStatus(); fetchGdriveStatus(); }, 15000);
     return () => clearInterval(interval);
-  }, []);
+  }, [isSuperAdmin]);
 
   const browseFolder = async (callback) => {
     setBrowsing(true);
@@ -169,16 +191,38 @@ const BackupManagement = () => {
     } finally { setBacking(false); }
   };
 
+  const fetchStorage = async () => {
+    setStorageLoading(true);
+    try {
+      const res = await axios.get('/api/backup/storage', { timeout: 120000 });
+      setStorage(res.data);
+      setStorageError('');
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      setStorageError(typeof detail === 'string' ? detail : 'Could not read the data folder');
+    } finally {
+      setStorageLoading(false);
+    }
+  };
+
   const handleMigrate = async () => {
     if (!migratePath.trim()) return;
     setMigrating(true);
     try {
-      const res = await axios.post('/api/backup/db-migrate', { new_folder: migratePath.trim() });
-      toast({ title: 'Success', description: res.data.message });
+      const res = await axios.post('/api/backup/db-migrate', { new_folder: migratePath.trim() }, { timeout: 600000 });
+      const leftovers = res.data.leftovers || [];
+      toast({
+        title: 'Data folder moved',
+        description: leftovers.length
+          ? `${res.data.message} Restart the app when you can so those open files switch over.`
+          : res.data.message,
+      });
       setShowMigrateDialog(false); setMigratePath('');
       fetchAll();
+      if (isSuperAdmin) fetchStorage();
     } catch (error) {
-      toast({ variant: 'destructive', title: 'Migration Failed', description: error.response?.data?.detail || 'Failed' });
+      const detail = error.response?.data?.detail;
+      toast({ variant: 'destructive', title: 'Move failed', description: typeof detail === 'string' ? detail : 'Failed' });
     } finally { setMigrating(false); }
   };
 
@@ -302,7 +346,7 @@ const BackupManagement = () => {
                   <Database className="w-4 h-4 text-blue-600" /> Database
                 </CardTitle>
                 <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => { setMigratePath(''); setShowMigrateDialog(true); }}>
-                  <MapPin className="w-3 h-3 mr-1" /> Change Location
+                  <MapPin className="w-3 h-3 mr-1" /> Move Folder
                 </Button>
               </div>
             </CardHeader>
@@ -311,6 +355,12 @@ const BackupManagement = () => {
                 <p className="text-[11px] text-gray-400 uppercase tracking-wider">Location</p>
                 <code className="text-xs bg-gray-50 px-2 py-1.5 rounded border block truncate mt-1" title={db.path}>{db.path}</code>
               </div>
+              {config?.data_dir && (
+                <div>
+                  <p className="text-[11px] text-gray-400 uppercase tracking-wider">Data folder</p>
+                  <code className="text-xs bg-gray-50 px-2 py-1.5 rounded border block truncate mt-1" title={config.data_dir}>{config.data_dir}</code>
+                </div>
+              )}
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <p className="text-[11px] text-gray-400 uppercase tracking-wider">Size</p>
@@ -372,6 +422,76 @@ const BackupManagement = () => {
           </Card>
         )}
       </div>
+
+      {isSuperAdmin && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between gap-2">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <HardDrive className="w-4 h-4 text-slate-600" /> Data folder storage
+              </CardTitle>
+              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={fetchStorage} disabled={storageLoading}>
+                <RefreshCw className={`w-3 h-3 mr-1 ${storageLoading ? 'animate-spin' : ''}`} /> Refresh
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {storageError && <p className="text-sm text-red-600">{storageError}</p>}
+            {!storage && storageLoading && (
+              <div className="flex items-center gap-2 text-sm text-gray-500"><Loader2 className="w-4 h-4 animate-spin" /> Reading folder…</div>
+            )}
+            {storage && (
+              <>
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <code className="text-xs bg-gray-50 px-2 py-1.5 rounded border truncate" title={storage.data_dir}>{storage.data_dir}</code>
+                  <p className="text-sm font-semibold">{formatBytes(storage.total_bytes)} <span className="font-normal text-gray-500">· {storage.total_files} file{storage.total_files === 1 ? '' : 's'}</span></p>
+                </div>
+                {storage.note && <p className="text-xs text-gray-500">{storage.note}</p>}
+                {storage.entries?.length === 0 ? (
+                  <p className="text-sm text-gray-500">The data folder is empty.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {storage.entries.map((entry) => {
+                      const pct = storage.total_bytes ? (entry.bytes / storage.total_bytes) * 100 : 0;
+                      return (
+                        <div key={entry.path} className="border rounded-lg p-2.5">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-sm font-medium truncate">
+                                {entry.name}
+                                {entry.hidden && <Badge className="ml-2 text-[9px] bg-gray-100 text-gray-600">hidden</Badge>}
+                                {entry.is_dir && <span className="ml-2 text-[11px] font-normal text-gray-400">{entry.file_count} file{entry.file_count === 1 ? '' : 's'}</span>}
+                              </div>
+                            </div>
+                            <p className="text-sm tabular-nums shrink-0">{formatBytes(entry.bytes)}</p>
+                          </div>
+                          <div className="mt-1.5 h-1.5 bg-gray-100 rounded">
+                            <div className="h-1.5 bg-slate-500 rounded" style={{ width: `${Math.min(100, pct)}%` }} />
+                          </div>
+                          {entry.children?.length > 0 && (
+                            <div className="mt-2 space-y-1 pl-3 border-l">
+                              {entry.children.map((child) => (
+                                <div key={child.path} className="flex items-center justify-between gap-3 text-xs text-gray-600">
+                                  <span className="truncate">
+                                    {child.name}
+                                    {child.hidden && <span className="ml-1 text-gray-400">hidden</span>}
+                                    {child.is_dir && <span className="ml-1 text-gray-400">({child.file_count})</span>}
+                                  </span>
+                                  <span className="tabular-nums shrink-0">{formatBytes(child.bytes)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Uploads Card */}
       {uploads && (
@@ -930,16 +1050,16 @@ const BackupManagement = () => {
       <Dialog open={showMigrateDialog} onOpenChange={setShowMigrateDialog}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2"><MapPin className="h-5 w-5" /> Change Database Location</DialogTitle>
+            <DialogTitle className="flex items-center gap-2"><MapPin className="h-5 w-5" /> Move Data Folder</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
-              This will copy your database to a new location using a safe backup method. The original file will be kept as a fallback.
+              This moves the whole data folder — the database, uploads, logs, and the small state files — into the folder you choose. The app keeps using that folder after the move. A file the server still has open stays in the old place until you restart.
             </div>
-            {db && (
+            {(config?.data_dir || db) && (
               <div>
-                <p className="text-xs text-gray-500 mb-1">Current Location</p>
-                <code className="text-sm bg-gray-50 px-2 py-1 rounded border block truncate">{db.path}</code>
+                <p className="text-xs text-gray-500 mb-1">Current data folder</p>
+                <code className="text-sm bg-gray-50 px-2 py-1 rounded border block truncate">{config?.data_dir || db.path}</code>
               </div>
             )}
             <div>
@@ -953,12 +1073,12 @@ const BackupManagement = () => {
                   <FolderOpen className="w-4 h-4 mr-1" /> {migrateBrowsing ? '...' : 'Browse'}
                 </Button>
               </div>
-              <p className="text-xs text-gray-400 mt-1">The file <code className="bg-gray-100 px-0.5 rounded">kthealth_erp.db</code> will be created in this folder.</p>
+              <p className="text-xs text-gray-400 mt-1">Choose an empty folder. The data files are placed directly inside it.</p>
             </div>
             <div className="flex justify-end gap-2 pt-2 border-t">
               <Button variant="outline" onClick={() => setShowMigrateDialog(false)}>Cancel</Button>
               <Button onClick={handleMigrate} disabled={migrating || !migratePath.trim()}>
-                {migrating ? <><Loader2 className="w-4 h-4 mr-1 animate-spin" /> Migrating...</> : 'Move Database'}
+                {migrating ? <><Loader2 className="w-4 h-4 mr-1 animate-spin" /> Moving...</> : 'Move Data Folder'}
               </Button>
             </div>
           </div>
