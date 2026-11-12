@@ -61,72 +61,86 @@ async def migrate_database_location(
     data: DbMigrateRequest,
     current_user: User = Depends(get_current_user)
 ):
-    """Move the database file to a new location using SQLite backup API."""
+    """Move the whole data folder (database, uploads, logs, state files)."""
     _require_admin(current_user)
-    import sqlite3
-    from app.utils.config import get_configured_db_path, load_config, save_config
+    import asyncio
+    from app.services.data_folder import DataFolderError, relocate_data_folder
+    from app.utils.paths import get_data_dir
+    from app.utils.config import (
+        get_configured_db_path, get_backup_locations, load_config,
+        stop_mirror_backup, start_mirror_backup, get_mirror_status,
+        stop_snapshot_backup, start_snapshot_backup, get_snapshot_status,
+    )
+    from app.middleware.maintenance import enable_maintenance_mode, disable_maintenance_mode
+    from config.database import reinitialize_engine
 
-    new_folder = os.path.expanduser(data.new_folder.strip())
+    new_folder = (data.new_folder or "").strip()
     if not new_folder:
         raise HTTPException(status_code=400, detail="New folder path is required")
 
-    # Validate new folder
+    enable_maintenance_mode("Moving the data folder")
+    mirror_was_running = get_mirror_status()["running"]
+    snapshot_was_running = get_snapshot_status()["running"]
+    if mirror_was_running:
+        stop_mirror_backup()
+    if snapshot_was_running:
+        stop_snapshot_backup()
+    await asyncio.sleep(2)
+
+    def _resume_background():
+        locations = get_backup_locations()
+        if mirror_was_running and locations:
+            start_mirror_backup(interval_seconds=60)
+        if snapshot_was_running and locations:
+            snap_interval = load_config().get("snapshot_interval_minutes", 30)
+            start_snapshot_backup(interval_minutes=snap_interval)
+
     try:
-        os.makedirs(new_folder, exist_ok=True)
-        test_file = os.path.join(new_folder, ".write_test")
-        with open(test_file, "w") as f:
-            f.write("test")
-        os.remove(test_file)
-    except PermissionError:
-        raise HTTPException(status_code=400, detail="Permission denied. Cannot write to this location.")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid path: {e}")
+        try:
+            # Drop locks on the old database before the copy deletes it.
+            reinitialize_engine()
+            result = relocate_data_folder(
+                new_folder,
+                data_root=get_data_dir(),
+                db_path=get_configured_db_path(),
+                before_delete=reinitialize_engine,
+            )
+        except DataFolderError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Could not move the data folder: {exc}")
 
-    old_path = get_configured_db_path()
-    new_path = os.path.join(new_folder, "kthealth_erp.db")
+        reinitialize_engine()
+        try:
+            from config.database import get_db
+            from app.services.audit_service import log_action
+            db = next(get_db())
+            log_action(
+                db, current_user, "migrate_database", "admin", "Database", None,
+                f"Moved data folder from {result['old_path']} to {result['new_path']}",
+                details={
+                    "old_path": result["old_path"],
+                    "new_path": result["new_path"],
+                    "moved": result.get("moved"),
+                    "leftovers": result.get("leftovers"),
+                },
+            )
+            db.close()
+        except Exception:
+            pass
+        return result
+    finally:
+        _resume_background()
+        disable_maintenance_mode()
 
-    if os.path.abspath(old_path) == os.path.abspath(new_path):
-        raise HTTPException(status_code=400, detail="New location is the same as current location")
 
-    if not os.path.isfile(old_path):
-        raise HTTPException(status_code=400, detail="Current database file not found")
-
-    # Copy using SQLite backup API (safe while in use)
-    try:
-        source_conn = sqlite3.connect(old_path)
-        dest_conn = sqlite3.connect(new_path)
-        source_conn.backup(dest_conn)
-        dest_conn.close()
-        source_conn.close()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database copy failed: {e}")
-
-    # Update config.json
-    config = load_config()
-    config["db_path"] = new_path
-    save_config(config)
-
-    # Reinitialize engine to use new path
-    from config.database import reinitialize_engine
-    reinitialize_engine()
-
-    # Audit log
-    try:
-        from config.database import get_db
-        from app.services.audit_service import log_action
-        db = next(get_db())
-        log_action(db, current_user, "migrate_database", "admin", "Database", None,
-            f"Migrated database from {old_path} to {new_path}",
-            details={"old_path": old_path, "new_path": new_path})
-        db.close()
-    except Exception:
-        pass
-
-    return {
-        "message": "Database migrated successfully",
-        "old_path": old_path,
-        "new_path": new_path,
-    }
+@router.get("/storage")
+async def get_data_storage(current_user: User = Depends(get_current_user)):
+    """File and folder sizes for the data directory. Super admin only."""
+    if "super_admin" not in (current_user.role_names or []):
+        raise HTTPException(status_code=403, detail="Super admin access required")
+    from app.services.data_folder import describe_storage
+    return describe_storage()
 
 
 @router.get("/system-info")
@@ -135,7 +149,7 @@ async def get_system_info(current_user: User = Depends(get_current_user)):
     _require_admin(current_user)
     import sqlite3
     from app.utils.config import get_configured_db_path, load_config
-    from app.utils.paths import get_uploads_dir
+    from app.utils.paths import get_data_dir, get_uploads_dir
 
     config = load_config()
     db_path = get_configured_db_path()
@@ -170,6 +184,18 @@ async def get_system_info(current_user: User = Depends(get_current_user)):
         if hospital and hospital.logo_url:
             image_usage[hospital.logo_url] = image_usage.get(hospital.logo_url, [])
             image_usage[hospital.logo_url].append("Hospital Logo (Bills, Prescriptions)")
+        if hospital and getattr(hospital, "app_logo_url", None):
+            image_usage[hospital.app_logo_url] = image_usage.get(hospital.app_logo_url, [])
+            image_usage[hospital.app_logo_url].append("App logo")
+
+        from app.models.license import License
+        lic = _db.query(License).order_by(License.id.desc()).first()
+        vendor_url = None
+        if lic and isinstance(lic.seller_info, dict):
+            vendor_url = lic.seller_info.get("logo_url")
+        if isinstance(vendor_url, str) and vendor_url.strip():
+            image_usage[vendor_url.strip()] = image_usage.get(vendor_url.strip(), [])
+            image_usage[vendor_url.strip()].append("Vendor logo")
 
         for setting in _db.query(HospitalSettings).filter(
             HospitalSettings.setting_key.in_(["provider_logo", "signature_image"])
@@ -207,6 +233,7 @@ async def get_system_info(current_user: User = Depends(get_current_user)):
             "setup_complete": config.get("setup_complete", False),
             "hospital_name": config.get("hospital_name", ""),
             "db_path": config.get("db_path", ""),
+            "data_dir": get_data_dir(),
             "backup_locations": config.get("backup_locations", []),
         },
         "database": db_info,

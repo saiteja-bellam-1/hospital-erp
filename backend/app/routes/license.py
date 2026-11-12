@@ -61,6 +61,7 @@ async def license_status_public(db: Session = Depends(get_db)):
         "days_remaining": status_info["days_remaining"],
         "expires_at": status_info.get("expires_at"),
         "seller_info": status_info.get("seller_info"),
+        "support_contact": status_info.get("support_contact"),
         "hospital": hospital_info,
     }
 

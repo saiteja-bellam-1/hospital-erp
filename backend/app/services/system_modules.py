@@ -134,7 +134,8 @@ def queue_post_upgrade_module_sync(exe_dir: str) -> str:
     """
     import os
 
-    flag = os.path.join(exe_dir, "data", PENDING_LICENSE_MODULE_SYNC)
+    from app.utils.paths import get_state_dir
+    flag = os.path.join(get_state_dir(), PENDING_LICENSE_MODULE_SYNC)
     os.makedirs(os.path.dirname(flag), exist_ok=True)
     with open(flag, "w", encoding="utf-8") as f:
         f.write("1\n")
@@ -153,7 +154,7 @@ def heal_system_modules(exe_dir: Optional[str] = None) -> None:
     try:
         from config.database import SessionLocal, reinitialize_engine
         from app.services.license_service import get_current_license
-        from app.utils.paths import get_data_dir
+        from app.utils.paths import get_state_dir
 
         # Importing app.models loads User (via package __init__). DoctorAvailability
         # must be registered before any Session query or mapper configure fails and
@@ -165,10 +166,10 @@ def heal_system_modules(exe_dir: Optional[str] = None) -> None:
         # Do NOT call create_tables() here — that belongs to main's schema
         # bootstrap after every model is imported. On upgrade the tables exist.
 
-        # Launcher passes the .exe directory; FastAPI startup uses the resolved
-        # data dir (backend/ in source mode, <exe>/data when bundled).
-        data_dir = os.path.join(exe_dir, "data") if exe_dir else get_data_dir()
-        flag = os.path.join(data_dir, PENDING_LICENSE_MODULE_SYNC)
+        # Follows a moved data folder. exe_dir is accepted so older callers
+        # keep working; the flag lives with the rest of the install state.
+        _ = exe_dir
+        flag = os.path.join(get_state_dir(), PENDING_LICENSE_MODULE_SYNC)
         pending = os.path.isfile(flag)
 
         db = SessionLocal()

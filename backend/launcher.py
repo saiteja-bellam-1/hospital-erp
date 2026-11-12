@@ -32,12 +32,23 @@ except Exception:  # pragma: no cover - defensive: keep launcher bootable
         APP_VERSION = "1.1.0"
 
 
+def _state_dir(exe_dir):
+    """Live data folder: the moved folder when config.json says so, else <exe>\\data."""
+    try:
+        from app.utils.paths import get_state_dir
+        return get_state_dir()
+    except Exception:
+        path = os.path.join(exe_dir, "data")
+        os.makedirs(path, exist_ok=True)
+        return path
+
+
 def setup_logging(exe_dir):
     """Mirror launcher + uvicorn output to data/logs/launcher.log so the
     Diagnostics endpoint and operator support can see what happened on
     boot. Rotates after 1MB, keeps 5 backups.
     """
-    logs_dir = os.path.join(exe_dir, "data", "logs")
+    logs_dir = os.path.join(_state_dir(exe_dir), "logs")
     os.makedirs(logs_dir, exist_ok=True)
     log_file = os.path.join(logs_dir, "launcher.log")
 
@@ -62,8 +73,9 @@ def check_version_bump(exe_dir):
     Records the outcome in data/version.txt and data/.upgrade_history.json
     so an admin can see the upgrade trail.
     """
-    version_file = os.path.join(exe_dir, "data", "version.txt")
-    history_file = os.path.join(exe_dir, "data", ".upgrade_history.json")
+    state_dir = _state_dir(exe_dir)
+    version_file = os.path.join(state_dir, "version.txt")
+    history_file = os.path.join(state_dir, ".upgrade_history.json")
     os.makedirs(os.path.dirname(version_file), exist_ok=True)
 
     previous = None
@@ -151,7 +163,7 @@ def _write_shortcut_status(exe_dir, status, **extras):
         **extras,
     }
     try:
-        data_dir = os.path.join(exe_dir, "data")
+        data_dir = _state_dir(exe_dir)
         os.makedirs(data_dir, exist_ok=True)
         with open(os.path.join(data_dir, ".shortcut_status.json"), "w") as f:
             _json.dump(payload, f, indent=2)
@@ -176,7 +188,7 @@ def create_desktop_shortcut():
     exe_dir = os.path.dirname(exe_path)
 
     # Check if shortcut was already created
-    marker_file = os.path.join(exe_dir, "data", ".shortcut_created")
+    marker_file = os.path.join(_state_dir(exe_dir), ".shortcut_created")
     if os.path.exists(marker_file):
         _write_shortcut_status(exe_dir, "skipped_existing")
         return
@@ -281,7 +293,7 @@ def _redirect_output_to_logfile(exe_dir):
     them at data/logs/server.log so print() AND uvicorn output are captured.
     uvicorn resolves ext://sys.stdout at uvicorn.run() time, after this swap.
     Rotates once when the file grows past ~2 MB."""
-    logs_dir = os.path.join(exe_dir, "data", "logs")
+    logs_dir = os.path.join(_state_dir(exe_dir), "logs")
     try:
         os.makedirs(logs_dir, exist_ok=True)
         log_path = os.path.join(logs_dir, "server.log")
@@ -309,7 +321,7 @@ def _acquire_single_instance(exe_dir):
         if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
             port = 8000
             try:
-                with open(os.path.join(exe_dir, "data", ".runtime_port")) as f:
+                with open(os.path.join(_state_dir(exe_dir), ".runtime_port")) as f:
                     port = int(f.read().strip())
             except Exception:
                 pass
@@ -377,8 +389,8 @@ def main():
         exe_dir = os.path.dirname(sys.executable)
         os.chdir(exe_dir)
 
-        # Ensure data directory exists
-        data_dir = os.path.join(exe_dir, "data")
+        # Ensure the live data directory exists (follows a moved folder).
+        data_dir = _state_dir(exe_dir)
         os.makedirs(data_dir, exist_ok=True)
         os.makedirs(os.path.join(data_dir, "uploads"), exist_ok=True)
 
@@ -473,7 +485,7 @@ def main():
     if getattr(sys, 'frozen', False):
         try:
             runtime_port_file = os.path.join(
-                os.path.dirname(sys.executable), "data", ".runtime_port")
+                _state_dir(os.path.dirname(sys.executable)), ".runtime_port")
             with open(runtime_port_file, "w") as f:
                 f.write(str(port))
         except Exception:

@@ -1,5 +1,5 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
+import React, { useEffect, useRef } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import {
   BookOpen,
   ChevronDown,
@@ -30,6 +30,37 @@ export default function AppSidebar({
   userInitials,
   roleLabel,
 }) {
+  const location = useLocation();
+  const navRef = useRef(null);
+  const sectionKey = (navigationSections || [])
+    .filter((section) => section.label)
+    .map((section) => section.label)
+    .join('|');
+  const activeSectionLabel = (navigationSections || []).find((section) =>
+    (section.items || []).some((item) => isActive(item.path))
+  )?.label || '';
+  const activeSectionOpen = activeSectionLabel
+    ? collapsedSections[activeSectionLabel] === false
+    : false;
+
+  // A full reload remounts the nav at scroll 0, so the current page is often
+  // below the fold. Keep that item in view inside the sidebar scroller only.
+  // Other section toggles must not pull the menu back up.
+  useEffect(() => {
+    const root = navRef.current;
+    if (!root || !activeSectionOpen) return undefined;
+    const frame = requestAnimationFrame(() => {
+      const active = root.querySelector('.nav-item-active');
+      if (!active) return;
+      const cRect = root.getBoundingClientRect();
+      const tRect = active.getBoundingClientRect();
+      if (tRect.top < cRect.top + 4 || tRect.bottom > cRect.bottom - 4) {
+        root.scrollTop += (tRect.top - cRect.top) - (cRect.height - tRect.height) / 2;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [location.pathname, sectionKey, activeSectionLabel, activeSectionOpen]);
+
   return (
     <aside
       className={`
@@ -69,7 +100,7 @@ export default function AppSidebar({
         </div>
       )}
 
-      <nav className="sidebar-nav flex-1 overflow-y-auto py-4 px-3">
+      <nav ref={navRef} className="sidebar-nav flex-1 overflow-y-auto py-4 px-3">
         {navigationSections.filter((section) => section.label).map((section, sIdx) => {
           const isCollapsible = !!section.label;
           const isCollapsed = isCollapsible && collapsedSections[section.label] !== false;

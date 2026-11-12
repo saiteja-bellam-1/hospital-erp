@@ -44,6 +44,7 @@ class LicenseInfo(BaseModel):
     expires_at: Optional[str] = None
     max_users: int = 0
     seller_info: Optional[dict] = None
+    support_contact: Optional[dict] = None
 
 class TokenResponse(BaseModel):
     access_token: str
@@ -141,6 +142,7 @@ async def login(user_credentials: UserLogin, db: Session = Depends(get_db)):
         expires_at=lic_status.get("expires_at"),
         max_users=lic_status.get("max_users", 0),
         seller_info=lic_status.get("seller_info"),
+        support_contact=lic_status.get("support_contact"),
     )
 
     return TokenResponse(

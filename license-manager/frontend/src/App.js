@@ -128,7 +128,8 @@ const EMPTY_LICENSE_FORM = {
   max_users: 50, months: 12, days: 0,
   features: ['outpatient', 'lab', 'ehr', 'admin', 'billing', 'physiotherapy'],
   modules: [], notes: '',
-  seller_id: '', seller_name: '', seller_address: '', seller_phone: '',
+  seller_id: '', seller_name: '', seller_address: '', seller_phone: '', seller_email: '',
+  use_vendor_logo: false,
   gdrive_backup_enabled: false,
 };
 
@@ -150,6 +151,31 @@ function withFeature(features, key, on) {
   const next = (features || []).filter((f) => f !== key);
   if (on) next.push(key);
   return next;
+}
+
+const VENDOR_LOGO_MAX_BYTES = 150 * 1024;
+
+function sellerLogoSrc(seller) {
+  if (!seller?.logo || !seller?.logo_mime) return '';
+  return `data:${seller.logo_mime};base64,${seller.logo}`;
+}
+
+function buildSellerPayload(sellerFields, sellers, useVendorLogo) {
+  if (!sellerFields?.name) return null;
+  const match = sellers.find((row) => String(row.id) === String(sellerFields.id));
+  const seller = {
+    name: sellerFields.name,
+    address: sellerFields.address || null,
+    phone: sellerFields.phone || null,
+    email: sellerFields.email || match?.email || null,
+  };
+  if (useVendorLogo && sellerFields.id) {
+    if (match?.logo && match?.logo_mime) {
+      seller.logo = match.logo;
+      seller.logo_mime = match.logo_mime;
+    }
+  }
+  return seller;
 }
 
 function apiErrorMessage(payload, fallback) {
@@ -213,6 +239,24 @@ const Input = ({ label, required, hint, ...props }) => (
   </div>
 );
 
+function VendorLogoToggle({ seller, checked, onChange }) {
+  if (!seller?.has_logo && !seller?.logo) return null;
+  const src = sellerLogoSrc(seller);
+  return (
+    <div className="mt-3 space-y-2">
+      <ToggleRow
+        checked={checked}
+        onChange={onChange}
+        title="Use vendor logo"
+        description="Shows this vendor's logo on the hospital app instead of the KT logo. Leave off for a normal sale. A hospital app logo still wins when that hospital has uploaded one."
+      />
+      {checked && src && (
+        <img src={src} alt="" className="h-12 max-w-[180px] object-contain bg-white rounded p-1" />
+      )}
+    </div>
+  );
+}
+
 const ToggleRow = ({ checked, onChange, title, description }) => (
   <button type="button" onClick={() => onChange(!checked)}
     className={`w-full flex items-center justify-between gap-4 rounded-xl border px-4 py-3 text-left transition-colors ${
@@ -249,7 +293,7 @@ function App() {
   const [formStep, setFormStep] = useState(0);
   const [processingRebind, setProcessingRebind] = useState(false);
   const [showRenew, setShowRenew] = useState(null);
-  const [renewForm, setRenewForm] = useState({ months: 12, days: 0, plan: 'standard', max_users: 50, features: [], gdrive_backup_enabled: false, seller_id: '' });
+  const [renewForm, setRenewForm] = useState({ months: 12, days: 0, plan: 'standard', max_users: 50, features: [], gdrive_backup_enabled: false, seller_id: '', use_vendor_logo: false });
   const [customDuration, setCustomDuration] = useState(false);
   const [renewCustomDuration, setRenewCustomDuration] = useState(false);
   const [form, setForm] = useState({ ...EMPTY_LICENSE_FORM });
@@ -268,7 +312,8 @@ function App() {
   const [sellers, setSellers] = useState([]);
   const [showSellerForm, setShowSellerForm] = useState(false);
   const [editingSeller, setEditingSeller] = useState(null);
-  const [sellerForm, setSellerForm] = useState({ name: '', address: '', phone: '' });
+  const [sellerForm, setSellerForm] = useState({ name: '', address: '', phone: '', email: '', logo: '', logo_mime: '', logo_preview: '' });
+  const [supportSettings, setSupportSettings] = useState({ name: '', phone: '', email: '', address: '' });
   const [selectedCust, setSelectedCust] = useState(null);
   const [custDetail, setCustDetail] = useState(null);
   const [showPayForm, setShowPayForm] = useState(false);
@@ -431,6 +476,42 @@ function App() {
     } catch (e) { if (e.status === 401) handleUnauthorized(); }
   }, [token, currentUser?.role, handleUnauthorized]);
 
+  const fetchSupportSettings = async () => {
+    if (!token || currentUser?.role !== 'admin') return;
+    try {
+      const r = await apiFetch('/settings/support', {}, token);
+      if (r.status === 401) return handleUnauthorized();
+      if (r.ok) setSupportSettings(await r.json());
+    } catch (e) { if (e.status === 401) handleUnauthorized(); }
+  };
+
+  const saveSupportSettings = async () => {
+    if (!supportSettings.name?.trim()) {
+      showMessage('Support contact name is required', 'error');
+      return;
+    }
+    try {
+      const r = await apiFetch('/settings/support', {
+        method: 'PUT',
+        body: JSON.stringify({
+          name: supportSettings.name.trim(),
+          phone: supportSettings.phone || null,
+          email: supportSettings.email || null,
+          address: supportSettings.address || null,
+        }),
+      }, token);
+      if (r.ok) {
+        setSupportSettings(await r.json());
+        showMessage('Support contact saved. New direct-sale licenses will include it.');
+      } else {
+        const e = await r.json();
+        showMessage(apiErrorMessage(e, 'Failed to save support contact'), 'error');
+      }
+    } catch {
+      showMessage('Failed to save support contact', 'error');
+    }
+  };
+
   const fetchGdriveSettings = async () => {
     if (!token || currentUser?.role !== 'admin') return;
     try {
@@ -443,7 +524,10 @@ function App() {
   useEffect(() => {
     if (!token) return;
     fetchDash();
-    if (isAdmin) fetchGdriveSettings();
+    if (isAdmin) {
+      fetchGdriveSettings();
+      fetchSupportSettings();
+    }
   }, [token, isAdmin, fetchDash]);
   useEffect(() => { if (token && isAdmin) fetchLicenses(); }, [fetchLicenses, token, isAdmin]);
   useEffect(() => { if (token) fetchCustomers(); }, [fetchCustomers, token]);
@@ -537,11 +621,20 @@ function App() {
       } else {
         payload.customer_id = Number(payload.customer_id);
       }
-      // Build seller object if name is provided
-      if (payload.seller_name) {
-        payload.seller = { name: payload.seller_name, address: payload.seller_address || null, phone: payload.seller_phone || null };
-      }
-      delete payload.seller_name; delete payload.seller_address; delete payload.seller_phone; delete payload.seller_id;
+      const seller = buildSellerPayload(
+        {
+          id: payload.seller_id,
+          name: payload.seller_name,
+          address: payload.seller_address,
+          phone: payload.seller_phone,
+          email: payload.seller_email,
+        },
+        sellers,
+        payload.use_vendor_logo,
+      );
+      if (seller) payload.seller = seller;
+      delete payload.seller_name; delete payload.seller_address; delete payload.seller_phone; delete payload.seller_email; delete payload.seller_id;
+      delete payload.use_vendor_logo;
       const r = await apiFetch('/licenses', {
         method: 'POST', body: JSON.stringify(payload)
       }, token);
@@ -566,12 +659,18 @@ function App() {
   const renewLicense = async (licenseId) => {
     if ((renewForm.months || 0) <= 0 && (renewForm.days || 0) <= 0) { showMessage('Validity must be at least 1 day', 'error'); return; }
     const payload = { ...renewForm };
-    // Build seller if selected
     if (payload.seller_id) {
-      const s = sellers.find(s => String(s.id) === payload.seller_id);
-      if (s) payload.seller = { name: s.name, address: s.address || null, phone: s.phone || null };
+      const s = sellers.find(row => String(row.id) === String(payload.seller_id));
+      if (s) {
+        payload.seller = buildSellerPayload(
+          { id: s.id, name: s.name, address: s.address, phone: s.phone, email: s.email },
+          sellers,
+          payload.use_vendor_logo,
+        );
+      }
     }
     delete payload.seller_id;
+    delete payload.use_vendor_logo;
     const r = await apiFetch(`/licenses/${licenseId}/renew`, {
       method: 'POST', body: JSON.stringify(payload)
     }, token);
@@ -582,7 +681,7 @@ function App() {
       if (selectedCust) fetchCustDetail(selectedCust);
     } else {
       const e = await r.json();
-      showMessage(e.detail || 'Renewal failed', 'error');
+      showMessage(apiErrorMessage(e, 'Renewal failed'), 'error');
     }
   };
 
@@ -742,16 +841,44 @@ function App() {
     catch { return d; }
   };
 
+  const onSellerLogoFile = (file) => {
+    if (!file) return;
+    if (file.size > VENDOR_LOGO_MAX_BYTES) {
+      showMessage('Logo must be 150 KB or smaller', 'error');
+      return;
+    }
+    const mime = file.type === 'image/jpg' ? 'image/jpeg' : file.type;
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(mime)) {
+      showMessage('Logo must be PNG, JPEG, or WebP', 'error');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '');
+      const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : '';
+      setSellerForm((prev) => ({ ...prev, logo: base64, logo_mime: mime, logo_preview: dataUrl }));
+    };
+    reader.readAsDataURL(file);
+  };
+
   const saveSeller = async () => {
     if (!sellerForm.name) return;
     try {
       const path = editingSeller ? `/sellers/${editingSeller.id}` : '/sellers';
       const method = editingSeller ? 'PUT' : 'POST';
-      const r = await apiFetch(path, { method, body: JSON.stringify(sellerForm) }, token);
+      const body = {
+        name: sellerForm.name,
+        address: sellerForm.address,
+        phone: sellerForm.phone,
+        email: sellerForm.email || null,
+        logo: sellerForm.logo ? sellerForm.logo : (editingSeller ? '' : null),
+        logo_mime: sellerForm.logo ? sellerForm.logo_mime : null,
+      };
+      const r = await apiFetch(path, { method, body: JSON.stringify(body) }, token);
       if (r.ok) {
         showMessage(editingSeller ? 'Seller updated' : 'Seller created');
         setShowSellerForm(false); setEditingSeller(null);
-        setSellerForm({ name: '', address: '', phone: '' });
+        setSellerForm({ name: '', address: '', phone: '', email: '', logo: '', logo_mime: '', logo_preview: '' });
         fetchSellers();
       } else { const e = await r.json(); showMessage(e.detail || 'Failed', 'error'); }
     } catch { showMessage('Failed to save seller', 'error'); }
@@ -1492,7 +1619,7 @@ function App() {
                               className="p-1.5 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors">
                               <Icon d={Icons.download} className="w-3.5 h-3.5" />
                             </button>
-                            <button onClick={() => { setShowRenew(lic); setRenewCustomDuration(false); setRenewForm({ months: 12, days: 0, plan: lic.plan || 'standard', max_users: lic.max_users || 50, features: lic.features || [], gdrive_backup_enabled: false, seller_id: '' }); }} title="Renew"
+                            <button onClick={() => { setShowRenew(lic); setRenewCustomDuration(false); setRenewForm({ months: 12, days: 0, plan: lic.plan || 'standard', max_users: lic.max_users || 50, features: lic.features || [], gdrive_backup_enabled: false, seller_id: '', use_vendor_logo: false }); }} title="Renew"
                               className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors">
                               <Icon d={Icons.refresh} className="w-3.5 h-3.5" />
                             </button>
@@ -1774,7 +1901,7 @@ function App() {
                               <Icon d={Icons.download} className="w-3 h-3" /> Download
                             </button>
                             {lic.computed_status !== 'renewed' && (
-                              <button onClick={() => { setShowRenew(lic); setRenewCustomDuration(false); setRenewForm({ months: 12, days: 0, plan: lic.plan || 'standard', max_users: lic.max_users || 50, features: lic.features || [], gdrive_backup_enabled: false, seller_id: '' }); }} title="Renew"
+                              <button onClick={() => { setShowRenew(lic); setRenewCustomDuration(false); setRenewForm({ months: 12, days: 0, plan: lic.plan || 'standard', max_users: lic.max_users || 50, features: lic.features || [], gdrive_backup_enabled: false, seller_id: '', use_vendor_logo: false }); }} title="Renew"
                                 className="px-2.5 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 text-xs font-medium flex items-center gap-1">
                                 <Icon d={Icons.refresh} className="w-3 h-3" /> Renew
                               </button>
@@ -1888,7 +2015,7 @@ function App() {
                   <h2 className="text-2xl font-bold text-white">Sellers / Vendors</h2>
                   <p className="text-sm text-slate-500 mt-1">Manage 3rd party vendors who resell licenses</p>
                 </div>
-                <button onClick={() => { setEditingSeller(null); setSellerForm({ name: '', address: '', phone: '' }); setShowSellerForm(true); }}
+                <button onClick={() => { setEditingSeller(null); setSellerForm({ name: '', address: '', phone: '', email: '', logo: '', logo_mime: '', logo_preview: '' }); setShowSellerForm(true); }}
                   className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-xl transition-colors shadow-lg shadow-blue-600/20">
                   + Add Seller
                 </button>
@@ -1902,14 +2029,20 @@ function App() {
               ) : (
                 <div className="grid gap-3">
                   {sellers.map(s => (
-                    <div key={s.id} className="bg-slate-900/50 border border-slate-800/50 rounded-xl p-4 flex items-center justify-between">
-                      <div>
-                        <p className="text-white font-semibold">{s.name}</p>
-                        {s.address && <p className="text-xs text-slate-400 mt-0.5">{s.address}</p>}
-                        {s.phone && <p className="text-xs text-slate-400">{s.phone}</p>}
+                    <div key={s.id} className="bg-slate-900/50 border border-slate-800/50 rounded-xl p-4 flex items-center justify-between gap-4">
+                      <div className="flex items-center gap-3 min-w-0">
+                        {sellerLogoSrc(s) ? (
+                          <img src={sellerLogoSrc(s)} alt="" className="h-10 max-w-[120px] object-contain bg-white rounded p-1 shrink-0" />
+                        ) : null}
+                        <div className="min-w-0">
+                          <p className="text-white font-semibold">{s.name}</p>
+                          {s.address && <p className="text-xs text-slate-400 mt-0.5">{s.address}</p>}
+                          {s.phone && <p className="text-xs text-slate-400">{s.phone}</p>}
+                          {s.email && <p className="text-xs text-slate-400">{s.email}</p>}
+                        </div>
                       </div>
-                      <div className="flex gap-2">
-                        <button onClick={() => { setEditingSeller(s); setSellerForm({ name: s.name, address: s.address || '', phone: s.phone || '' }); setShowSellerForm(true); }}
+                      <div className="flex gap-2 shrink-0">
+                        <button onClick={() => { setEditingSeller(s); setSellerForm({ name: s.name, address: s.address || '', phone: s.phone || '', email: s.email || '', logo: s.logo || '', logo_mime: s.logo_mime || '', logo_preview: sellerLogoSrc(s) }); setShowSellerForm(true); }}
                           className="px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors">
                           Edit
                         </button>
@@ -1946,6 +2079,33 @@ function App() {
                         placeholder="9876543210"
                         className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50" />
                     </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-400 mb-1.5">Email</label>
+                      <input value={sellerForm.email} onChange={e => setSellerForm({...sellerForm, email: e.target.value})}
+                        placeholder="support@vendor.com"
+                        className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-400 mb-1.5">Logo (optional)</label>
+                      <p className="text-[11px] text-slate-500 mb-2">PNG, JPEG, or WebP, up to 150 KB. Used only when a license turns on vendor branding.</p>
+                      {sellerForm.logo_preview && (
+                        <img src={sellerForm.logo_preview} alt="" className="mb-2 h-12 max-w-[180px] object-contain bg-white rounded p-1" />
+                      )}
+                      <div className="flex gap-2">
+                        <input id="seller-logo-upload" type="file" accept="image/png,image/jpeg,image/webp" className="hidden"
+                          onChange={e => { onSellerLogoFile(e.target.files?.[0]); e.target.value = ''; }} />
+                        <button type="button" onClick={() => document.getElementById('seller-logo-upload').click()}
+                          className="px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors">
+                          {sellerForm.logo_preview ? 'Change logo' : 'Upload logo'}
+                        </button>
+                        {sellerForm.logo_preview && (
+                          <button type="button" onClick={() => setSellerForm({ ...sellerForm, logo: '', logo_mime: '', logo_preview: '' })}
+                            className="px-3 py-1.5 text-xs text-slate-400 hover:text-white rounded-lg transition-colors">
+                            Remove
+                          </button>
+                        )}
+                      </div>
+                    </div>
                     <div className="flex justify-end gap-3 pt-2">
                       <button onClick={() => { setShowSellerForm(false); setEditingSeller(null); }}
                         className="px-4 py-2.5 text-sm text-slate-400 hover:text-white rounded-lg transition-colors">Cancel</button>
@@ -1965,7 +2125,40 @@ function App() {
             <div className="space-y-6 animate-fadeIn max-w-2xl">
               <div>
                 <h2 className="text-2xl font-bold text-white">Key Settings</h2>
-                <p className="text-sm text-slate-500 mt-1">Signing keys are embedded in the application</p>
+                <p className="text-sm text-slate-500 mt-1">Signing keys and the product support contact</p>
+              </div>
+
+              <div className="bg-slate-925 border border-slate-800/50 rounded-xl p-6 space-y-4">
+                <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Product Support Contact</h3>
+                <p className="text-xs text-slate-500">Used on direct sales and customisation licenses that have no vendor. Vendor licenses use the seller’s own phone and email instead. Already-issued files keep the contact from when they were generated until you renew them.</p>
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1.5">Name *</label>
+                  <input value={supportSettings.name || ''} onChange={(e) => setSupportSettings({ ...supportSettings, name: e.target.value })}
+                    placeholder="KT Health Soft"
+                    className="w-full bg-slate-950 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1.5">Phone</label>
+                  <input value={supportSettings.phone || ''} onChange={(e) => setSupportSettings({ ...supportSettings, phone: e.target.value })}
+                    placeholder="+91 ..."
+                    className="w-full bg-slate-950 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1.5">Email</label>
+                  <input value={supportSettings.email || ''} onChange={(e) => setSupportSettings({ ...supportSettings, email: e.target.value })}
+                    placeholder="support@example.com"
+                    className="w-full bg-slate-950 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1.5">Address</label>
+                  <input value={supportSettings.address || ''} onChange={(e) => setSupportSettings({ ...supportSettings, address: e.target.value })}
+                    placeholder="Optional"
+                    className="w-full bg-slate-950 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50" />
+                </div>
+                <button onClick={saveSupportSettings}
+                  className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-xl transition-colors">
+                  Save support contact
+                </button>
               </div>
 
               {/* Status */}
@@ -2283,10 +2476,10 @@ function App() {
                 <select value={form.seller_id || ''} onChange={e => {
                   const id = e.target.value;
                   if (!id) {
-                    setForm({...form, seller_id: '', seller_name: '', seller_address: '', seller_phone: ''});
+                    setForm({...form, seller_id: '', seller_name: '', seller_address: '', seller_phone: '', seller_email: '', use_vendor_logo: false});
                   } else {
                     const s = sellers.find(s => String(s.id) === id);
-                    if (s) setForm({...form, seller_id: id, seller_name: s.name, seller_address: s.address || '', seller_phone: s.phone || ''});
+                    if (s) setForm({...form, seller_id: id, seller_name: s.name, seller_address: s.address || '', seller_phone: s.phone || '', seller_email: s.email || '', use_vendor_logo: false});
                   }
                 }}
                   className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50">
@@ -2300,8 +2493,21 @@ function App() {
                     <p className="text-white font-medium">{form.seller_name}</p>
                     {form.seller_address && <p>{form.seller_address}</p>}
                     {form.seller_phone && <p>{form.seller_phone}</p>}
+                    {form.seller_email && <p>{form.seller_email}</p>}
                   </div>
                 )}
+                {!form.seller_id && (
+                  <p className="text-[11px] text-slate-500 mt-2">
+                    {supportSettings?.name
+                      ? `Direct sale: this license will include ${[supportSettings.name, supportSettings.phone, supportSettings.email].filter(Boolean).join(' · ')}.`
+                      : 'Direct sale: set the product support contact in Key Settings, or this license will have no phone or email.'}
+                  </p>
+                )}
+                <VendorLogoToggle
+                  seller={sellers.find(s => String(s.id) === String(form.seller_id))}
+                  checked={!!form.use_vendor_logo}
+                  onChange={(on) => setForm({ ...form, use_vendor_logo: on })}
+                />
               </div>
               <div className="border-t border-slate-700/30 pt-4 space-y-3">
                 <label className="block text-xs font-medium text-slate-400">Add-ons</label>
@@ -2461,11 +2667,23 @@ function App() {
             {/* Seller */}
             <div>
               <label className="block text-xs font-medium text-slate-400 mb-1.5">Sold via Vendor</label>
-              <select value={renewForm.seller_id} onChange={e => setRenewForm({...renewForm, seller_id: e.target.value})}
+              <select value={renewForm.seller_id} onChange={e => setRenewForm({...renewForm, seller_id: e.target.value, use_vendor_logo: false})}
                 className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50">
                 <option value="">No vendor (direct sale)</option>
                 {sellers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
+              <VendorLogoToggle
+                seller={sellers.find(s => String(s.id) === String(renewForm.seller_id))}
+                checked={!!renewForm.use_vendor_logo}
+                onChange={(on) => setRenewForm({ ...renewForm, use_vendor_logo: on })}
+              />
+              {!renewForm.seller_id && (
+                <p className="text-[11px] text-slate-500 mt-2">
+                  {supportSettings?.name
+                    ? `No vendor: the renewed file will include ${[supportSettings.name, supportSettings.phone, supportSettings.email].filter(Boolean).join(' · ')}.`
+                    : 'No vendor: set the product support contact in Key Settings, or this renewal will have no phone or email.'}
+                </p>
+              )}
             </div>
 
             {/* Google Drive */}

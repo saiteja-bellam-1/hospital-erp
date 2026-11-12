@@ -134,7 +134,7 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
 
   // ── OUTPATIENT ── (visible to receptionist + hospital/super admin)
   // Front-desk operations: dashboard, patients, appointments, packages, day-care
-  // services, referrals, and reports. Admins see the same items so they can
+  // services, and reports. Admins see the same items so they can
   // manage OPD without needing a receptionist role. Dashboard lives here (not
   // only as a role-home tile) so multi-role users still see it in the sidebar.
   if (hasAnyRole('receptionist', 'hospital_admin', 'super_admin')) {
@@ -150,7 +150,6 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
       add(items, make('Appointments', Calendar, '/dashboard/reception/appointments'));
       add(items, make('Doctor Schedule', CalendarClock, '/dashboard/reception/doctor-availability'));
       add(items, make('Day Care', Stethoscope, '/dashboard/reception/procedures'));
-      add(items, make('Referrals', Share2, '/dashboard/reception/referrals'));
       add(items, make('Reports', TrendingUp, '/dashboard/reception/reports'));
     }
     if (enabledModules.lab) {
@@ -164,6 +163,7 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
   if (hasAnyRole('receptionist', 'hospital_admin', 'super_admin', 'billing_admin')) {
     const items = [];
     add(items, make('Bills', Receipt, '/dashboard/billing'));
+    add(items, make('Referrals', Share2, '/dashboard/billing/referrals'));
     if (hasAnyRole('hospital_admin', 'super_admin', 'billing_admin')) {
       add(items, make('Reports', BarChart3, '/dashboard/billing/reports'));
       add(items, make('Sales Summary', TrendingUp, '/dashboard/billing/sales-summary'));

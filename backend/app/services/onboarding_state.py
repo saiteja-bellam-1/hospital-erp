@@ -22,7 +22,7 @@ from app.models.permissions import HospitalSettings
 from app.models.pharmacy import Medicine, PharmacyInventory, PharmacySupplier
 from app.models.system import SystemModule
 from app.models.user import User
-from app.services.license_service import get_current_license
+from app.services.license_service import licensed_feature_names
 from app.utils.config import get_backup_locations
 from app.utils.paths import get_uploads_dir
 
@@ -31,18 +31,16 @@ def get_enabled_module_names(db: Session) -> set[str]:
     """Modules that are truly available right now.
 
     Mirrors ``/api/system/enabled-modules``: a module counts as enabled only
-    when the admin toggle is on AND (there is no license yet, or the license
-    lists the module in its features). Keeping this identical to the rest of
-    the app is what makes the setup flow adapt to the modules a hospital
-    actually has.
+    when the admin toggle is on AND the current grant covers it. No license
+    and no active trial means the admin toggle alone. An active trial covers
+    every product module. A usable paid license wins.
     """
     modules = db.query(SystemModule).all()
-    license_record = get_current_license(db)
-    licensed_features = set(license_record.features) if license_record and license_record.features else set()
+    licensed_features = licensed_feature_names(db)
 
     enabled: set[str] = set()
     for module in modules:
-        if licensed_features:
+        if licensed_features is not None:
             is_on = module.is_enabled and module.module_name in licensed_features
         else:
             is_on = module.is_enabled

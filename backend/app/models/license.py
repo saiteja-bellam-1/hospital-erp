@@ -16,7 +16,8 @@ class License(Base):
     issued_at = Column(DateTime, nullable=False)
     expires_at = Column(DateTime, nullable=False)
     status = Column(String(20), default="active")  # active, expiring_soon, grace_period, expired
-    seller_info = Column(JSON, nullable=True)  # 3rd party vendor details: {name, address, phone}
+    seller_info = Column(JSON, nullable=True)  # vendor: {name, address, phone, email, logo_url?}
+    support_info = Column(JSON, nullable=True)  # direct sale: {name, address, phone, email}
     gdrive_config = Column(JSON, nullable=True)  # {enabled, service_account, folder_id}
     raw_license_data = Column(Text, nullable=False)  # The full .lic file content
     uploaded_at = Column(DateTime(timezone=True), default=system_now)

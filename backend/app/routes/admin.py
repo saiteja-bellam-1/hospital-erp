@@ -234,20 +234,19 @@ async def get_super_admin_dashboard(
     except Exception:
         pass
 
-    # --- License ---
+    # --- License (paid license wins; otherwise the machine trial) ---
     license_info = {"status": "no_license", "days_remaining": 0, "plan": None, "expires_at": None}
     try:
-        lic = db.query(License).order_by(License.id.desc()).first()
-        if lic:
-            days_left = (lic.expires_at - now).days if lic.expires_at else 0
-            license_info = {
-                "status": "active" if days_left > 30 else ("expiring_soon" if days_left > 0 else "expired"),
-                "days_remaining": days_left,
-                "plan": lic.plan,
-                "expires_at": lic.expires_at.isoformat() if lic.expires_at else None,
-                "hospital_name": lic.hospital_name,
-                "max_users": lic.max_users,
-            }
+        from app.services.license_service import get_license_status
+        info = get_license_status(db)
+        license_info = {
+            "status": info.get("status") or "no_license",
+            "days_remaining": info.get("days_remaining") or 0,
+            "plan": info.get("plan"),
+            "expires_at": info.get("expires_at"),
+            "hospital_name": info.get("hospital_name"),
+            "max_users": info.get("max_users"),
+        }
     except Exception:
         pass
 
@@ -313,23 +312,20 @@ async def get_system_modules(
     db: Session = Depends(get_db)
 ):
     """Get all system modules with their enable/disable status and license info"""
-    from app.services.license_service import get_current_license
+    from app.services.license_service import licensed_feature_names
     modules = db.query(SystemModule).all()
 
-    license_record = get_current_license(db)
-    licensed_features = set()
-    if license_record and license_record.features:
-        licensed_features = set(license_record.features)
+    licensed_features = licensed_feature_names(db)
 
     result = []
     for module in modules:
         resp = ModuleResponse.model_validate(module)
-        # Always-enabled modules are always considered licensed
-        # If license exists, check if module is in licensed features
-        # If no license yet, treat all as licensed (first-time setup grace)
+        # Always-enabled modules are always considered licensed.
+        # A paid license or an active trial supplies the feature set.
+        # No grant yet: treat all as licensed (first-time setup grace).
         if module.is_always_enabled:
             resp.is_licensed = True
-        elif licensed_features:
+        elif licensed_features is not None:
             resp.is_licensed = module.module_name in licensed_features
         else:
             resp.is_licensed = True
@@ -359,16 +355,14 @@ async def update_module_status(
             detail=f"Module '{module.display_name}' cannot be disabled"
         )
 
-    # Prevent enabling unlicensed modules
-    if module_update.is_enabled:
-        from app.services.license_service import get_current_license
-        license_record = get_current_license(db)
-        if license_record and license_record.features:
-            if module.module_name not in license_record.features:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Module '{module.display_name}' is not included in your license"
-                )
+    # Prevent enabling modules the current grant does not cover.
+    if module_update.is_enabled and not module.is_always_enabled:
+        from app.services.license_service import license_denies_module
+        if license_denies_module(db, module.module_name):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Module '{module.display_name}' is not included in your license"
+            )
 
     module.is_enabled = module_update.is_enabled
     db.commit()

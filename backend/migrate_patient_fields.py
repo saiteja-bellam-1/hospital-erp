@@ -41,6 +41,7 @@ NEW_COLUMNS = [
     ("lab_test_parameters", "reference_max_child", "FLOAT"),
     ("lab_test_parameters", "notes", "VARCHAR(500)"),
     ("licenses", "seller_info", "JSON"),
+    ("licenses", "support_info", "JSON"),
     ("appointments", "bill_cancelled_reason", "TEXT"),
     ("appointments", "bill_cancelled_by", "INTEGER REFERENCES users(id)"),
     ("appointments", "bill_cancelled_at", "DATETIME"),

@@ -33,12 +33,41 @@ def get_bundle_dir():
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+def _read_config():
+    """Read config.json next to the exe (or backend/ in dev). Never raises."""
+    config_path = os.path.join(get_base_dir(), "config.json")
+    if not os.path.isfile(config_path):
+        return {}
+    try:
+        import json
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def get_configured_data_dir():
+    """Return config.json ``data_dir`` when that directory exists, else ''."""
+    custom = str(_read_config().get("data_dir") or "").strip()
+    if custom and os.path.isdir(custom):
+        return os.path.normpath(custom)
+    return ""
+
+
 def get_data_dir():
     """
     Get the persistent data directory.
+
+    After "Move Data Folder", this is the folder recorded in config.json.
+    Otherwise:
     - Bundled: data/ next to the .exe
     - Dev: backend/ directory itself
     """
+    custom = get_configured_data_dir()
+    if custom:
+        os.makedirs(custom, exist_ok=True)
+        return custom
     if is_bundled():
         data_dir = os.path.join(get_base_dir(), "data")
         os.makedirs(data_dir, exist_ok=True)
@@ -46,13 +75,29 @@ def get_data_dir():
     return get_base_dir()
 
 
+def get_state_dir():
+    """Directory for logs, version.txt, and the other install state files.
+
+    Follows a moved data folder. Before a move, bundled installs use
+    ``<exe>/data`` and dev uses ``<backend>/data`` (logs never lived in the
+    source tree root).
+    """
+    if get_configured_data_dir() or is_bundled():
+        return get_data_dir()
+    path = os.path.join(get_base_dir(), "data")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def get_uploads_dir():
     """
     Get the uploads directory.
+
+    Follows a moved data folder. Otherwise:
     - Bundled: data/uploads/ next to the .exe
     - Dev: backend/uploads/
     """
-    if is_bundled():
+    if is_bundled() or get_configured_data_dir():
         uploads_dir = os.path.join(get_data_dir(), "uploads")
     else:
         uploads_dir = os.path.join(get_base_dir(), "uploads")
@@ -76,21 +121,16 @@ def get_frontend_dir():
 def get_db_path():
     """
     Get the SQLite database file path.
-    Checks config.json first for a user-chosen path (set during setup wizard).
-    Falls back to:
+
+    A moved data folder wins: the database is ``<data_dir>/kthealth_erp.db``.
+    Otherwise config.json ``db_path`` is used when its parent directory exists
+    (the older database-only move). Falls back to:
     - Bundled: data/kthealth_erp.db next to the .exe
     - Dev: backend/kthealth_erp.db
     """
-    # Check if user configured a custom DB path via setup wizard
-    config_path = os.path.join(get_base_dir(), "config.json")
-    if os.path.isfile(config_path):
-        try:
-            import json
-            with open(config_path, "r") as f:
-                config = json.load(f)
-            custom_path = config.get("db_path", "")
-            if custom_path and os.path.isdir(os.path.dirname(custom_path)):
-                return custom_path
-        except Exception:
-            pass
+    if get_configured_data_dir():
+        return os.path.join(get_data_dir(), "kthealth_erp.db")
+    custom_path = str(_read_config().get("db_path") or "").strip()
+    if custom_path and os.path.isdir(os.path.dirname(custom_path)):
+        return custom_path
     return os.path.join(get_data_dir(), "kthealth_erp.db")

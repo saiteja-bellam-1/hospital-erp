@@ -348,7 +348,7 @@ export default function DashboardTab() {
                   },
                   viewAll: {
                     label: 'Open reception lab orders',
-                    onClick: () => navigate('/dashboard/reception/lab-orders'),
+                    onClick: () => navigate('/dashboard/reception/lab-orders?status=pending'),
                   },
                 })}
               />
@@ -454,7 +454,7 @@ export default function DashboardTab() {
           if (drill?.type === 'unpaid') {
             return renderOrderRows(rows, 'Collect payment', () => {
               closeDrill();
-              navigate('/dashboard/reception/lab-orders');
+              navigate('/dashboard/reception/lab-orders?status=pending');
             });
           }
           return renderOrderRows(rows);

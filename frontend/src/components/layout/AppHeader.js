@@ -1,5 +1,5 @@
-import React, { useMemo } from 'react';
-import { Link } from 'react-router-dom';
+import React, { useEffect, useMemo, useRef } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import { ChevronDown, LogOut, Menu } from 'lucide-react';
 import {
   DropdownMenu,
@@ -25,10 +25,33 @@ export default function AppHeader({
   userInitials,
   roleLabel,
 }) {
+  const location = useLocation();
+  const navRef = useRef(null);
   const labeledSections = useMemo(
     () => (navigationSections || []).filter((section) => section.label),
     [navigationSections],
   );
+  const sectionKey = labeledSections.map((section) => section.label).join('|');
+  const activeLabel = labeledSections.find((section) =>
+    (section.items || []).some((item) => isActive(item.path))
+  )?.label || '';
+
+  // Reload resets the horizontal bar to the first module. Bring the current
+  // section into view without scrolling the page.
+  useEffect(() => {
+    const root = navRef.current;
+    if (!root) return undefined;
+    const frame = requestAnimationFrame(() => {
+      const active = root.querySelector('.header-nav-link-active');
+      if (!active) return;
+      const cRect = root.getBoundingClientRect();
+      const tRect = active.getBoundingClientRect();
+      if (tRect.left < cRect.left + 4 || tRect.right > cRect.right - 4) {
+        root.scrollLeft += (tRect.left - cRect.left) - (cRect.width - tRect.width) / 2;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [location.pathname, sectionKey, activeLabel]);
 
   const sectionHasActive = (section) =>
     (section.items || []).some((item) => isActive(item.path));
@@ -78,7 +101,7 @@ export default function AppHeader({
           <HospitalLogo variant="header" />
         </Link>
 
-        <nav className="header-nav hidden lg:flex items-center gap-0.5 flex-1 min-w-0 ml-2 overflow-x-auto">
+        <nav ref={navRef} className="header-nav hidden lg:flex items-center gap-0.5 flex-1 min-w-0 ml-2 overflow-x-auto">
           {labeledSections.map((section) => {
             const active = sectionHasActive(section);
             return (

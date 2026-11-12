@@ -42,7 +42,9 @@ export function BrandingProvider({ children }) {
       const endpoint = user ? '/api/hospital/branding' : '/api/hospital/branding/public';
       const res = await axios.get(endpoint);
       const name = res.data?.name || DEFAULT_APP_NAME;
-      const nextLogo = res.data?.logo_url || null;
+      const hospitalLogo = res.data?.logo_url || null;
+      const vendorLogo = res.data?.vendor_logo_url || null;
+      const nextLogo = hospitalLogo || vendorLogo;
       const nextFavicon = res.data?.favicon_url || null;
       const nextVersion = nextFavicon ? Date.now() : 0;
 

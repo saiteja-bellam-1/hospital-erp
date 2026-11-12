@@ -265,6 +265,8 @@ begin
     Result := 20
   else if Pos('machine-id', Args) = 1 then
     Result := 10
+  else if (Pos('trial-status', Args) = 1) or (Pos('trial-begin', Args) = 1) then
+    Result := 10
   else
     Result := 20;
 end;
@@ -740,7 +742,7 @@ var
 begin
   LicensePage := CreateCustomPage(DbCheckPage.ID,
     'License (optional)',
-    'You can apply a .lic file now, or skip and upload it from the app later.');
+    'Skip this page to start a 14-day trial of all modules on this PC. Reinstalling will not restart that trial.');
 
   LblMachineId := TNewStaticText.Create(LicensePage.Surface);
   LblMachineId.Parent := LicensePage.Surface;
@@ -803,9 +805,46 @@ begin
   LblLicenseStatus.Top := 95;
   LblLicenseStatus.Width := LicensePage.SurfaceWidth;
   LblLicenseStatus.AutoSize := False;
-  LblLicenseStatus.Height := 40;
+  LblLicenseStatus.Height := 72;
   LblLicenseStatus.WordWrap := True;
-  LblLicenseStatus.Caption := 'Leave empty to skip; otherwise click Verify before continuing.';
+  LblLicenseStatus.Caption :=
+    'Leave empty to start a 14-day trial of all modules on this PC. A reinstall will not restart the trial. ' +
+    'Or choose a .lic file and click Verify.';
+end;
+
+procedure RefreshTrialNote;
+var
+  Output, Status: String;
+  Days: Integer;
+begin
+  // Read-only. trial-begin runs later, on a completed fresh install with no .lic,
+  // so opening this page cannot start or reset the clock.
+  if not StrIsEmpty(EdLicensePath.Text) then Exit;
+  if not RunDbCheck('trial-status', Output) then Exit;
+  if not JsonHasOkTrue(Output) then Exit;
+  Status := JsonGetString(Output, 'status');
+  Days := JsonGetInt(Output, 'days_remaining', 0);
+  if Status = 'trial_expired' then
+  begin
+    LblLicenseStatus.Font.Color := clRed;
+    LblLicenseStatus.Caption :=
+      'This PC''s 14-day trial has ended. A license file is required for staff login. ' +
+      'You can still finish the install and upload a license from the app.';
+  end
+  else if Status = 'trial' then
+  begin
+    LblLicenseStatus.Font.Color := $00006400;
+    LblLicenseStatus.Caption :=
+      'This PC already has a trial with ' + IntToStr(Days) +
+      ' day(s) left. Reinstalling will not restart it. Leave empty to continue the trial, or add a .lic file.';
+  end
+  else
+  begin
+    LblLicenseStatus.Font.Color := clBlack;
+    LblLicenseStatus.Caption :=
+      'Leave empty to start a 14-day trial of all modules on this PC. A reinstall will not restart the trial. ' +
+      'Or choose a .lic file and click Verify.';
+  end;
 end;
 
 procedure CreateHospitalPage;
@@ -1442,6 +1481,8 @@ begin
     RefreshDataDirDefaults;
   if CurPageID = DbCheckPage.ID then
     RunDbIntegrityCheck;
+  if CurPageID = LicensePage.ID then
+    RefreshTrialNote;
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -1627,6 +1668,19 @@ begin
   end;
 end;
 
+procedure BeginTrialIfFreshWithoutLicense;
+var
+  Output: String;
+begin
+  // Only a completed fresh install with no .lic starts the clock.
+  // Upgrade, adopt-existing, and restore-backup must not create a record.
+  // trial-begin keeps an existing started_at, so a reinstall cannot add 14 days.
+  if IsUpgrade then Exit;
+  if GetMode <> MODE_FRESH then Exit;
+  if not StrIsEmpty(Trim(EdLicensePath.Text)) then Exit;
+  RunDbCheck('trial-begin', Output);
+end;
+
 procedure GrantExePermissions;
 var
   ResultCode: Integer;
@@ -1647,7 +1701,10 @@ begin
   begin
     GrantExePermissions;
     if not IsUpgrade then
+    begin
+      BeginTrialIfFreshWithoutLicense;
       WriteSeedFile;
+    end;
   end;
 end;
 
@@ -1662,6 +1719,9 @@ var
 begin
   if CurUninstallStep = usPostUninstall then
   begin
+    // The trial clock is outside this folder, in
+    // HKLM\SOFTWARE\KT Health ERP\Trial and %ProgramData%\KTHealthERP\trial.json.
+    // Leave both in place so a fresh reinstall cannot start the 14 days over.
     DataDir := ExpandConstant('{app}\data');
     if DirExists(DataDir) then
     begin

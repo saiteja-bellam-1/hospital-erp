@@ -757,7 +757,12 @@ def init_database_and_seed(seed: Mapping, db_path: str) -> None:
         db.flush()
 
         from app.services.system_modules import ensure_system_modules
-        ensure_system_modules(db, licensed_features=None)
+        from app.services.trial import STATUS_TRIAL, TRIAL_FEATURES, trial_status
+        trial = trial_status(touch=False)
+        # A fresh trial install enables every product module. An already-expired
+        # trial (reinstall) keeps the catalog defaults so staff stay on a license.
+        licensed = list(TRIAL_FEATURES) if trial.get("status") == STATUS_TRIAL else None
+        ensure_system_modules(db, licensed_features=licensed)
         db.flush()
 
         from app.services.super_admin_service import generate_hospital_code

@@ -80,13 +80,11 @@ def is_setup_complete():
 
 def get_configured_db_path():
     """
-    Get the DB path from config. Falls back to default if not configured.
+    Database file the running app opens.
+
+    Same resolution as get_db_path(): a moved data folder, then a legacy
+    db_path whose parent directory still exists, then the default file.
     """
-    config = load_config()
-    custom_path = config.get("db_path", "")
-    if custom_path and os.path.isdir(os.path.dirname(custom_path)):
-        return custom_path
-    # Default
     from app.utils.paths import get_db_path
     return get_db_path()
 

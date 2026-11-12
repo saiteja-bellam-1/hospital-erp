@@ -90,11 +90,19 @@ def _first_hospital(db: Session) -> Hospital | None:
     return db.query(Hospital).first()
 
 
-def _stock_branding(*, customisation_licensed: bool) -> dict[str, Any]:
+def _branding_payload(
+    *,
+    name: str,
+    logo_url: str | None,
+    favicon_url: str | None,
+    vendor_logo_url: str | None,
+    customisation_licensed: bool,
+) -> dict[str, Any]:
     return {
-        "name": DEFAULT_APP_NAME,
-        "logo_url": None,
-        "favicon_url": None,
+        "name": name,
+        "logo_url": logo_url,
+        "favicon_url": favicon_url,
+        "vendor_logo_url": vendor_logo_url,
         "customisation_licensed": customisation_licensed,
     }
 
@@ -103,24 +111,49 @@ def resolve_branding(
     hospital: Hospital | None,
     *,
     customisation_licensed: bool = False,
+    vendor_logo_url: str | None = None,
 ) -> dict[str, Any]:
     """Build branding payload for API responses.
 
-    Unlicensed hospitals always get stock KT HEALTH ERP chrome even if a
-    previous license left a custom name/logo in the hospital row.
+    ``logo_url`` is the hospital's own app logo, and only when the
+    customisation add-on is on. ``vendor_logo_url`` is the optional mark from
+    the license. Chrome should show the hospital logo when it is set, and the
+    vendor logo otherwise. Unlicensed hospitals keep the KT name even if a
+    previous license left a custom name or logo on the hospital row.
     """
+    vendor = (vendor_logo_url or "").strip() or None
     if not customisation_licensed or not hospital:
-        return _stock_branding(customisation_licensed=customisation_licensed)
+        return _branding_payload(
+            name=DEFAULT_APP_NAME,
+            logo_url=None,
+            favicon_url=None,
+            vendor_logo_url=vendor,
+            customisation_licensed=customisation_licensed,
+        )
     name = (hospital.name or "").strip() or DEFAULT_APP_NAME
     # App chrome uses app_logo_url only (hospital.logo_url is for PDF letterhead).
     logo_url = (getattr(hospital, "app_logo_url", None) or "").strip() or None
     favicon_url = (hospital.favicon_url or "").strip() or None
-    return {
-        "name": name,
-        "logo_url": logo_url,
-        "favicon_url": favicon_url,
-        "customisation_licensed": True,
-    }
+    return _branding_payload(
+        name=name,
+        logo_url=logo_url,
+        favicon_url=favicon_url,
+        vendor_logo_url=vendor,
+        customisation_licensed=True,
+    )
+
+
+def _vendor_logo_url(db: Session) -> str | None:
+    from app.services.license_service import get_current_license
+
+    license_record = get_current_license(db)
+    info = license_record.seller_info if license_record else None
+    if not isinstance(info, dict):
+        return None
+    url = info.get("logo_url")
+    if isinstance(url, str) and url.strip():
+        return url.strip()
+    return None
 
 
 def get_branding_payload(db: Session) -> dict[str, Any]:
@@ -129,4 +162,5 @@ def get_branding_payload(db: Session) -> dict[str, Any]:
     return resolve_branding(
         _first_hospital(db),
         customisation_licensed=license_allows_customisation(db),
+        vendor_logo_url=_vendor_logo_url(db),
     )

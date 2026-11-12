@@ -544,11 +544,13 @@ Shows the 5 most recent appointments with:
 - Click any appointment to navigate to the Appointments page
 
 ### Today's Lab Orders
-Displays lab orders for today with:
-- Patient name and test name
-- Amount and payment status (Paid/Unpaid)
+The top of the dashboard shows today's **Pending payment**, **Ordered**, and **Completed** counts. Each card opens Lab Orders already filtered. The list below includes outpatient and inpatient orders, with:
+- Patient name, test name, and an Inpatient badge when the order came from the ward
+- Amount, order status, and payment status (Paid/Pending)
 - **Collect Payment** button for unpaid orders
 - **Download Report** button for completed tests
+
+**View All** opens Lab Orders with filters for pending payment, ordered, and completed — not completed tests only.
 
 > **Key Responsibility**: When you see an **Unpaid** lab order, collect payment as soon as possible. The lab technician **cannot see or process** the order until it is marked as Paid. If the lab team reports a missing order, check this section first.
 
