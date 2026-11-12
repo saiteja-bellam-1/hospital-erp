@@ -31,7 +31,7 @@ from app.models.pharmacy import (
     PharmacyUoM,
 )
 from app.models.user import User
-from app.services.pharmacy_store_service import get_master_store_id
+from app.services.pharmacy_store_service import get_master_store_id, resolve_store_id
 from app.utils.pharmacy_pricing import (
     apply_cost_pcs_from_mrp,
     apply_medicine_price_rounding,
@@ -1608,6 +1608,199 @@ def import_opening_stock(
 
     summary["error_count"] = len(summary["errors"])
     return summary
+
+
+def _opening_money(raw, fallback) -> float:
+    if raw is None or raw == "":
+        return round_money(fallback or 0)
+    return round_money(raw)
+
+
+def enter_opening_stock(
+    db: Session,
+    user: User,
+    lines: List[dict],
+    store_id: Optional[int] = None,
+) -> List[dict]:
+    """Create opening-stock batches from the inventory screen.
+
+    Quantity is the absolute on-hand count in tabs. A batch that already
+    exists for the same medicine, batch number, and store is rejected so a
+    later recount uses Adjust instead of overwriting stock.
+    """
+    from app.services.barcode_service import assign_batch_barcode
+
+    if not lines:
+        raise HTTPException(status_code=400, detail="Add at least one opening-stock line")
+
+    resolved_store = resolve_store_id(db, user, store_id)
+    hospital_id = user.hospital_id
+    seen = set()
+    created: List[dict] = []
+
+    for index, line in enumerate(lines, start=1):
+        prefix = f"Line {index}"
+        med = db.query(Medicine).filter(
+            Medicine.id == line.get("medicine_id"),
+            Medicine.hospital_id == hospital_id,
+            Medicine.is_active == True,  # noqa: E712
+        ).first()
+        if not med:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{prefix}: medicine not found — add it to the catalog first",
+            )
+
+        batch_number = str(line.get("batch_number") or "").strip()
+        if not batch_number:
+            raise HTTPException(status_code=400, detail=f"{prefix}: batch number is required")
+        if len(batch_number) > 50:
+            raise HTTPException(status_code=400, detail=f"{prefix}: batch number is too long")
+
+        key = (med.id, batch_number.casefold())
+        if key in seen:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{prefix}: batch {batch_number} is listed more than once for {med.name}",
+            )
+        seen.add(key)
+
+        expiry = line.get("expiry_date")
+        if not isinstance(expiry, date):
+            raise HTTPException(status_code=400, detail=f"{prefix}: expiry date is required")
+
+        try:
+            qty = int(line.get("quantity"))
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{prefix}: quantity must be a whole number of tabs",
+            )
+        if qty <= 0:
+            raise HTTPException(status_code=400, detail=f"{prefix}: quantity must be greater than 0")
+
+        existing = db.query(PharmacyInventory).filter(
+            PharmacyInventory.medicine_id == med.id,
+            sa_func.lower(PharmacyInventory.batch_number) == batch_number.lower(),
+            PharmacyInventory.store_id == resolved_store,
+            PharmacyInventory.hospital_id == hospital_id,
+        ).first()
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{prefix}: batch {batch_number} already exists for {med.name}. "
+                    "Use Adjust to change the quantity on that batch."
+                ),
+            )
+
+        mrp = _opening_money(line.get("mrp"), med.mrp)
+        purchase_rate = _opening_money(line.get("purchase_rate"), med.purchase_rate)
+        rate_a = _opening_money(line.get("rate_a"), med.rate_a or med.mrp)
+        rate_b = _opening_money(line.get("rate_b"), med.rate_b)
+        selling_price = rate_a or mrp or round_money(med.rate_a or 0)
+        cost_price = purchase_rate or round_money(med.purchase_rate or 0)
+
+        scf_raw = line.get("strip_conversion_factor")
+        if scf_raw is None:
+            scf = max(1, int(med.strip_conversion_factor or 1))
+        else:
+            scf = max(1, int(scf_raw))
+
+        try:
+            free_qty = int(line.get("free_quantity") or 0)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{prefix}: free quantity must be a whole number")
+        if free_qty < 0:
+            raise HTTPException(status_code=400, detail=f"{prefix}: free quantity cannot be negative")
+
+        discount_pct = float(line.get("discount_pct") or 0)
+
+        supplier_id = line.get("supplier_id")
+        if supplier_id:
+            sup = db.query(PharmacySupplier).filter(
+                PharmacySupplier.id == supplier_id,
+                PharmacySupplier.hospital_id == hospital_id,
+                PharmacySupplier.is_active == True,  # noqa: E712
+            ).first()
+            if not sup:
+                raise HTTPException(status_code=400, detail=f"{prefix}: supplier not found")
+        else:
+            supplier_id = None
+
+        hsn_id = line.get("hsn_id") or med.hsn_id
+        if hsn_id:
+            hsn = db.query(PharmacyHSN).filter(
+                PharmacyHSN.id == hsn_id,
+                PharmacyHSN.hospital_id == hospital_id,
+            ).first()
+            if not hsn:
+                hsn_id = med.hsn_id
+
+        notes = str(line.get("notes") or "").strip() or "Opening stock"
+
+        inv = PharmacyInventory(
+            medicine_id=med.id,
+            batch_number=batch_number,
+            expiry_date=expiry,
+            quantity_in_stock=qty,
+            cost_price=cost_price,
+            selling_price=selling_price,
+            mrp=mrp or 0,
+            purchase_rate=purchase_rate or 0,
+            rate_a=rate_a or 0,
+            rate_b=rate_b or 0,
+            strip_conversion_factor=scf,
+            free_quantity=free_qty,
+            discount_pct=discount_pct,
+            hsn_id=hsn_id,
+            supplier_id=supplier_id,
+            store_id=resolved_store,
+            is_active=True,
+            hospital_id=hospital_id,
+        )
+        db.add(inv)
+        db.flush()
+        try:
+            assign_batch_barcode(db, inv, hospital_id)
+        except ValueError:
+            pass
+
+        adj = PharmacyStockAdjustment(
+            medicine_id=med.id,
+            batch_id=inv.id,
+            qty_change=qty,
+            reason="Opening stock",
+            performed_by=user.id,
+            store_id=resolved_store,
+            hospital_id=hospital_id,
+        )
+        db.add(adj)
+        db.flush()
+        db.add(PharmacyStockLedger(
+            medicine_id=med.id,
+            batch_id=inv.id,
+            txn_type="opening_stock",
+            qty_delta=qty,
+            reference_type="opening_stock",
+            reference_id=adj.id,
+            performed_by=user.id,
+            store_id=resolved_store,
+            hospital_id=hospital_id,
+            notes=notes,
+        ))
+        created.append({
+            "id": inv.id,
+            "medicine_id": med.id,
+            "medicine_name": med.name,
+            "medicine_code": med.medicine_code,
+            "batch_number": inv.batch_number,
+            "quantity_in_stock": inv.quantity_in_stock,
+            "expiry_date": inv.expiry_date,
+            "store_id": resolved_store,
+        })
+
+    return created
 
 
 def export_opening_stock_xlsx(db: Session, hospital_id: int) -> bytes:

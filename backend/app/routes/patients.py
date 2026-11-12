@@ -603,6 +603,32 @@ def _format_file_label_bill_date(value) -> str:
     return format_system_dt(value, fmt="%d-%b-%Y %H:%M", empty="") or str(value)
 
 
+def _consulting_doctor_name(user) -> str:
+    if not user:
+        return ""
+    name = f"{getattr(user, 'first_name', '') or ''} {getattr(user, 'last_name', '') or ''}".strip()
+    if not name:
+        return ""
+    lowered = name.lower()
+    if lowered.startswith("dr.") or lowered.startswith("dr "):
+        return name
+    return f"Dr. {name}"
+
+
+def _combine_appointment_dt(apt):
+    """Visit stamp uses the booked slot time when the date column is date-only."""
+    from datetime import datetime, time as time_cls
+    stamp = getattr(apt, "appointment_date", None) or getattr(apt, "created_at", None)
+    slot = getattr(apt, "appointment_time", None)
+    if stamp is None or not isinstance(slot, time_cls) or not hasattr(stamp, "date"):
+        return stamp
+    combined = datetime.combine(stamp.date(), slot)
+    tz = getattr(stamp, "tzinfo", None)
+    if tz is not None:
+        combined = combined.replace(tzinfo=tz)
+    return combined
+
+
 @router.get("/{patient_ref}/file-label.pdf")
 async def download_patient_file_label_pdf(
     patient_ref: str,
@@ -707,10 +733,13 @@ def _patient_file_label_payload(
     ref_name = (patient.referred_by or "").strip()
     resolved_payment = payment_method
     resolved_bill_dt = None
+    doctor_name = ""
+    consult_dt = None
 
     src = (source or "").strip().lower()
-    if appointment_id or src == "appointment":
+    if appointment_id or src in ("appointment", "reprint"):
         from app.models.outpatient import Appointment
+        from app.models.user import User
         apt = None
         if appointment_id:
             apt = db.query(Appointment).filter(
@@ -720,8 +749,11 @@ def _patient_file_label_payload(
         if not apt:
             apt = (
                 db.query(Appointment)
-                .filter(Appointment.patient_id == patient.id)
-                .order_by(Appointment.created_at.desc())
+                .filter(
+                    Appointment.patient_id == patient.id,
+                    Appointment.status != "cancelled",
+                )
+                .order_by(Appointment.appointment_date.desc(), Appointment.id.desc())
                 .first()
             )
         if apt:
@@ -729,7 +761,10 @@ def _patient_file_label_payload(
             if not ref_name and apt.referred_by:
                 ref_name = apt.referred_by.strip()
             resolved_payment = resolved_payment or getattr(apt, "payment_method", None)
-            resolved_bill_dt = apt.appointment_date or apt.created_at
+            consult_dt = _combine_appointment_dt(apt)
+            resolved_bill_dt = consult_dt
+            doctor = db.query(User).filter(User.id == apt.doctor_id).first()
+            doctor_name = _consulting_doctor_name(doctor)
 
     if order_id or src == "lab":
         from app.models.lab import PatientLabOrder
@@ -776,6 +811,8 @@ def _patient_file_label_payload(
         "pat_type": (pat_type or "").strip() or _pat_type_from_payment_method(resolved_payment),
         "age_gender": age_gender,
         "bill_date": _format_file_label_bill_date(resolved_bill_dt),
+        "doctor_name": doctor_name,
+        "consult_at": _format_file_label_bill_date(consult_dt) if consult_dt else "",
         "order_no": order_no if src != "registration" else "",
         "ref_name": ref_name,
     }

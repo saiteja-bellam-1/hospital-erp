@@ -19,6 +19,7 @@ from app.services.pharmacy_import import (
     build_suppliers_template,
     export_masters_xlsx,
     export_medicines_xlsx,
+    enter_opening_stock,
     export_opening_stock_xlsx,
     export_suppliers_xlsx,
     import_masters,
@@ -473,6 +474,77 @@ def masters_export_xlsx(
 # ---------------------------------------------------------------------------
 # Opening stock
 # ---------------------------------------------------------------------------
+
+class OpeningStockLineIn(BaseModel):
+    medicine_id: int
+    batch_number: str = Field(..., min_length=1, max_length=50)
+    expiry_date: date
+    quantity: int = Field(..., gt=0)
+    mrp: Optional[float] = None
+    purchase_rate: Optional[float] = None
+    rate_a: Optional[float] = None
+    rate_b: Optional[float] = None
+    strip_conversion_factor: Optional[int] = Field(None, ge=1)
+    free_quantity: int = Field(0, ge=0)
+    discount_pct: float = 0
+    supplier_id: Optional[int] = None
+    hsn_id: Optional[int] = None
+    notes: Optional[str] = Field(None, max_length=500)
+
+
+class OpeningStockEntryIn(BaseModel):
+    store_id: Optional[int] = None
+    lines: List[OpeningStockLineIn] = Field(..., min_length=1, max_length=200)
+
+
+class OpeningStockBatchOut(BaseModel):
+    id: int
+    medicine_id: int
+    medicine_name: str
+    medicine_code: Optional[str] = None
+    batch_number: str
+    quantity_in_stock: int
+    expiry_date: date
+    store_id: int
+
+
+class OpeningStockEntryOut(BaseModel):
+    created: int
+    batches: List[OpeningStockBatchOut]
+
+
+@router.post("/opening-stock", response_model=OpeningStockEntryOut, status_code=201)
+def opening_stock_entry(
+    data: OpeningStockEntryIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "adjust_stock")),
+):
+    """Manual opening stock. Same batch + ledger shape as the spreadsheet import."""
+    batches = enter_opening_stock(
+        db,
+        current_user,
+        [line.model_dump() for line in data.lines],
+        data.store_id,
+    )
+    db.commit()
+    try:
+        log_action(
+            db, current_user, "enter_pharmacy_opening_stock", "pharmacy",
+            "pharmacy_inventory", None,
+            description=f"Entered opening stock for {len(batches)} batch(es)",
+            details={
+                "created": len(batches),
+                "store_id": batches[0]["store_id"] if batches else data.store_id,
+                "batches": [
+                    {"id": b["id"], "medicine_id": b["medicine_id"], "batch_number": b["batch_number"], "qty": b["quantity_in_stock"]}
+                    for b in batches
+                ],
+            },
+        )
+    except Exception:
+        pass
+    return {"created": len(batches), "batches": batches}
+
 
 @router.get("/opening-stock/import/template")
 def opening_stock_import_template(

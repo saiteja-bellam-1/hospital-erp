@@ -568,6 +568,8 @@ def patient_body_rows(label: dict[str, Any]) -> List[tuple]:
     pat_type = (label.get("pat_type") or "Self Paying").strip()
     age_gender = (label.get("age_gender") or "").strip()
     bill_date = (label.get("bill_date") or "").strip()
+    doctor_name = (label.get("doctor_name") or "").strip()
+    consult_at = (label.get("consult_at") or "").strip()
     order_no = (label.get("order_no") or "").strip()
     ref_name = (label.get("ref_name") or "").strip()
     rows: List[tuple] = [
@@ -578,6 +580,12 @@ def patient_body_rows(label: dict[str, Any]) -> List[tuple]:
     ]
     if bill_date:
         rows.append(("meta", f"Bill Date : {bill_date}", ""))
+    if doctor_name:
+        when = consult_at or bill_date
+        doctor_line = f"Doctor : {doctor_name}"
+        if when:
+            doctor_line = f"{doctor_line}  {when}"
+        rows.append(("meta", doctor_line, ""))
     if order_no:
         rows.append(("meta", f"Order No : {order_no}", ""))
     if ref_name:

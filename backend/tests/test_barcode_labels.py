@@ -362,6 +362,50 @@ def test_patient_file_label_endpoint(client, auth_headers, seed_data):
     assert res.content[:4] == b"%PDF"
 
 
+def test_patient_file_rows_include_consulting_doctor_and_time():
+    from app.utils.label_pdf_service import patient_body_rows
+    rows = patient_body_rows({
+        "patient_name": "Jane Doe",
+        "mrn": "KTH-2026-00042",
+        "pat_type": "Self Paying",
+        "age_gender": "32Y / F",
+        "bill_date": "23-Oct-2026 10:00",
+        "doctor_name": "Dr. Meera Rao",
+        "consult_at": "23-Oct-2026 10:00",
+    })
+    text = " ".join(left for _kind, left, _right in rows)
+    assert "Doctor : Dr. Meera Rao  23-Oct-2026 10:00" in text
+
+
+def test_patient_file_label_html_includes_consulting_doctor(client, auth_headers, db_session, seed_data):
+    from datetime import datetime, time
+    from uuid import uuid4
+    from app.models.outpatient import Appointment
+    apt = Appointment(
+        appointment_number=f"APT-LABEL-{uuid4().hex[:12]}",
+        patient_id=seed_data["patient_id"],
+        doctor_id=seed_data["doctor_user_id"],
+        appointment_date=datetime(2026, 10, 23),
+        appointment_time=time(10, 30),
+        duration_minutes=15,
+        appointment_type="consultation",
+        status="scheduled",
+        consultation_fee=0,
+    )
+    db_session.add(apt)
+    db_session.commit()
+    res = client.get(
+        f"/api/patients/{seed_data['patient_id']}/file-label.html",
+        params={"source": "appointment", "appointment_id": apt.id, "width_mm": 70, "height_mm": 40},
+        headers=auth_headers,
+    )
+    assert res.status_code == 200
+    body = res.content.decode("utf-8", "replace")
+    assert "Doctor :" in body
+    assert "Smith" in body
+    assert "23-Oct-2026 10:30" in body
+
+
 def test_patient_file_label_html_endpoint(client, auth_headers, seed_data):
     pid = seed_data["patient_id"]
     res = client.get(
