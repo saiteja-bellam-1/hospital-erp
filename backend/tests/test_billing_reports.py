@@ -279,3 +279,261 @@ class TestReports:
         day = client.get("/api/hospital/billing/reports/daycare-volume", headers=auth_headers).json()
         assert day["totals"]["count"] >= 1
 
+    def test_revenue_reports_include_lab_pharmacy_patients_and_referrals(
+        self, client, auth_headers, db_session, seed_data,
+    ):
+        from datetime import timedelta
+        from app.models.billing import Bill
+        from app.models.lab import PatientLabOrder, LabTest, LabTestCategory, SampleType
+        from app.models.patient import Patient
+        from app.models.pharmacy import PharmacySale, PharmacySaleReturn
+        from app.models.referral import Referral
+
+        hid = seed_data["hospital_id"]
+        pid = seed_data["patient_id"]
+        did = seed_data["doctor_user_id"]
+        ts = datetime.now().timestamp()
+
+        def pick(body, doctor_id=None, name=None):
+            for row in body.get("rows") or []:
+                if doctor_id is not None and row.get("doctor_id") == doctor_id:
+                    return row
+                if name is not None and row.get("doctor_name") == name:
+                    return row
+            return {}
+
+        def num(row, key):
+            return float((row or {}).get(key) or 0)
+
+        base_doc = client.get("/api/hospital/billing/reports/doctor-revenue", headers=auth_headers).json()
+        base_ip = client.get(
+            "/api/hospital/billing/reports/doctor-revenue?module=pharmacy_ip",
+            headers=auth_headers,
+        ).json()
+        base_patient = client.get(
+            f"/api/hospital/billing/reports/patient-revenue?patient_id={pid}",
+            headers=auth_headers,
+        ).json()
+        base_doc_row = pick(base_doc, doctor_id=did)
+        base_unassigned = pick(base_doc, name="(Unassigned)")
+        base_ip_row = pick(base_ip, doctor_id=did)
+        base_prow = (base_patient.get("rows") or [{}])[0]
+
+        patient = db_session.query(Patient).filter_by(id=pid).one()
+        previous_referred_by = patient.referred_by
+        patient.referred_by = "City Clinic"
+
+        cat = LabTestCategory(name=f"Rev-{ts}", hospital_id=hid, is_active=True)
+        stype = SampleType(name=f"Serum-{ts}", hospital_id=hid, is_active=True)
+        db_session.add_all([cat, stype])
+        db_session.flush()
+        test = LabTest(
+            name=f"LFT-{ts}",
+            test_code=f"LFT{int(ts)}",
+            hospital_id=hid,
+            category_id=cat.id,
+            sample_type_id=stype.id,
+            cost=250,
+            is_active=True,
+        )
+        db_session.add(test)
+        db_session.flush()
+
+        admission_bill = Bill(
+            bill_number=f"ADM-REV-{ts}",
+            patient_id=pid,
+            bill_type="admission",
+            subtotal=1000,
+            tax_amount=0,
+            discount_amount=0,
+            total_amount=1000,
+            status="pending",
+            bill_date=datetime.now(),
+            created_by_id=seed_data["admin_user_id"],
+            hospital_id=hid,
+        )
+        other_bill = Bill(
+            bill_number=f"DC-REV-{ts}",
+            patient_id=pid,
+            bill_type="day_care",
+            subtotal=75,
+            tax_amount=0,
+            discount_amount=0,
+            total_amount=75,
+            status="paid",
+            bill_date=datetime.now(),
+            created_by_id=seed_data["admin_user_id"],
+            hospital_id=hid,
+        )
+        db_session.add_all([admission_bill, other_bill])
+        db_session.flush()
+
+        db_session.add(PatientLabOrder(
+            order_number=f"LO-OPEN-{ts}",
+            patient_id=pid,
+            test_id=test.id,
+            doctor_id=did,
+            status="completed",
+            amount=250,
+            order_date=datetime.now(),
+        ))
+        db_session.add(PatientLabOrder(
+            order_number=f"LO-IP-{ts}",
+            patient_id=pid,
+            test_id=test.id,
+            doctor_id=did,
+            status="completed",
+            amount=800,
+            order_date=datetime.now(),
+            inpatient_bill_id=admission_bill.id,
+        ))
+        counter = PharmacySale(
+            sale_number=f"PS-OP-{ts}",
+            hospital_id=hid,
+            sale_date=datetime.now(),
+            status="completed",
+            grand_total=120,
+            patient_ip_id=patient.patient_id,
+            patient_name="John Doe",
+            doctor_name="Dr. Smith",
+            billing_mode="cash_at_pharmacy",
+        )
+        ip_sale = PharmacySale(
+            sale_number=f"PS-IP-{ts}",
+            hospital_id=hid,
+            sale_date=datetime.now(),
+            status="completed",
+            grand_total=400,
+            patient_ip_id=patient.patient_id,
+            doctor_name="Dr. Smith",
+            billing_mode="inpatient_bill",
+            inpatient_bill_id=admission_bill.id,
+        )
+        old_sale = PharmacySale(
+            sale_number=f"PS-OLD-{ts}",
+            hospital_id=hid,
+            sale_date=datetime.now() - timedelta(days=120),
+            status="completed",
+            grand_total=999,
+            patient_ip_id=patient.patient_id,
+            doctor_name="Dr. Smith",
+            billing_mode="cash_at_pharmacy",
+        )
+        db_session.add_all([counter, ip_sale, old_sale])
+        db_session.flush()
+        db_session.add(PharmacySaleReturn(
+            return_number=f"RET-{ts}",
+            return_date=date.today(),
+            sale_id=counter.id,
+            grand_total=20,
+            status="confirmed",
+            hospital_id=hid,
+        ))
+        referral = Referral(
+            name="City Clinic",
+            phone="9000011122",
+            hospital_id=hid,
+        )
+        db_session.add(referral)
+        db_session.commit()
+        referral_id = referral.id
+
+        doctor = client.get("/api/hospital/billing/reports/doctor-revenue", headers=auth_headers)
+        assert doctor.status_code == 200, doctor.text
+        doc_rows = doctor.json()["rows"]
+        doc = next(row for row in doc_rows if row["doctor_id"] == did)
+        assert num(doc, "lab_revenue") == num(base_doc_row, "lab_revenue") + 250
+        assert num(doc, "lab_count") == num(base_doc_row, "lab_count") + 1
+        assert num(doc, "pharmacy_revenue") == num(base_doc_row, "pharmacy_revenue") + 100
+        assert num(doc, "pharmacy_count") == num(base_doc_row, "pharmacy_count") + 1
+        assert num(doc, "admission_revenue") == num(base_doc_row, "admission_revenue")
+        unassigned = next(row for row in doc_rows if row["doctor_name"] == "(Unassigned)")
+        assert num(unassigned, "admission_revenue") == num(base_unassigned, "admission_revenue") + 1000
+
+        ip_only = client.get(
+            "/api/hospital/billing/reports/doctor-revenue?module=pharmacy_ip",
+            headers=auth_headers,
+        )
+        assert ip_only.status_code == 200, ip_only.text
+        ip_doc = next(row for row in ip_only.json()["rows"] if row["doctor_id"] == did)
+        assert num(ip_doc, "pharmacy_revenue") == num(base_ip_row, "pharmacy_revenue") + 400
+        assert num(ip_doc, "lab_revenue") == 0
+
+        patient_report = client.get(
+            f"/api/hospital/billing/reports/patient-revenue?patient_id={pid}",
+            headers=auth_headers,
+        )
+        assert patient_report.status_code == 200, patient_report.text
+        prow = patient_report.json()["rows"][0]
+        assert prow["patient_id"] == pid
+        assert num(prow, "lab_revenue") == num(base_prow, "lab_revenue") + 250
+        assert num(prow, "pharmacy_revenue") == num(base_prow, "pharmacy_revenue") + 100
+        assert num(prow, "admission_revenue") == num(base_prow, "admission_revenue") + 1000
+        assert num(prow, "other_revenue") == num(base_prow, "other_revenue") + 75
+        assert prow["total_revenue"] == round(
+            num(prow, "consultation_revenue") + num(prow, "lab_revenue") + num(prow, "pharmacy_revenue")
+            + num(prow, "admission_revenue") + num(prow, "other_revenue"),
+            2,
+        )
+
+        referral_report = client.get(
+            "/api/hospital/billing/reports/referral-revenue",
+            headers=auth_headers,
+        )
+        assert referral_report.status_code == 200, referral_report.text
+        city = next(row for row in referral_report.json()["rows"] if row["referral_id"] == referral_id)
+        assert city["referral_name"] == "City Clinic"
+        assert city["patient_count"] == 1
+        assert city["pharmacy_revenue"] == prow["pharmacy_revenue"]
+        assert city["lab_revenue"] == prow["lab_revenue"]
+        assert city["admission_revenue"] == prow["admission_revenue"]
+        assert city["total_revenue"] == round(
+            city["consultation_revenue"] + city["lab_revenue"] + city["pharmacy_revenue"] + city["admission_revenue"],
+            2,
+        )
+
+        one = client.get(
+            f"/api/hospital/billing/reports/referral-revenue?referral_id={referral_id}",
+            headers=auth_headers,
+        )
+        assert one.status_code == 200, one.text
+        assert len(one.json()["rows"]) == 1
+        assert one.json()["totals"]["grand_total"] == city["total_revenue"]
+
+        patient.referred_by = previous_referred_by
+        db_session.delete(referral)
+        db_session.commit()
+
+
+class TestBillingDashboard:
+
+    def test_dashboard_summarizes_billed_and_receipts(self, client, auth_headers, db_session, seed_data):
+        bill = _bill_with_payment(
+            db_session, seed_data, total=500, paid=200, method="cash", tax=0, subtotal=500,
+        )
+        today = date.today().isoformat()
+        r = client.get(
+            f"/api/hospital/billing/dashboard?date_from={today}&date_to={today}",
+            headers=auth_headers,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["date_from"] == today
+        assert body["totals"]["billed"] >= 500
+        assert body["totals"]["collected"] >= 200
+        assert body["totals"]["outstanding"] >= 300
+        assert body["totals"]["net_receipts"] >= 200
+        assert body["by_method"].get("cash", 0) >= 200
+        assert any(row["number"] == bill.bill_number for row in body["recent"])
+        assert any(row["number"] == bill.bill_number for row in body["outstanding_invoices"])
+        assert "invoices" not in body
+
+    def test_dashboard_forbidden_for_receptionist(self, client, seed_data):
+        from app.utils.auth import create_access_token
+        token = create_access_token(data={"sub": "testreceptionist"})
+        r = client.get(
+            "/api/hospital/billing/dashboard",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 403
+

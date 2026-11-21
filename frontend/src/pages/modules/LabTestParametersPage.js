@@ -6,7 +6,6 @@ import { Card, CardContent } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
 import { Badge } from '../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
@@ -15,6 +14,19 @@ import {
   FlaskConical, FolderPlus, ChevronRight, Loader2
 } from 'lucide-react';
 import axios from 'axios';
+
+const PARAMETER_FIELD_TYPES = [
+  { value: 'tiered_numeric', label: 'Tiered Ranges (Multiple Levels)' },
+  { value: 'numeric', label: 'Range (Min - Max)' },
+  { value: 'greater_than', label: 'Greater Than (>)' },
+  { value: 'less_than', label: 'Less Than (<)' },
+  { value: 'positive_negative', label: 'Positive / Negative' },
+  { value: 'reactive', label: 'Reactive / Non-Reactive' },
+  { value: 'presence_absence', label: 'Presence / Absence' },
+  { value: 'cloudy_clear', label: 'Cloudy / Clear / Inflamed' },
+  { value: 'manual', label: 'Manual Input' },
+  { value: 'select', label: 'Select (Custom Dropdown)' },
+];
 
 const LabTestParametersPage = () => {
   const { user } = useAuth();
@@ -782,55 +794,63 @@ const LabTestParametersPage = () => {
               </div>
             </div>
 
-            {/* Row 2: Section + Field Type */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label className="text-xs font-medium text-slate-600">Section</Label>
-                <div className="mt-1">
-                  <Input
-                    value={paramForm.section}
-                    onChange={(e) => setParamForm({ ...paramForm, section: e.target.value })}
-                    placeholder="e.g. Differential Count, Liver Enzymes"
-                    list="section-suggestions"
-                  />
-                  {existingSections.length > 0 && (
-                    <datalist id="section-suggestions">
-                      {existingSections.map(s => (
-                        <option key={s} value={s} />
-                      ))}
-                    </datalist>
-                  )}
-                </div>
-                <p className="text-[10px] text-slate-400 mt-0.5">Group parameters under a section heading. Leave empty for ungrouped.</p>
+            {/* Row 2: Section */}
+            <div className="max-w-md">
+              <Label className="text-xs font-medium text-slate-600">Section</Label>
+              <div className="mt-1">
+                <Input
+                  value={paramForm.section}
+                  onChange={(e) => setParamForm({ ...paramForm, section: e.target.value })}
+                  placeholder="e.g. Differential Count, Liver Enzymes"
+                  list="section-suggestions"
+                />
+                {existingSections.length > 0 && (
+                  <datalist id="section-suggestions">
+                    {existingSections.map(s => (
+                      <option key={s} value={s} />
+                    ))}
+                  </datalist>
+                )}
               </div>
-              <div>
-                <Label className="text-xs font-medium text-slate-600">Field Type</Label>
-                <Select value={paramForm.field_type}
-                  onValueChange={(v) => setParamForm({
-                    ...paramForm,
-                    field_type: v,
-                    reference_ranges: [emptyReferenceRow(v, true)],
-                  })}>
-                  <SelectTrigger className="mt-1">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent position="item-aligned" className="z-[200]">
-                    <SelectItem value="tiered_numeric">Tiered Ranges (Multiple Levels)</SelectItem>
-                    <SelectItem value="numeric">Range (Min - Max)</SelectItem>
-                    <SelectItem value="greater_than">Greater Than (&gt;)</SelectItem>
-                    <SelectItem value="less_than">Less Than (&lt;)</SelectItem>
-                    <SelectItem value="positive_negative">Positive / Negative</SelectItem>
-                    <SelectItem value="reactive">Reactive / Non-Reactive</SelectItem>
-                    <SelectItem value="presence_absence">Presence / Absence</SelectItem>
-                    <SelectItem value="cloudy_clear">Cloudy / Clear / Inflamed</SelectItem>
-                    <SelectItem value="manual">Manual Input</SelectItem>
-                    <SelectItem value="select">Select (Custom Dropdown)</SelectItem>
-                  </SelectContent>
-                </Select>
-                <p className="text-[10px] text-slate-400 mt-1">
-                  Use <span className="font-medium text-violet-600">Tiered Ranges</span> for lipid-style levels (Desirable / Borderline / High / Very High).
-                </p>
+              <p className="text-[10px] text-slate-400 mt-0.5">Group parameters under a section heading. Leave empty for ungrouped.</p>
+            </div>
+
+            <div>
+              <Label className="text-xs font-medium text-slate-600">Field Type</Label>
+              <div className="mt-1 grid grid-cols-2 gap-1.5" role="radiogroup" aria-label="Field type">
+                {(PARAMETER_FIELD_TYPES.some((opt) => opt.value === paramForm.field_type)
+                  ? PARAMETER_FIELD_TYPES
+                  : [...PARAMETER_FIELD_TYPES, { value: paramForm.field_type, label: paramForm.field_type }]
+                ).map((opt) => {
+                  const selected = paramForm.field_type === opt.value;
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      onClick={() => {
+                        if (opt.value === paramForm.field_type) return;
+                        setParamForm({
+                          ...paramForm,
+                          field_type: opt.value,
+                          reference_ranges: [emptyReferenceRow(opt.value, true)],
+                        });
+                      }}
+                      className={`rounded-md border px-2.5 py-1.5 text-left text-xs font-medium transition-colors ${
+                        selected
+                          ? 'bg-violet-600 text-white border-violet-600'
+                          : 'bg-white text-slate-700 border-slate-200 hover:border-violet-300 hover:bg-violet-50'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
               </div>
+              <p className="text-[10px] text-slate-400 mt-1">
+                Use <span className="font-medium text-violet-600">Tiered Ranges</span> for lipid-style levels (Desirable / Borderline / High / Very High).
+              </p>
             </div>
 
             {/* Custom dropdown values for select type */}

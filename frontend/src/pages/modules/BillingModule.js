@@ -1106,6 +1106,7 @@ const BillingModule = () => {
               <p className="font-medium text-gray-900">Reports moved to the Billing menu</p>
               <p className="text-gray-600">Use Reports in the sidebar for sales, daily collection, doctor revenue, tax, and outstanding — with module, patient, and date filters. GST filing stays on GST Reports and GST Returns.</p>
               <div className="flex flex-wrap gap-2 pt-2">
+                <Button variant="outline" size="sm" onClick={() => navigate('/dashboard/billing/dashboard')}>Dashboard</Button>
                 <Button variant="outline" size="sm" onClick={() => navigate('/dashboard/billing/reports')}>Reports</Button>
                 <Button variant="outline" size="sm" onClick={() => navigate('/dashboard/billing/sales-summary')}>Sales Summary</Button>
                 <Button variant="outline" size="sm" onClick={() => navigate('/dashboard/billing/gst')}>GST Reports</Button>

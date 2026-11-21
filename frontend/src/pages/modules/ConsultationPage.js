@@ -3,6 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
+import { QtyInput } from '../../components/ui/qty-input';
 import { Label } from '../../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
 import { Textarea } from '../../components/ui/textarea';
@@ -17,8 +18,9 @@ import { format } from 'date-fns';
 import { useAuth } from '../../contexts/AuthContext';
 import { canSeeLabTestRates, normalizeUserRoles } from '../../hooks/useNavigationSections';
 import { defaultRateCardId, testPrice } from '../../utils/labPricing';
-import { FREQUENCY_OPTIONS } from '../../utils/prescriptionSchedule';
+import { MEDICINE_QTY_HINT, frequencyScheduleLabel, medicineQuantityOrCalculated, patchMedicineLine } from '../../utils/prescriptionSchedule';
 import MedicineLookupInput from '../../components/inpatient/MedicineLookupInput';
+import { FrequencySelect } from '../../components/prescription/PrescriptionScheduleFields';
 import {
   buildVitalSignsPayload,
   showBmiOutput,
@@ -136,7 +138,7 @@ const ConsultationPage = () => {
     const meds = (existing.medicines || []).map(m => ({
       medicine_id: m.medicine_id || '',
       medicine_name: m.name || '',
-      quantity_prescribed: m.quantity ? parseInt(m.quantity) || 1 : 1,
+      quantity_prescribed: m.quantity ? (parseFloat(m.quantity) || 1) : 1,
       dosage: m.dosage || '',
       frequency_schedule: m.frequency_schedule || '1-0-0',
       food_timing: m.food_timing || 'after_food',
@@ -437,7 +439,9 @@ const ConsultationPage = () => {
   const updateMedication = (index, field, value) => {
     setPrescriptionForm(prev => ({
       ...prev,
-      medications: prev.medications.map((med, i) => i === index ? { ...med, [field]: value } : med)
+      medications: prev.medications.map((med, i) => (
+        i === index ? patchMedicineLine(med, field, value) : med
+      )),
     }));
   };
 
@@ -459,7 +463,7 @@ const ConsultationPage = () => {
         dosage: m.dosage || 'As directed',
         duration: m.duration || 'As directed',
         instructions: m.instructions || null,
-        quantity: m.quantity_prescribed ? String(m.quantity_prescribed) : null,
+        quantity: String(medicineQuantityOrCalculated(m)),
         frequency_schedule: m.frequency_schedule || '1-0-0',
         food_timing: m.food_timing || 'after_food'
       }));
@@ -649,8 +653,6 @@ const ConsultationPage = () => {
 
     setActiveTab(newTab);
   };
-
-  const frequencyOptions = FREQUENCY_OPTIONS;
 
   return (
     <div className="space-y-4">
@@ -863,6 +865,7 @@ const ConsultationPage = () => {
                       <th className="px-2 py-2 font-medium text-gray-500 w-36">Schedule</th>
                       <th className="px-2 py-2 font-medium text-gray-500 w-24">Food</th>
                       <th className="px-2 py-2 font-medium text-gray-500 w-20">Duration</th>
+                      <th className="px-2 py-2 font-medium text-gray-500 w-16" title={MEDICINE_QTY_HINT}>Qty</th>
                       <th className="px-2 py-2 font-medium text-gray-500 w-48">Instructions</th>
                       <th className="px-2 py-2 w-8"></th>
                     </tr>
@@ -890,16 +893,14 @@ const ConsultationPage = () => {
                           </td>
                           <td className="px-2 py-2">
                             <Input value={med.dosage} onChange={(e) => updateMedication(idx, 'dosage', e.target.value)}
-                              placeholder="1 tab" className="h-8 text-sm" />
+                              placeholder="0.5 tab" className="h-8 text-sm" />
                           </td>
                           <td className="px-2 py-2">
-                            <select value={med.frequency_schedule || '1-0-0'}
-                              onChange={(e) => updateMedication(idx, 'frequency_schedule', e.target.value)}
-                              className="w-full h-8 text-xs border border-gray-200 rounded px-1">
-                              {frequencyOptions.map(opt => (
-                                <option key={opt.value} value={opt.value}>{opt.label}</option>
-                              ))}
-                            </select>
+                            <FrequencySelect
+                              value={med.frequency_schedule}
+                              onChange={(v) => updateMedication(idx, 'frequency_schedule', v)}
+                              selectClassName="w-full h-8 text-xs border border-gray-200 rounded px-1 bg-white"
+                            />
                           </td>
                           <td className="px-2 py-2">
                             <select value={med.food_timing || 'after_food'}
@@ -915,6 +916,12 @@ const ConsultationPage = () => {
                           <td className="px-2 py-2">
                             <Input value={med.duration} onChange={(e) => updateMedication(idx, 'duration', e.target.value)}
                               placeholder="7 days" className="h-8 text-sm" />
+                          </td>
+                          <td className="px-2 py-2">
+                            <QtyInput min="0.01" step="any" value={med.quantity_prescribed}
+                              title={MEDICINE_QTY_HINT}
+                              onChange={(e) => updateMedication(idx, 'quantity_prescribed', e.target.value)}
+                              className="h-8 text-sm" />
                           </td>
                           <td className="px-2 py-2">
                             <Input value={med.instructions} onChange={(e) => updateMedication(idx, 'instructions', e.target.value)}
@@ -1497,7 +1504,7 @@ const ConsultationPage = () => {
                                             <span className="font-medium text-gray-800">{m.name || m.medicine_name}</span>
                                             <div className="text-xs text-gray-500 mt-0.5 flex flex-wrap gap-x-3">
                                               {m.dosage && <span>Dosage: {m.dosage}</span>}
-                                              {m.frequency_schedule && <span>Schedule: {m.frequency_schedule}</span>}
+                                              {m.frequency_schedule && <span>Schedule: {frequencyScheduleLabel(m.frequency_schedule)}</span>}
                                               {m.duration && <span>Duration: {m.duration}</span>}
                                               {m.food_timing && <span>{m.food_timing.replace(/_/g, ' ')}</span>}
                                               {m.quantity && <span>Qty: {m.quantity}</span>}

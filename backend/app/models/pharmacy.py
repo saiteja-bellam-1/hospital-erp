@@ -474,7 +474,7 @@ class PharmacySale(Base):
 
     # Patient info (free text, not FK-linked)
     patient_phone = Column(String(20))
-    patient_ip_id = Column(String(50))       # In-patient ID (free text)
+    patient_ip_id = Column(String(50))       # Patient UUID (patients.patient_id), despite the column name
     patient_name = Column(String(150))
     patient_address = Column(Text)
 
@@ -923,8 +923,8 @@ class PrescriptionItem(Base):
     id = Column(Integer, primary_key=True, index=True)
     prescription_id = Column(Integer, ForeignKey("prescriptions.id"), nullable=False)
     medicine_id = Column(Integer, ForeignKey("medicines.id"), nullable=False)
-    quantity_prescribed = Column(Integer, nullable=False)
-    quantity_dispensed = Column(Integer, default=0)
+    quantity_prescribed = Column(Float, nullable=False)
+    quantity_dispensed = Column(Float, default=0)
     dosage = Column(String(100))  # 1 tablet twice daily
     duration = Column(String(50))  # 7 days
     instructions = Column(Text)

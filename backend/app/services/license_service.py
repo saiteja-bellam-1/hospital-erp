@@ -22,6 +22,7 @@ from app.services.license_inspect import (
     inspect_license_file,
     resolve_support_contact,
     seller_public_info,
+    signed_customer_id,
 )
 
 
@@ -197,6 +198,7 @@ def _trial_status_payload(trial: dict, *, expired: bool) -> dict:
         "features": list(TRIAL_FEATURES),
         "hospital_name": None,
         "license_id": None,
+        "customer_id": None,
         "issued_at": trial.get("started_at"),
         "seller_info": None,
         "support_contact": None,
@@ -229,6 +231,7 @@ def _license_record_status(db: Session, license_record) -> dict:
         "features": license_record.features or [],
         "hospital_name": license_record.hospital_name,
         "license_id": license_record.license_id,
+        "customer_id": getattr(license_record, "customer_id", None) or None,
         "issued_at": license_record.issued_at.isoformat(),
         "seller_info": seller_public_info(license_record.seller_info),
         "support_contact": resolve_support_contact(
@@ -310,8 +313,12 @@ def upload_license(db: Session, file_content: str, uploaded_by: int = None) -> d
     if not seller_info:
         support_info = resolve_support_contact(None, license_data.get("support"))
 
+    customer_code = signed_customer_id(license_data)
+
     if existing:
         # Update existing record
+        if customer_code:
+            existing.customer_id = customer_code
         existing.hospital_id = license_data.get("hospital_id", existing.hospital_id)
         existing.hospital_name = license_data.get("hospital_name", existing.hospital_name)
         existing.plan = license_data.get("plan", existing.plan)
@@ -330,6 +337,7 @@ def upload_license(db: Session, file_content: str, uploaded_by: int = None) -> d
         # Create new license record
         new_license = License(
             license_id=license_data["license_id"],
+            customer_id=customer_code,
             hospital_id=license_data.get("hospital_id", ""),
             hospital_name=license_data.get("hospital_name", ""),
             plan=license_data.get("plan", "standard"),

@@ -1,6 +1,6 @@
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import axios from 'axios';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
@@ -81,9 +81,23 @@ function clearCartStorage() {
   sessionStorage.removeItem(CART_KEY);
 }
 
+function patientFromRx(rx) {
+  const name = (rx?.patient_name || '').trim();
+  const parts = name.split(/\s+/).filter(Boolean);
+  if (!rx?.patient_id && !name) return null;
+  return {
+    patient_id: rx.patient_id || '',
+    first_name: parts[0] || name,
+    last_name: parts.slice(1).join(' '),
+    primary_phone: '',
+    address: '',
+  };
+}
+
 export default function SalesCounter() {
   const { toast } = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
   const { saleId } = useParams();
   const isEditing = Boolean(saleId);
   const { activeStoreId, activeStore, storeLocked } = usePharmacyStore();
@@ -94,6 +108,7 @@ export default function SalesCounter() {
     doctor_number: '', doctor_name: '', payment_type: 'cash',
   });
   const [billingMode, setBillingMode] = useState('cash_at_pharmacy');
+  const [patientAdmissionNumber, setPatientAdmissionNumber] = useState('');
   const [taxMode, setTaxMode] = useState('inclusive');
   const [hsnList, setHsnList] = useState([]);
   const [items, setItems] = useState([]);
@@ -123,6 +138,11 @@ export default function SalesCounter() {
     default_rate_tier_credit: 'A',
     default_tax_mode_sales: 'inclusive',
   });
+  // Set when Dispense opens this counter with a specific Rx, so patient
+  // search does not replace that cart with a different prescription.
+  const explicitRxRef = useRef(null);
+  const explicitStoreRef = useRef(null);
+  const loadedDispenseKey = useRef('');
 
   const counterStoreId = editingSale?.store_id || activeStoreId;
   const canSelectRateTier = hasPerm('select_rate_tier');
@@ -163,6 +183,7 @@ export default function SalesCounter() {
 
   useEffect(() => {
     if (isEditing || cartRestored || !activeStoreId) return;
+    if (location.state?.dispenseRx || explicitRxRef.current) return;
     const saved = loadCart();
     let cancelled = false;
     (async () => {
@@ -194,7 +215,7 @@ export default function SalesCounter() {
     return () => { cancelled = true; };
   // loadBatchesForMedicine closes over activeStoreId; restore runs once per store.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeStoreId, cartRestored, isEditing]);
+  }, [activeStoreId, cartRestored, isEditing, location.state]);
 
   useEffect(() => {
     if (!saleId) return;
@@ -205,7 +226,12 @@ export default function SalesCounter() {
         const r = await axios.get(`/api/pharmacy/sales/${saleId}`);
         const sale = r.data || {};
         if (cancelled) return;
-        setEditingSale({ id: sale.id, sale_number: sale.sale_number, store_id: sale.store_id });
+        setEditingSale({
+          id: sale.id,
+          sale_number: sale.sale_number,
+          store_id: sale.store_id,
+          admission_number: sale.admission_number || '',
+        });
         setCustomer({
           patient_phone: sale.patient_phone || '',
           patient_ip_id: sale.patient_ip_id || '',
@@ -357,7 +383,26 @@ export default function SalesCounter() {
     if (selectedPatient) setPatientPanelOpen(true);
   }, [selectedPatient]);
 
+  useEffect(() => {
+    const patientUuid = selectedPatient?.patient_id;
+    if (!patientUuid) {
+      setPatientAdmissionNumber('');
+      return undefined;
+    }
+    let cancelled = false;
+    axios.get(`/api/pharmacy/patients/${patientUuid}/active-admission`)
+      .then((r) => {
+        if (!cancelled) setPatientAdmissionNumber(r.data?.admission_number || '');
+      })
+      .catch(() => {
+        if (!cancelled) setPatientAdmissionNumber('');
+      });
+    return () => { cancelled = true; };
+  }, [selectedPatient?.patient_id]);
+
   const handlePatientChange = (patient) => {
+    explicitRxRef.current = null;
+    explicitStoreRef.current = null;
     setSelectedPatient(patient);
     setPatientPrescriptions([]);
     setActivePrescription(null);
@@ -408,13 +453,23 @@ export default function SalesCounter() {
 
   const loadPrescriptionIntoPos = async (rx) => {
     if (!rx) return;
+    explicitRxRef.current = rx.id;
+    explicitStoreRef.current = counterStoreId;
     setLoadingPrescription(true);
     try {
       const cartLines = await Promise.all((rx.items || [])
-        .filter((item) => Number(item.quantity_remaining || 0) > 0)
+        .filter((item) => Number(item.quantity_remaining || 0) > 0 && item.medicine_id)
         .map(async (item) => {
-          const medR = await axios.get(`/api/pharmacy/medicines/${item.medicine_id}`);
-          const medicine = medR.data;
+          let medicine = {
+            id: item.medicine_id,
+            name: item.medicine_name || `Medicine #${item.medicine_id}`,
+            medicine_code: item.is_unmapped ? 'UNMAPPED' : '',
+            strip_conversion_factor: item.strip_conversion_factor || 1,
+          };
+          try {
+            const medR = await axios.get(`/api/pharmacy/medicines/${item.medicine_id}`);
+            medicine = medR.data || medicine;
+          } catch { /* keep the line so the pharmacist can still see it */ }
           const batches = await loadBatchesForMedicine(item.medicine_id);
           const nearest = batches[0] || null;
           return {
@@ -434,11 +489,18 @@ export default function SalesCounter() {
         }));
       setItems(cartLines);
       setActivePrescription(rx);
-      setBillingMode('cash_at_pharmacy');
-      setCustomer((s) => ({ ...s, doctor_name: rx.doctor_name || s.doctor_name }));
+      setBillingMode(rx.admission_id ? 'inpatient_bill' : 'cash_at_pharmacy');
+      setCustomer((s) => ({
+        ...s,
+        patient_ip_id: rx.patient_id || s.patient_ip_id,
+        patient_name: (rx.patient_name || '').trim() || s.patient_name,
+        doctor_name: rx.doctor_name || s.doctor_name,
+      }));
       toast({
         title: `Prescription ${rx.prescription_number} loaded`,
-        description: `${cartLines.length} item(s) added to POS. Quantities can be edited before billing.`,
+        description: cartLines.length
+          ? `${cartLines.length} item(s) in the cart. Choose a batch, qty, and rate, then save.`
+          : 'Nothing left to dispense on this prescription.',
       });
     } catch (e) {
       setActivePrescription(null);
@@ -451,30 +513,75 @@ export default function SalesCounter() {
   useEffect(() => {
     if (isEditing || !selectedPatient?.patient_id || !counterStoreId) return;
     let cancelled = false;
-    setLoadingPrescription(true);
+    let handedOff = false;
+    const keepLoadedRx = explicitRxRef.current && explicitStoreRef.current === counterStoreId;
+    if (!keepLoadedRx) setLoadingPrescription(true);
     axios.get('/api/pharmacy/prescriptions/pending', {
       params: { patient_id: selectedPatient.patient_id },
     }).then(async (r) => {
       if (cancelled) return;
-      const outpatientRows = (r.data || []).filter((rx) => !rx.admission_id);
+      const all = r.data || [];
+      const outpatientRows = all.filter((rx) => !rx.admission_id);
       setPatientPrescriptions(outpatientRows);
+      if (keepLoadedRx) return;
+      if (explicitRxRef.current) {
+        const match = all.find((rx) => rx.id === explicitRxRef.current);
+        if (match) {
+          handedOff = true;
+          await loadPrescriptionIntoPos(match);
+          return;
+        }
+      }
       if (outpatientRows.length > 0) {
+        handedOff = true;
         await loadPrescriptionIntoPos(outpatientRows[0]);
-      } else {
+      } else if (!explicitRxRef.current) {
         setActivePrescription(null);
       }
     }).catch(() => {
       if (!cancelled) {
         setPatientPrescriptions([]);
-        setActivePrescription(null);
+        if (!explicitRxRef.current) setActivePrescription(null);
       }
     }).finally(() => {
-      if (!cancelled) setLoadingPrescription(false);
+      if (!cancelled && !handedOff && !keepLoadedRx) setLoadingPrescription(false);
     });
     return () => { cancelled = true; };
   // The loader intentionally runs when patient/store selection changes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isEditing, selectedPatient?.patient_id, counterStoreId]);
+
+  useEffect(() => {
+    const rx = location.state?.dispenseRx;
+    if (isEditing || !rx || !counterStoreId) return;
+    const key = `${rx.id}:${counterStoreId}`;
+    if (loadedDispenseKey.current === key) return;
+    let cancelled = false;
+    explicitRxRef.current = rx.id;
+    explicitStoreRef.current = counterStoreId;
+    const patient = patientFromRx(rx);
+    if (patient?.patient_id) {
+      setSelectedPatient(patient);
+      setPatientPanelOpen(true);
+    }
+    setCustomer((s) => ({
+      ...s,
+      patient_ip_id: rx.patient_id || '',
+      patient_name: (rx.patient_name || '').trim(),
+      doctor_name: rx.doctor_name || s.doctor_name,
+    }));
+    setBillingMode(rx.admission_id ? 'inpatient_bill' : 'cash_at_pharmacy');
+    (async () => {
+      await loadPrescriptionIntoPos(rx);
+      if (cancelled) return;
+      loadedDispenseKey.current = key;
+      setCartRestored(true);
+      navigate('/dashboard/pharmacy/sales-counter', { replace: true, state: null });
+    })();
+    return () => { cancelled = true; };
+  // Load once per Rx + store. The loader closes over the current store's batches.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state, counterStoreId, isEditing]);
 
   const addLine = async (med, { barcodeScanned = false, batchFromScan = null } = {}) => {
     const batches = await loadBatchesForMedicine(med.id);
@@ -765,6 +872,9 @@ export default function SalesCounter() {
       setLastSale(d);
       setItems([]);
       clearCartStorage();
+      explicitRxRef.current = null;
+      explicitStoreRef.current = null;
+      loadedDispenseKey.current = '';
       setSelectedPatient(null);
       setPatientPrescriptions([]);
       setActivePrescription(null);
@@ -785,6 +895,15 @@ export default function SalesCounter() {
       ? customer.patient_name
       : 'Walk-in (optional)';
 
+  // Admission number (ADM-…) for an inpatient prescription or an admission bill.
+  // patient_ip_id stays the patient UUID and is still sent with the sale.
+  const admissionIdShown = (
+    activePrescription?.admission_number
+    || editingSale?.admission_number
+    || (billingMode === 'inpatient_bill' ? patientAdmissionNumber : '')
+    || ''
+  );
+
   const compactInput = 'h-8 text-sm';
   const numberInputClass = `h-8 w-full min-w-0 text-center px-1 ${pharmacyNoSpinInputClass}`;
 
@@ -795,6 +914,9 @@ export default function SalesCounter() {
     }
     setItems([]);
     setLastSale(null);
+    explicitRxRef.current = null;
+    explicitStoreRef.current = null;
+    loadedDispenseKey.current = '';
     setSelectedPatient(null);
     setPatientPrescriptions([]);
     setActivePrescription(null);
@@ -851,7 +973,11 @@ export default function SalesCounter() {
         <CardHeader className="py-2 px-3 shrink-0 space-y-0">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <CardTitle className="text-base">
-              {isEditing ? `Edit Sale ${editingSale?.sale_number || ''}` : 'Add Items'}
+              {isEditing
+                ? `Edit Sale ${editingSale?.sale_number || ''}`
+                : activePrescription
+                  ? `Dispense ${activePrescription.prescription_number}`
+                  : 'Add Items'}
             </CardTitle>
             <div className="flex items-center gap-1.5 flex-wrap justify-end">
               <PharmacyStoreSelector compact posMode={storeLocked || !!activeStore} />
@@ -1114,31 +1240,40 @@ export default function SalesCounter() {
           {selectedPatient && (
             <div className="rounded-md border bg-blue-50/60 px-2.5 py-2 text-xs">
               {loadingPrescription ? (
-                <span className="text-blue-700">Checking pending outpatient prescriptions…</span>
-              ) : patientPrescriptions.length === 0 ? (
-                <span className="text-gray-500">No pending outpatient prescription found.</span>
+                <span className="text-blue-700">Loading prescription into the counter…</span>
               ) : (
                 <div className="space-y-1.5">
-                  <div className="font-medium text-blue-900">
-                    Pending prescription{patientPrescriptions.length > 1 ? 's' : ''}
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {patientPrescriptions.map((rx) => (
-                      <Button
-                        key={rx.id}
-                        type="button"
-                        size="sm"
-                        variant={activePrescription?.id === rx.id ? 'default' : 'outline'}
-                        className="h-7 text-xs"
-                        onClick={() => loadPrescriptionIntoPos(rx)}
-                        disabled={loadingPrescription}
-                      >
-                        {rx.prescription_number} · {rx.items.length} item(s)
-                      </Button>
-                    ))}
-                  </div>
                   {activePrescription && (
-                    <p className="text-blue-700">Loaded into POS — edit quantities, batches, or discounts before saving.</p>
+                    <p className="text-blue-800">
+                      {activePrescription.prescription_number} is in the cart.
+                      Click a batch to choose it, then adjust qty, rate, or discount and save.
+                      {activePrescription.admission_id ? ' Inpatient medicines can be added to the admission bill.' : ''}
+                    </p>
+                  )}
+                  {patientPrescriptions.length > 0 && (
+                    <>
+                      <div className="font-medium text-blue-900">
+                        Pending prescription{patientPrescriptions.length > 1 ? 's' : ''}
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {patientPrescriptions.map((rx) => (
+                          <Button
+                            key={rx.id}
+                            type="button"
+                            size="sm"
+                            variant={activePrescription?.id === rx.id ? 'default' : 'outline'}
+                            className="h-7 text-xs"
+                            onClick={() => loadPrescriptionIntoPos(rx)}
+                            disabled={loadingPrescription}
+                          >
+                            {rx.prescription_number} · {rx.items.length} item(s)
+                          </Button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                  {!activePrescription && patientPrescriptions.length === 0 && (
+                    <span className="text-gray-500">No pending outpatient prescription found.</span>
                   )}
                 </div>
               )}
@@ -1146,7 +1281,10 @@ export default function SalesCounter() {
           )}
           <div className="grid grid-cols-2 gap-2">
             <div><Label className="text-xs">Phone</Label><Input className={compactInput} value={customer.patient_phone} onChange={e => setC('patient_phone', e.target.value)} /></div>
-            <div><Label className="text-xs">IP-ID</Label><Input className={compactInput} value={customer.patient_ip_id} onChange={e => setC('patient_ip_id', e.target.value)} /></div>
+            <div>
+              <Label className="text-xs">Admission ID</Label>
+              <Input className={`${compactInput} bg-gray-50`} value={admissionIdShown} readOnly placeholder="—" />
+            </div>
             <div className="col-span-2"><Label className="text-xs">Patient Name</Label><Input className={compactInput} value={customer.patient_name} onChange={e => setC('patient_name', e.target.value)} /></div>
             <div className="col-span-2"><Label className="text-xs">Address</Label><Input className={compactInput} value={customer.patient_address} onChange={e => setC('patient_address', e.target.value)} /></div>
             <div><Label className="text-xs">Doctor #</Label><Input className={compactInput} value={customer.doctor_number} onChange={e => setC('doctor_number', e.target.value)} /></div>

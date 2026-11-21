@@ -19,6 +19,7 @@ CANONICAL_SYSTEM_MODULES: Sequence[Tuple[str, str, bool, bool]] = (
     ("lab", "Laboratory", False, False),
     ("pharmacy", "Pharmacy", False, False),
     ("physiotherapy", "Physiotherapy", False, False),
+    ("art", "Fertility (ART)", False, False),
     ("ehr", "Electronic Health Records", True, False),
     ("billing", "Billing", True, True),
     ("admin", "Administration", True, True),

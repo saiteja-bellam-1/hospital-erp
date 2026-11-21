@@ -80,11 +80,113 @@ def _seed_default_admin(conn):
     )
 
 
+# Unambiguous alphabet — no 0/O, 1/I/L — so IDs can be read over the phone.
+LICENSE_ID_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+LICENSE_ID_LENGTH = 8
+CUSTOMER_CODE_PREFIX = "C"
+CUSTOMER_CODE_LENGTH = 8
+TERMINAL_LICENSE_STATUSES = ("renewed", "rebound", "revoked")
+
+
+def generate_license_id() -> str:
+    return "".join(secrets.choice(LICENSE_ID_ALPHABET) for _ in range(LICENSE_ID_LENGTH))
+
+
+def generate_unique_license_id(conn) -> str:
+    while True:
+        candidate = generate_license_id()
+        row = conn.execute("SELECT 1 FROM licenses WHERE license_id = ?", (candidate,)).fetchone()
+        if row is None:
+            return candidate
+
+
+def generate_customer_code() -> str:
+    """Public customer code: C plus 7 unambiguous characters (8 total)."""
+    random_len = CUSTOMER_CODE_LENGTH - len(CUSTOMER_CODE_PREFIX)
+    suffix = "".join(secrets.choice(LICENSE_ID_ALPHABET) for _ in range(random_len))
+    return f"{CUSTOMER_CODE_PREFIX}{suffix}"
+
+
+def generate_unique_customer_code(conn) -> str:
+    while True:
+        candidate = generate_customer_code()
+        row = conn.execute(
+            "SELECT 1 FROM customers WHERE customer_code = ?", (candidate,)
+        ).fetchone()
+        if row is None:
+            return candidate
+
+
+def _ensure_customer_codes(conn):
+    try:
+        conn.execute("ALTER TABLE customers ADD COLUMN customer_code TEXT")
+    except Exception:
+        pass
+    missing = conn.execute(
+        "SELECT id FROM customers WHERE customer_code IS NULL OR TRIM(customer_code) = ''"
+    ).fetchall()
+    for row in missing:
+        code = generate_unique_customer_code(conn)
+        conn.execute(
+            "UPDATE customers SET customer_code = ? WHERE id = ?",
+            (code, row["id"]),
+        )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_customer_code ON customers(customer_code)"
+    )
+
+
+def _parse_license_predecessor(notes: str):
+    text = (notes or "").strip()
+    if text.startswith("Renewed from "):
+        token = text[len("Renewed from "):].strip().split()
+        return "renewed", (token[0] if token else None)
+    if text.startswith("Rebound from "):
+        token = text[len("Rebound from "):].strip().split()
+        return "rebound", (token[0] if token else None)
+    return None, None
+
+
+def _backfill_license_history(conn):
+    """Fill predecessor links and events for licenses created before the timeline existed."""
+    rows = conn.execute(
+        "SELECT license_id, customer_id, notes, created_at, issued_at, supersedes_license_id FROM licenses"
+    ).fetchall()
+    for row in rows:
+        event_type, related = _parse_license_predecessor(row["notes"] or "")
+        if related and not row["supersedes_license_id"]:
+            conn.execute(
+                "UPDATE licenses SET supersedes_license_id = ? WHERE license_id = ?",
+                (related, row["license_id"]),
+            )
+        existing = conn.execute(
+            "SELECT 1 FROM license_events WHERE license_id = ? LIMIT 1",
+            (row["license_id"],),
+        ).fetchone()
+        if existing:
+            continue
+        created = row["created_at"] or row["issued_at"]
+        conn.execute(
+            """INSERT INTO license_events
+               (customer_id, license_id, event_type, related_license_id, actor, summary, created_at)
+               VALUES (?, ?, 'issued', NULL, NULL, ?, ?)""",
+            (row["customer_id"], row["license_id"], "License issued", created),
+        )
+        if event_type and related:
+            conn.execute(
+                """INSERT INTO license_events
+                   (customer_id, license_id, event_type, related_license_id, actor, summary, created_at)
+                   VALUES (?, ?, ?, ?, NULL, ?, ?)""",
+                (row["customer_id"], row["license_id"], event_type, related, row["notes"], created),
+            )
+
+
 def init_db():
     conn = get_db()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS customers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_code TEXT,
             hospital_name TEXT NOT NULL,
             hospital_id TEXT,
             contact_person TEXT,
@@ -116,6 +218,7 @@ def init_db():
             status TEXT DEFAULT 'active',
             lic_file_content TEXT,
             notes TEXT,
+            supersedes_license_id TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (customer_id) REFERENCES customers(id)
         )
@@ -181,6 +284,25 @@ def init_db():
             FOREIGN KEY (created_by_user_id) REFERENCES users(id)
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS license_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER,
+            license_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            related_license_id TEXT,
+            actor TEXT,
+            summary TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (customer_id) REFERENCES customers(id)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_license_events_customer ON license_events(customer_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_license_events_license ON license_events(license_id)"
+    )
     # Add customer_id column to licenses if missing (migration for existing DBs)
     try:
         conn.execute("ALTER TABLE licenses ADD COLUMN customer_id INTEGER REFERENCES customers(id)")
@@ -191,6 +313,12 @@ def init_db():
         conn.execute("ALTER TABLE customers ADD COLUMN gst_number TEXT")
     except Exception:
         pass
+    try:
+        conn.execute("ALTER TABLE licenses ADD COLUMN supersedes_license_id TEXT")
+    except Exception:
+        pass
+    _ensure_customer_codes(conn)
+    _backfill_license_history(conn)
     for _col, _typedef in (("logo_mime", "TEXT"), ("logo_data", "TEXT"), ("email", "TEXT")):
         try:
             conn.execute(f"ALTER TABLE sellers ADD COLUMN {_col} {_typedef}")
@@ -254,27 +382,6 @@ def require_admin(user: dict = Depends(get_current_user)) -> dict:
 
 def is_admin(user: dict) -> bool:
     return user.get("role") == "admin"
-
-
-# ============================================================
-# License ID generation
-# ============================================================
-
-# Unambiguous alphabet — no 0/O, 1/I/L — so IDs can be read over the phone
-LICENSE_ID_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-LICENSE_ID_LENGTH = 8
-
-
-def generate_license_id() -> str:
-    return "".join(secrets.choice(LICENSE_ID_ALPHABET) for _ in range(LICENSE_ID_LENGTH))
-
-
-def generate_unique_license_id(conn) -> str:
-    while True:
-        candidate = generate_license_id()
-        row = conn.execute("SELECT 1 FROM licenses WHERE license_id = ?", (candidate,)).fetchone()
-        if row is None:
-            return candidate
 
 
 # ============================================================
@@ -842,6 +949,7 @@ def _support_log_with_customer(conn, row) -> dict:
     keys = row.keys()
     rec["hospital_name"] = row["hospital_name"] if "hospital_name" in keys else None
     rec["hospital_id"] = row["hospital_id"] if "hospital_id" in keys else None
+    rec["customer_code"] = row["customer_code"] if "customer_code" in keys else None
     rec["customer_phone"] = row["customer_phone"] if "customer_phone" in keys else None
     return rec
 
@@ -897,7 +1005,7 @@ def _support_dashboard_stats(conn, user: dict = None, mine_only: bool = False) -
 
     # Recent tickets with customer name
     recent_sql = f"""
-        SELECT s.*, c.hospital_name, c.hospital_id, c.phone AS customer_phone
+        SELECT s.*, c.hospital_name, c.hospital_id, c.customer_code, c.phone AS customer_phone
         FROM support_logs s
         JOIN customers c ON c.id = s.customer_id
         {"WHERE (s.assistant_user_id = ? OR s.created_by_user_id = ?)" if mine_only and user else ""}
@@ -957,14 +1065,14 @@ def list_all_support_logs(
     if search:
         q = f"%{search.strip()}%"
         clauses.append(
-            "(c.hospital_name LIKE ? OR c.hospital_id LIKE ? OR s.operator_name LIKE ? "
+            "(c.hospital_name LIKE ? OR c.hospital_id LIKE ? OR c.customer_code LIKE ? OR s.operator_name LIKE ? "
             "OR s.cell_no LIKE ? OR s.problem LIKE ?)"
         )
-        params.extend([q, q, q, q, q])
+        params.extend([q, q, q, q, q, q])
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     rows = conn.execute(
-        f"""SELECT s.*, c.hospital_name, c.hospital_id, c.phone AS customer_phone
+        f"""SELECT s.*, c.hospital_name, c.hospital_id, c.customer_code, c.phone AS customer_phone
             FROM support_logs s
             JOIN customers c ON c.id = s.customer_id
             {where}
@@ -1040,6 +1148,74 @@ def dashboard(user: dict = Depends(get_current_user)):
     }
 
 
+def _license_days_and_status(expires_at: str, stored_status: str, now: datetime):
+    exp = datetime.fromisoformat(expires_at).replace(tzinfo=timezone.utc)
+    days_left = (exp - now).days
+    if stored_status in TERMINAL_LICENSE_STATUSES:
+        return days_left, stored_status
+    if days_left > 30:
+        return days_left, "active"
+    if days_left > 0:
+        return days_left, "expiring_soon"
+    return days_left, "expired"
+
+
+def _actor_name(user: Optional[dict]) -> Optional[str]:
+    if not user:
+        return None
+    return user.get("full_name") or user.get("username")
+
+
+def _record_license_event(
+    conn,
+    *,
+    customer_id,
+    license_id: str,
+    event_type: str,
+    related_license_id: Optional[str] = None,
+    actor: Optional[str] = None,
+    summary: Optional[str] = None,
+    created_at: Optional[str] = None,
+):
+    conn.execute(
+        """INSERT INTO license_events
+           (customer_id, license_id, event_type, related_license_id, actor, summary, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            customer_id,
+            license_id,
+            event_type,
+            related_license_id,
+            actor,
+            summary,
+            created_at or datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+
+
+def _customer_code_for(conn, customer_pk: Optional[int]) -> Optional[str]:
+    """Return the public customer code, assigning one if a legacy row is missing it."""
+    if customer_pk is None:
+        return None
+    row = conn.execute(
+        "SELECT id, customer_code FROM customers WHERE id = ?", (customer_pk,)
+    ).fetchone()
+    if not row:
+        return None
+    if row["customer_code"]:
+        return row["customer_code"]
+    code = generate_unique_customer_code(conn)
+    conn.execute("UPDATE customers SET customer_code = ? WHERE id = ?", (code, row["id"]))
+    return code
+
+
+def _stamp_customer_code(license_data: dict, customer_code: Optional[str]) -> None:
+    if customer_code:
+        license_data["customer_id"] = customer_code
+    else:
+        license_data.pop("customer_id", None)
+
+
 @app.get("/api/licenses")
 def list_licenses(
     search: Optional[str] = None,
@@ -1047,18 +1223,18 @@ def list_licenses(
     _admin: dict = Depends(require_admin),
 ):
     conn = get_db()
-    query = "SELECT * FROM licenses ORDER BY created_at DESC"
-    rows = conn.execute(query).fetchall()
+    rows = conn.execute(
+        """SELECT licenses.*, customers.customer_code AS customer_code
+           FROM licenses
+           LEFT JOIN customers ON customers.id = licenses.customer_id
+           ORDER BY licenses.created_at DESC"""
+    ).fetchall()
     conn.close()
 
     now = datetime.now(timezone.utc)
     results = []
     for r in rows:
-        exp = datetime.fromisoformat(r["expires_at"]).replace(tzinfo=timezone.utc)
-        days_left = (exp - now).days
-        computed_status = "active" if days_left > 0 else "expired"
-        if days_left <= 30 and days_left > 0:
-            computed_status = "expiring_soon"
+        days_left, computed_status = _license_days_and_status(r["expires_at"], r["status"], now)
 
         record = dict(r)
         record.pop("lic_file_content", None)
@@ -1067,12 +1243,22 @@ def list_licenses(
         record["features"] = json.loads(record["features"]) if record["features"] else []
         record["modules"] = json.loads(record["modules"]) if record["modules"] else []
 
-        # Apply filters
         if status and status != "all" and computed_status != status:
             continue
         if search:
             q = search.lower()
-            if q not in record["hospital_name"].lower() and q not in record["hospital_id"].lower() and q not in record["machine_id"].lower():
+            haystack = " ".join(
+                str(record.get(key) or "")
+                for key in (
+                    "hospital_name",
+                    "hospital_id",
+                    "machine_id",
+                    "license_id",
+                    "customer_code",
+                    "supersedes_license_id",
+                )
+            ).lower()
+            if q not in haystack:
                 continue
 
         results.append(record)
@@ -1123,15 +1309,18 @@ def _apply_license_contact(license_data: dict, conn, seller) -> None:
 
 
 @app.post("/api/licenses")
-def create_license(data: LicenseCreate, _admin: dict = Depends(require_admin)):
+def create_license(data: LicenseCreate, admin: dict = Depends(require_admin)):
     now = datetime.now(timezone.utc)
     conn = get_db()
 
-    if data.customer_id is not None:
-        customer = conn.execute("SELECT id FROM customers WHERE id = ?", (data.customer_id,)).fetchone()
-        if not customer:
-            conn.close()
-            raise HTTPException(status_code=404, detail="Customer not found")
+    if data.customer_id is None:
+        conn.close()
+        raise HTTPException(status_code=400, detail="A customer is required")
+    customer = conn.execute("SELECT id FROM customers WHERE id = ?", (data.customer_id,)).fetchone()
+    if not customer:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Customer not found")
+    customer_code = _customer_code_for(conn, data.customer_id)
 
     license_id = generate_unique_license_id(conn)
     expires_at = compute_expiry(now, data.months, data.days)
@@ -1148,6 +1337,7 @@ def create_license(data: LicenseCreate, _admin: dict = Depends(require_admin)):
         "issued_at": now.isoformat(),
         "expires_at": expires_at.isoformat(),
     }
+    _stamp_customer_code(license_data, customer_code)
     _apply_license_contact(license_data, conn, data.seller)
 
     # Embed Google Drive backup config if enabled
@@ -1169,8 +1359,8 @@ def create_license(data: LicenseCreate, _admin: dict = Depends(require_admin)):
 
     conn.execute("""
         INSERT INTO licenses (license_id, customer_id, hospital_id, hospital_name, machine_id, plan, max_users,
-            features, modules, issued_at, expires_at, days, status, lic_file_content, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+            features, modules, issued_at, expires_at, days, status, lic_file_content, notes, supersedes_license_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL)
     """, (
         license_id, data.customer_id, data.hospital_id, data.hospital_name, data.machine_id,
         data.plan, data.max_users,
@@ -1178,19 +1368,31 @@ def create_license(data: LicenseCreate, _admin: dict = Depends(require_admin)):
         now.isoformat(), expires_at.isoformat(),
         total_days, lic_content, data.notes,
     ))
+    _record_license_event(
+        conn,
+        customer_id=data.customer_id,
+        license_id=license_id,
+        event_type="issued",
+        actor=_actor_name(admin),
+        summary="License issued",
+        created_at=now.isoformat(),
+    )
     conn.commit()
     conn.close()
 
-    return {"message": "License generated", "license_id": license_id}
+    return {"message": "License generated", "license_id": license_id, "customer_id": customer_code}
 
 
 @app.post("/api/licenses/{license_id}/renew")
-def renew_license(license_id: str, data: LicenseRenew, _admin: dict = Depends(require_admin)):
+def renew_license(license_id: str, data: LicenseRenew, admin: dict = Depends(require_admin)):
     conn = get_db()
     row = conn.execute("SELECT * FROM licenses WHERE license_id = ?", (license_id,)).fetchone()
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="License not found")
+    if row["status"] in TERMINAL_LICENSE_STATUSES:
+        conn.close()
+        raise HTTPException(status_code=400, detail=f"License is already {row['status']}")
 
     now = datetime.now(timezone.utc)
     new_license_id = generate_unique_license_id(conn)
@@ -1214,6 +1416,8 @@ def renew_license(license_id: str, data: LicenseRenew, _admin: dict = Depends(re
         "issued_at": now.isoformat(),
         "expires_at": expires_at.isoformat(),
     }
+    customer_code = _customer_code_for(conn, row["customer_id"])
+    _stamp_customer_code(license_data, customer_code)
 
     _apply_license_contact(license_data, conn, data.seller)
 
@@ -1252,25 +1456,36 @@ def renew_license(license_id: str, data: LicenseRenew, _admin: dict = Depends(re
     conn.execute("UPDATE licenses SET status = 'renewed' WHERE license_id = ?", (license_id,))
 
     # Insert new (carry over the customer link from the old license)
+    renewal_note = f"Renewed from {license_id}"
     conn.execute("""
         INSERT INTO licenses (license_id, customer_id, hospital_id, hospital_name, machine_id, plan, max_users,
-            features, modules, issued_at, expires_at, days, status, lic_file_content, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+            features, modules, issued_at, expires_at, days, status, lic_file_content, notes, supersedes_license_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
     """, (
         new_license_id, row["customer_id"], row["hospital_id"], row["hospital_name"], row["machine_id"],
         new_plan, new_max_users,
         json.dumps(new_features), row["modules"],
         now.isoformat(), expires_at.isoformat(),
-        total_days, lic_content, f"Renewed from {license_id}",
+        total_days, lic_content, renewal_note, license_id,
     ))
+    _record_license_event(
+        conn,
+        customer_id=row["customer_id"],
+        license_id=new_license_id,
+        event_type="renewed",
+        related_license_id=license_id,
+        actor=_actor_name(admin),
+        summary=renewal_note,
+        created_at=now.isoformat(),
+    )
     conn.commit()
     conn.close()
 
-    return {"message": "License renewed", "license_id": new_license_id}
+    return {"message": "License renewed", "license_id": new_license_id, "customer_id": customer_code}
 
 
 @app.post("/api/licenses/process-rebind")
-async def process_rebind_request(file: UploadFile = File(...), _admin: dict = Depends(require_admin)):
+async def process_rebind_request(file: UploadFile = File(...), admin: dict = Depends(require_admin)):
     """Consume a .rebind.json request file produced by a hospital running this
     product, verify it against the original license stored in this manager's
     DB, then re-issue a fresh .lic for the new machine ID. The original
@@ -1311,7 +1526,7 @@ async def process_rebind_request(file: UploadFile = File(...), _admin: dict = De
             detail="Signature proof mismatch — the rebind request does not correspond to the stored license",
         )
 
-    if row["status"] in ("rebound", "renewed"):
+    if row["status"] in TERMINAL_LICENSE_STATUSES:
         conn.close()
         raise HTTPException(status_code=400, detail=f"License is already {row['status']} — re-issue from the new license instead")
 
@@ -1338,6 +1553,8 @@ async def process_rebind_request(file: UploadFile = File(...), _admin: dict = De
         "issued_at": now.isoformat(),
         "expires_at": old_expires.isoformat(),
     }
+    customer_code = _customer_code_for(conn, row["customer_id"])
+    _stamp_customer_code(license_data, customer_code)
     # Vendor licenses keep the seller block. Direct sales pick up the current
     # product support contact, falling back to whatever the old file carried.
     old_payload = {}
@@ -1354,19 +1571,31 @@ async def process_rebind_request(file: UploadFile = File(...), _admin: dict = De
 
     new_lic = sign_license_data(license_data)
 
+    rebound_note = (
+        f"Rebound from {license_id} (machine {req.get('old_machine_id') or 'unknown'} -> {new_machine_id})"
+    )
     conn.execute("UPDATE licenses SET status = 'rebound' WHERE license_id = ?", (license_id,))
     conn.execute("""
         INSERT INTO licenses (license_id, customer_id, hospital_id, hospital_name, machine_id,
             plan, max_users, features, modules, issued_at, expires_at, days, status,
-            lic_file_content, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+            lic_file_content, notes, supersedes_license_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
     """, (
         new_license_id, row["customer_id"], row["hospital_id"], row["hospital_name"], new_machine_id,
         row["plan"], row["max_users"], row["features"], row["modules"],
         now.isoformat(), old_expires.isoformat(),
-        row["days"], new_lic,
-        f"Rebound from {license_id} (machine {req.get('old_machine_id') or 'unknown'} -> {new_machine_id})",
+        row["days"], new_lic, rebound_note, license_id,
     ))
+    _record_license_event(
+        conn,
+        customer_id=row["customer_id"],
+        license_id=new_license_id,
+        event_type="rebound",
+        related_license_id=license_id,
+        actor=_actor_name(admin),
+        summary=rebound_note,
+        created_at=now.isoformat(),
+    )
     conn.commit()
     conn.close()
 
@@ -1379,6 +1608,7 @@ async def process_rebind_request(file: UploadFile = File(...), _admin: dict = De
             "Content-Disposition": license_content_disposition(row["hospital_name"], new_machine_id),
             "X-New-License-Id": new_license_id,
             "X-Rebound-From": license_id,
+            "X-Customer-Id": customer_code or "",
             "X-Filename": filename,
         },
     )
@@ -1400,12 +1630,30 @@ def download_license(license_id: str, _admin: dict = Depends(require_admin)):
 
 
 @app.delete("/api/licenses/{license_id}")
-def delete_license(license_id: str, _admin: dict = Depends(require_admin)):
+def delete_license(license_id: str, admin: dict = Depends(require_admin)):
+    """Keep the license row and mark it revoked so the ID stays on the customer timeline."""
     conn = get_db()
-    conn.execute("DELETE FROM licenses WHERE license_id = ?", (license_id,))
+    row = conn.execute("SELECT * FROM licenses WHERE license_id = ?", (license_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="License not found")
+    if row["status"] in TERMINAL_LICENSE_STATUSES:
+        conn.close()
+        raise HTTPException(status_code=400, detail=f"License is already {row['status']}")
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute("UPDATE licenses SET status = 'revoked' WHERE license_id = ?", (license_id,))
+    _record_license_event(
+        conn,
+        customer_id=row["customer_id"],
+        license_id=license_id,
+        event_type="revoked",
+        actor=_actor_name(admin),
+        summary="License revoked",
+        created_at=now,
+    )
     conn.commit()
     conn.close()
-    return {"message": "License deleted"}
+    return {"message": "License revoked"}
 
 
 @app.get("/api/keys/status")
@@ -1431,7 +1679,19 @@ def list_customers(search: Optional[str] = None, _user: dict = Depends(get_curre
         rec = dict(r)
         if search:
             q = search.lower()
-            if q not in rec["hospital_name"].lower() and q not in (rec["contact_person"] or "").lower() and q not in (rec["phone"] or "") and q not in (rec.get("gst_number") or "").lower():
+            haystack = " ".join(
+                str(rec.get(key) or "")
+                for key in (
+                    "hospital_name",
+                    "contact_person",
+                    "phone",
+                    "email",
+                    "gst_number",
+                    "hospital_id",
+                    "customer_code",
+                )
+            ).lower()
+            if q not in haystack:
                 continue
         results.append(rec)
     return results
@@ -1440,14 +1700,18 @@ def list_customers(search: Optional[str] = None, _user: dict = Depends(get_curre
 @app.post("/api/customers")
 def create_customer(data: CustomerCreate, _admin: dict = Depends(require_admin)):
     conn = get_db()
+    customer_code = generate_unique_customer_code(conn)
     cur = conn.execute("""
-        INSERT INTO customers (hospital_name, hospital_id, contact_person, phone, email, address, gst_number, machine_id, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (data.hospital_name, data.hospital_id, data.contact_person, data.phone, data.email, data.address, data.gst_number, data.machine_id, data.notes))
+        INSERT INTO customers (customer_code, hospital_name, hospital_id, contact_person, phone, email, address, gst_number, machine_id, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        customer_code, data.hospital_name, data.hospital_id, data.contact_person, data.phone,
+        data.email, data.address, data.gst_number, data.machine_id, data.notes,
+    ))
     conn.commit()
     cid = cur.lastrowid
     conn.close()
-    return {"message": "Customer created", "id": cid}
+    return {"message": "Customer created", "id": cid, "customer_code": customer_code}
 
 
 @app.get("/api/customers/{customer_id}")
@@ -1474,11 +1738,9 @@ def get_customer(customer_id: int, user: dict = Depends(get_current_user)):
     lic_list = []
     for r in licenses:
         rec = dict(r)
-        exp = datetime.fromisoformat(rec["expires_at"]).replace(tzinfo=timezone.utc)
-        rec["days_left"] = (exp - now).days
-        rec["computed_status"] = "active" if rec["days_left"] > 30 else ("expiring_soon" if rec["days_left"] > 0 else "expired")
-        if rec["status"] == "renewed":
-            rec["computed_status"] = "renewed"
+        rec["days_left"], rec["computed_status"] = _license_days_and_status(
+            rec["expires_at"], rec["status"], now
+        )
         rec["features"] = json.loads(rec["features"]) if rec["features"] else []
         # Support agents get license status only — never the signed file
         if not is_admin(user):
@@ -1535,6 +1797,12 @@ def update_customer(customer_id: int, data: CustomerUpdate, _admin: dict = Depen
 @app.delete("/api/customers/{customer_id}")
 def delete_customer(customer_id: int, _admin: dict = Depends(require_admin)):
     conn = get_db()
+    conn.execute(
+        """DELETE FROM license_events
+           WHERE customer_id = ?
+              OR license_id IN (SELECT license_id FROM licenses WHERE customer_id = ?)""",
+        (customer_id, customer_id),
+    )
     conn.execute("DELETE FROM support_logs WHERE customer_id = ?", (customer_id,))
     conn.execute("DELETE FROM payments WHERE customer_id = ?", (customer_id,))
     conn.execute("DELETE FROM licenses WHERE customer_id = ?", (customer_id,))

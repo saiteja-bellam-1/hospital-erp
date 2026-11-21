@@ -43,10 +43,16 @@ from app.models.physiotherapy import (  # noqa: F401
     PhysioTherapistAvailability, PhysioTherapistSpecialSchedule, PhysioAppointment,
     PhysioDocument,
 )
+from app.models.art import (  # noqa: F401
+    ArtCentre, ArtService, ArtPackageTemplate, ArtCase, ArtWorkup, ArtCounsellorNote,
+    ArtDocument, ArtCycle, ArtStimulationDay, ArtAppointment, ArtConsent, ArtCharge,
+    ArtQueueEntry, ArtSpecimen, ArtWitnessLog, ArtTankLog, ArtPartnerBank, ArtDonor,
+    ArtBankUnit, ArtEquipment, ArtGrievance,
+)
 from app.models.settlement import Settlement, SettlementConfig  # noqa: F401
 
 # Import route modules
-from app.routes import auth, patients, admin, system, module_admin, hospital_admin, onboarding, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, backup, referrals, audit, inpatient, outpatient_procedures, pharmacy, canteen, catch_up, physiotherapy
+from app.routes import auth, patients, admin, system, module_admin, hospital_admin, onboarding, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, backup, referrals, audit, inpatient, outpatient_procedures, pharmacy, canteen, catch_up, physiotherapy, art
 from app.middleware.license_middleware import LicenseMiddleware
 from app.middleware.audit_middleware import AuditMiddleware
 from app.middleware.maintenance import MaintenanceMiddleware
@@ -512,6 +518,7 @@ app.include_router(audit.router, prefix="/api/audit", tags=["Audit Logs"])
 app.include_router(inpatient.router, prefix="/api/inpatient", tags=["Inpatient"])
 app.include_router(canteen.router, prefix="/api/canteen", tags=["Canteen"])
 app.include_router(physiotherapy.router, prefix="/api/physiotherapy", tags=["Physiotherapy"])
+app.include_router(art.router, prefix="/api/art", tags=["Fertility ART"])
 app.include_router(catch_up.router, prefix="/api/admin/catch-up", tags=["Catch-up Bills"])
 app.include_router(outpatient_procedures.router, prefix="/api/outpatient", tags=["Outpatient Procedures"])
 

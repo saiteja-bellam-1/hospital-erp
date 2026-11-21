@@ -19,8 +19,8 @@ import axios from 'axios';
 import { format } from 'date-fns';
 import VitalsForm from '../../components/vitals/VitalsForm';
 import MedicineLookupInput from '../../components/inpatient/MedicineLookupInput';
-import PrescriptionScheduleFields from '../../components/prescription/PrescriptionScheduleFields';
-import { BLANK_INPATIENT_RX_ITEM } from '../../utils/prescriptionSchedule';
+import PrescriptionScheduleFields, { FrequencySelect } from '../../components/prescription/PrescriptionScheduleFields';
+import { BLANK_INPATIENT_RX_ITEM, MEDICINE_QTY_HINT, buildDosageInstruction, frequencyScheduleLabel, medicineQuantityOrCalculated, patchMedicineLine } from '../../utils/prescriptionSchedule';
 import { canSeeLabTestRates, normalizeUserRoles } from '../../hooks/useNavigationSections';
 import { useToast } from '../../hooks/use-toast';
 import { printPdfFromUrl } from '../../utils/printPdf';
@@ -327,7 +327,7 @@ const DoctorDashboard = () => {
       .map(it => ({
         medicine_id: it.medicine_id ? parseInt(it.medicine_id) : null,
         medicine_name: it.medicine_id ? null : (it.medicine_name?.trim() || null),
-        quantity_prescribed: Math.max(1, parseInt(it.quantity_prescribed) || 1),
+        quantity_prescribed: medicineQuantityOrCalculated(it),
         dosage: it.dosage?.trim() || '',
         duration: it.duration?.trim() || '',
         frequency_schedule: it.frequency_schedule || '1-0-0',
@@ -789,25 +789,18 @@ const DoctorDashboard = () => {
         medicines: prescriptionForm.medications
           .filter(med => med.medicine_name && med.medicine_name.trim() !== '')
           .map(med => {
-            const schedule = med.frequency_schedule || '1-0-0';
-            const [morning, afternoon, night] = schedule.split('-');
-            const timings = [];
-            if (morning === '1') timings.push('morning');
-            if (afternoon === '1') timings.push('afternoon');
-            if (night === '1') timings.push('night');
-            const frequencyText = timings.length > 0 ? timings.join(', ') : 'once daily';
-            const foodTimingTexts = {
-              'before_food': 'before food', 'after_food': 'after food',
-              'with_food': 'with food', 'on_empty_stomach': 'on empty stomach', 'anytime': 'anytime'
-            };
-            const dosageInstruction = `${med.dosage || '1 dose'} - ${frequencyText} ${foodTimingTexts[med.food_timing] || 'after food'}`;
+            const dosageInstruction = buildDosageInstruction(
+              med.dosage,
+              med.frequency_schedule,
+              med.food_timing,
+            );
             return {
               medicine_id: med.medicine_id ? Number(med.medicine_id) : null,
               name: med.medicine_name,
               dosage: dosageInstruction,
               duration: med.duration || 'Complete course',
               instructions: med.instructions || 'Take as prescribed',
-              quantity: med.quantity_prescribed ? `${med.quantity_prescribed} units` : '1 unit',
+              quantity: String(medicineQuantityOrCalculated(med)),
               frequency_schedule: med.frequency_schedule,
               food_timing: med.food_timing
             };
@@ -929,7 +922,9 @@ const DoctorDashboard = () => {
   const updateMedication = (index, field, value) => {
     setPrescriptionForm(prev => ({
       ...prev,
-      medications: prev.medications.map((med, i) => i === index ? { ...med, [field]: value } : med)
+      medications: prev.medications.map((med, i) => (
+        i === index ? patchMedicineLine(med, field, value) : med
+      )),
     }));
   };
 
@@ -1636,7 +1631,7 @@ const DoctorDashboard = () => {
                                     <span className="font-medium text-gray-800">{medicine.name}</span>
                                     <div className="text-xs text-gray-500 mt-0.5 flex flex-wrap gap-x-3">
                                       {medicine.dosage && <span>Dosage: {medicine.dosage}</span>}
-                                      {medicine.frequency_schedule && <span>Schedule: {medicine.frequency_schedule}</span>}
+                                      {medicine.frequency_schedule && <span>Schedule: {frequencyScheduleLabel(medicine.frequency_schedule)}</span>}
                                       {medicine.duration && <span>Duration: {medicine.duration}</span>}
                                       {medicine.food_timing && <span>{medicine.food_timing.replace(/_/g, ' ')}</span>}
                                       {medicine.quantity && <span>Qty: {medicine.quantity}</span>}
@@ -2256,14 +2251,14 @@ const DoctorDashboard = () => {
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                     <div>
                       <Label className="text-[10px] text-gray-500">Dosage *</Label>
-                      <Input placeholder="1 tab" value={it.dosage}
-                        onChange={e => setInpatientRxForm(p => { const next = [...p.items]; next[idx] = { ...next[idx], dosage: e.target.value }; return { ...p, items: next }; })} />
+                      <Input placeholder="0.5 tab" value={it.dosage}
+                        onChange={e => setInpatientRxForm(p => { const next = [...p.items]; next[idx] = patchMedicineLine(next[idx], 'dosage', e.target.value); return { ...p, items: next }; })} />
                     </div>
                     <PrescriptionScheduleFields
                       frequencySchedule={it.frequency_schedule}
                       foodTiming={it.food_timing}
                       onFrequencyChange={(v) => setInpatientRxForm(p => {
-                        const next = [...p.items]; next[idx] = { ...next[idx], frequency_schedule: v }; return { ...p, items: next };
+                        const next = [...p.items]; next[idx] = patchMedicineLine(next[idx], 'frequency_schedule', v); return { ...p, items: next };
                       })}
                       onFoodTimingChange={(v) => setInpatientRxForm(p => {
                         const next = [...p.items]; next[idx] = { ...next[idx], food_timing: v }; return { ...p, items: next };
@@ -2272,11 +2267,11 @@ const DoctorDashboard = () => {
                     <div>
                       <Label className="text-[10px] text-gray-500">Duration *</Label>
                       <Input placeholder="5 days" value={it.duration}
-                        onChange={e => setInpatientRxForm(p => { const next = [...p.items]; next[idx] = { ...next[idx], duration: e.target.value }; return { ...p, items: next }; })} />
+                        onChange={e => setInpatientRxForm(p => { const next = [...p.items]; next[idx] = patchMedicineLine(next[idx], 'duration', e.target.value); return { ...p, items: next }; })} />
                     </div>
                     <div>
                       <Label className="text-[10px] text-gray-500">Quantity</Label>
-                      <QtyInput min="1" step="1" value={it.quantity_prescribed}
+                      <QtyInput min="0.01" step="any" title={MEDICINE_QTY_HINT} value={it.quantity_prescribed}
                         onChange={e => setInpatientRxForm(p => { const next = [...p.items]; next[idx] = { ...next[idx], quantity_prescribed: e.target.value }; return { ...p, items: next }; })} />
                     </div>
                   </div>
@@ -2469,7 +2464,7 @@ const DoctorDashboard = () => {
                       medications: createdPrescription.medicines.map(m => ({
                         medicine_id: m.medicine_id || '',
                         medicine_name: m.name || '',
-                        quantity_prescribed: m.quantity ? parseInt(m.quantity) || 1 : 1,
+                        quantity_prescribed: m.quantity ? (parseFloat(m.quantity) || 1) : 1,
                         dosage: m.dosage || '',
                         frequency_schedule: m.frequency_schedule || '1-0-0',
                         food_timing: m.food_timing || 'after_food',
@@ -2610,6 +2605,7 @@ const DoctorDashboard = () => {
                       <th className="px-2 py-2 font-medium text-gray-500 w-36">Schedule</th>
                       <th className="px-2 py-2 font-medium text-gray-500 w-24">Food</th>
                       <th className="px-2 py-2 font-medium text-gray-500 w-20">Duration</th>
+                      <th className="px-2 py-2 font-medium text-gray-500 w-16" title={MEDICINE_QTY_HINT}>Qty</th>
                       <th className="px-2 py-2 font-medium text-gray-500 w-48">Instructions</th>
                       <th className="px-2 py-2 w-8"></th>
                     </tr>
@@ -2638,20 +2634,14 @@ const DoctorDashboard = () => {
                           <td className="px-2 py-2">
                             <Input value={medication.dosage}
                               onChange={(e) => updateMedication(index, 'dosage', e.target.value)}
-                              placeholder="1 tab" className="h-8 text-sm" />
+                              placeholder="0.5 tab" className="h-8 text-sm" />
                           </td>
                           <td className="px-2 py-2">
-                            <select value={medication.frequency_schedule || '1-0-0'}
-                              onChange={(e) => updateMedication(index, 'frequency_schedule', e.target.value)}
-                              className="w-full h-8 text-xs border border-gray-200 rounded px-1">
-                              <option value="1-0-0">Morning only</option>
-                              <option value="0-1-0">Afternoon only</option>
-                              <option value="0-0-1">Night only</option>
-                              <option value="1-0-1">Morning & Night</option>
-                              <option value="1-1-0">Morning & Afternoon</option>
-                              <option value="1-1-1">Three times a day</option>
-                              <option value="0-1-1">Afternoon & Night</option>
-                            </select>
+                            <FrequencySelect
+                              value={medication.frequency_schedule}
+                              onChange={(v) => updateMedication(index, 'frequency_schedule', v)}
+                              selectClassName="w-full h-8 text-xs border border-gray-200 rounded px-1 bg-white"
+                            />
                           </td>
                           <td className="px-2 py-2">
                             <select value={medication.food_timing || 'after_food'}
@@ -2668,6 +2658,12 @@ const DoctorDashboard = () => {
                             <Input value={medication.duration}
                               onChange={(e) => updateMedication(index, 'duration', e.target.value)}
                               placeholder="7 days" className="h-8 text-sm" />
+                          </td>
+                          <td className="px-2 py-2">
+                            <QtyInput min="0.01" step="any" value={medication.quantity_prescribed}
+                              title={MEDICINE_QTY_HINT}
+                              onChange={(e) => updateMedication(index, 'quantity_prescribed', e.target.value)}
+                              className="h-8 text-sm" />
                           </td>
                           <td className="px-2 py-2">
                             <Input value={medication.instructions}

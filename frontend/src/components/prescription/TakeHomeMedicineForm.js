@@ -5,10 +5,11 @@ import { QtyInput } from '../ui/qty-input';
 import { Label } from '../ui/label';
 import MedicineLookupInput from '../inpatient/MedicineLookupInput';
 import PrescriptionScheduleFields from './PrescriptionScheduleFields';
+import { MEDICINE_QTY_HINT, patchMedicineLine } from '../../utils/prescriptionSchedule';
 
 /** Single take-home medicine row — used inside the add/edit dialog. */
 export default function TakeHomeMedicineForm({ med, onChange, admissionId }) {
-  const set = (key, val) => onChange({ ...med, [key]: val });
+  const set = (key, val) => onChange(patchMedicineLine(med, key, val, 'quantity'));
 
   return (
     <FormNavContainer mode="grid" className="space-y-3">
@@ -32,7 +33,7 @@ export default function TakeHomeMedicineForm({ med, onChange, admissionId }) {
         <div>
           <Label className="text-xs text-gray-500">Dosage</Label>
           <Input
-            placeholder="500 mg"
+            placeholder="0.5 tab"
             value={med.dosage}
             onChange={(e) => set('dosage', e.target.value)}
           />
@@ -56,9 +57,10 @@ export default function TakeHomeMedicineForm({ med, onChange, admissionId }) {
         <div>
           <Label className="text-xs text-gray-500">Quantity</Label>
           <QtyInput
-            min="1"
-            step="1"
+            min="0.01"
+            step="any"
             placeholder="10"
+            title={MEDICINE_QTY_HINT}
             value={med.quantity}
             onChange={(e) => set('quantity', e.target.value)}
           />

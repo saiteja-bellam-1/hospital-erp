@@ -32,6 +32,7 @@ import LabModule from './modules/LabModule';
 import PharmacyModule from './modules/PharmacyModule';
 import CanteenModule from './modules/CanteenModule';
 import PhysiotherapyModule from './modules/PhysiotherapyModule';
+import ArtModule from './modules/ArtModule';
 import BillingHub from './modules/BillingHub';
 import EHRModule from './modules/EHRModule';
 import InpatientModule from './modules/InpatientModule';
@@ -77,6 +78,12 @@ const HomeDashboard = ({ hasRole, enabledModules }) => {
   if (hasRole('receptionist')) return <ReceptionDashboard />;
   if (hasRole('physiotherapist') && enabledModules.physiotherapy) {
     return <Navigate to="/dashboard/physiotherapy/today" replace />;
+  }
+  if (enabledModules.art && (
+    hasRole('art_frontdesk') || hasRole('art_clinician') || hasRole('art_embryologist')
+    || hasRole('art_counsellor') || hasRole('art_bank_officer')
+  )) {
+    return <Navigate to="/dashboard/art/board" replace />;
   }
   if (hasRole('nurse')) return <NurseDashboard />;
   return <DashboardHome />;
@@ -444,6 +451,7 @@ const DashboardShell = () => {
               <Route path="/pharmacy/*" element={<PharmacyModule />} />
               <Route path="/canteen/*" element={<CanteenModule />} />
               <Route path="/physiotherapy/*" element={<PhysiotherapyModule />} />
+              <Route path="/art/*" element={<ArtModule />} />
               <Route path="/billing/*" element={<BillingHub />} />
               <Route path="/ehr/*" element={<EHRModule />} />
               <Route path="/consultation" element={<ConsultationPage />} />

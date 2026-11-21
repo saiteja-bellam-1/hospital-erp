@@ -377,6 +377,7 @@ def test_pos_inpatient_bill_included_in_admission_charges(
     })
     assert deferred.status_code == 201, deferred.text
     assert deferred.json()["billing_mode"] == "inpatient_bill"
+    assert deferred.json()["admission_number"] == adm.admission_number
     deferred_total = float(deferred.json()["grand_total"])
 
     paid_now = client.post("/api/pharmacy/sales", headers=auth_headers, json={
@@ -386,6 +387,28 @@ def test_pos_inpatient_bill_included_in_admission_charges(
         "items": [line],
     })
     assert paid_now.status_code == 201, paid_now.text
+    assert not paid_now.json().get("admission_number")
+
+    from io import BytesIO
+    from PyPDF2 import PdfReader
+    pdf = client.get(
+        f"/api/pharmacy/sales/{deferred.json()['id']}/invoice/pdf",
+        headers=auth_headers,
+    )
+    assert pdf.status_code == 200, pdf.text
+    bill_text = "\n".join(
+        (page.extract_text() or "") for page in PdfReader(BytesIO(pdf.content)).pages
+    )
+    assert "Admission ID" in bill_text
+    assert adm.admission_number in bill_text
+    assert "Ipno" not in bill_text
+
+    active = client.get(
+        f"/api/pharmacy/patients/{pat.patient_id}/active-admission",
+        headers=auth_headers,
+    )
+    assert active.status_code == 200, active.text
+    assert active.json()["admission_number"] == adm.admission_number
 
     bill = client.get(
         f"/api/inpatient/admissions/{adm.id}/bill",

@@ -11,6 +11,7 @@ import json
 import os
 
 from app.utils.patient_age import age_display_from_data
+from app.utils.prescription_schedule import frequency_schedule_label
 from app.utils.time import format_bill_date, format_system_dt, system_now, to_system_local
 
 DEFAULT_LETTERHEAD_GAP_PT = 100.0
@@ -305,6 +306,18 @@ def _med_route_display(m: dict) -> str:
 
 def _med_timings_display(m: dict) -> str:
     sched = str(m.get('frequency_schedule') or '').strip()
+    interval = frequency_schedule_label(sched)
+    if interval.startswith('Every '):
+        food = m.get('food_timing') or ''
+        food_map = {
+            'before_food': 'before food',
+            'after_food': 'after food',
+            'with_food': 'with food',
+            'on_empty_stomach': 'empty stomach',
+            'anytime': 'anytime',
+        }
+        food_label = food_map.get(food, '')
+        return f"{interval} ({food_label})" if food_label else interval
     if sched and '-' in sched:
         parts = sched.split('-')
         if len(parts) == 3:
@@ -1968,7 +1981,7 @@ class PDFService:
             for idx, item in enumerate(prescription_data.get('items', []), 1):
                 freq = item.get('frequency_schedule', '1-0-0')
                 food = food_timing_map.get(item.get('food_timing', 'after_food'), 'After food')
-                freq_text = f"{freq}\n{food}"
+                freq_text = f"{frequency_schedule_label(freq)}\n{food}"
 
                 med_data.append([
                     Paragraph(str(idx), cell_val),
@@ -5591,7 +5604,7 @@ class PDFService:
 
         Expected `sale_data` keys (enriched by sale_invoice_pdf route):
           sale_number, sale_date, payment_type, status, sales_type, category,
-          patient_name, doctor_name, uhid, opno, ipno,
+          patient_name, doctor_name, uhid, opno, ipno (printed as Admission ID),
           items: [{medicine_name, manufacturer, schedule, batch_number,
                    expiry_date, hsn_code, sgst_pct, cgst_pct, quantity/qty_display,
                    rate, line_total}],
@@ -5669,7 +5682,7 @@ class PDFService:
              lv("Bill Date", sd_str)],
             [lv("Opno", sale_data.get('opno') if sale_data.get('opno') is not None else '0'),
              Paragraph('', cell),
-             lv("Ipno", sale_data.get('ipno') if sale_data.get('ipno') is not None else '0')],
+             lv("Admission ID", sale_data.get('ipno') if sale_data.get('ipno') not in (None, '', '0') else '—')],
             [lv("Doctor Name", sale_data.get('doctor_name') or ''),
              Paragraph('', cell),
              lv("Category", sale_data.get('category') or (sale_data.get('payment_type') or 'CASH').upper())],

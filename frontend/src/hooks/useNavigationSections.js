@@ -8,7 +8,7 @@ import {
   DownloadCloud, Pill, ShoppingCart, Boxes, Truck, BookOpen, LayoutGrid, Plus,
   Warehouse, Tags, Layers, Ruler, Percent, Link2, ArrowLeftRight, Store, Droplets,
   UtensilsCrossed, IndianRupee, Settings2, Undo2, UserCheck, PanelTop, Settings,
-  CreditCard,
+  CreditCard, Heart,
 } from 'lucide-react';
 import { PHARMACY_ROLE_NAMES } from './usePharmacyPermissions';
 import { CANTEEN_ROLE_NAMES } from './useCanteenPermissions';
@@ -162,6 +162,9 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
   // ── BILLING ── always-on hub (ledger + GST / sales reports)
   if (hasAnyRole('receptionist', 'hospital_admin', 'super_admin', 'billing_admin')) {
     const items = [];
+    if (hasAnyRole('hospital_admin', 'super_admin', 'billing_admin')) {
+      add(items, make('Dashboard', LayoutDashboard, '/dashboard/billing/dashboard'));
+    }
     add(items, make('Bills', Receipt, '/dashboard/billing'));
     add(items, make('Referrals', Share2, '/dashboard/billing/referrals'));
     if (hasAnyRole('hospital_admin', 'super_admin', 'billing_admin')) {
@@ -328,6 +331,27 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     if (items.length > 0) sections.push({ label: 'Physiotherapy', items });
   }
 
+  // ── FERTILITY (ART) ──
+  if (enabledModules.art && hasAnyRole(
+    'hospital_admin', 'super_admin', 'billing_admin',
+    'art_frontdesk', 'art_clinician', 'art_embryologist', 'art_counsellor', 'art_bank_officer',
+  )) {
+    const items = [];
+    add(items, make('Today', Activity, '/dashboard/art/board'));
+    add(items, make('Cases', Users, '/dashboard/art/cases'));
+    if (hasAnyRole('hospital_admin', 'super_admin', 'billing_admin')) {
+      add(items, make('Prices', BookOpen, '/dashboard/art/catalog'));
+    }
+    add(items, make('Donor bank', Heart, '/dashboard/art/bank'));
+    if (hasAnyRole('hospital_admin', 'super_admin', 'billing_admin', 'art_clinician', 'art_embryologist', 'art_bank_officer')) {
+      add(items, make('Results', BarChart3, '/dashboard/art/reports'));
+    }
+    if (hasAnyRole('hospital_admin', 'super_admin')) {
+      add(items, make('Clinic setup', Building2, '/dashboard/art/setup'));
+    }
+    if (items.length > 0) sections.push({ label: 'Fertility', items });
+  }
+
   // ── CANTEEN (available whenever inpatient is enabled) ──
   if (enabledModules.inpatient && (
     hasAnyRole(...CANTEEN_ROLE_NAMES, 'nurse', 'doctor', 'receptionist', 'inpatient_admin')
@@ -421,6 +445,9 @@ export function getRoleDashboards({ hasRole, hasAnyRole, enabledModules, isLabSt
   }
   if (enabledModules.physiotherapy && hasRole('physiotherapist')) {
     out.push({ key: 'physiotherapy', label: 'Physio Board', path: '/dashboard/physiotherapy/today' });
+  }
+  if (enabledModules.art && hasAnyRole('art_frontdesk', 'art_clinician', 'art_embryologist', 'art_counsellor', 'art_bank_officer')) {
+    out.push({ key: 'art', label: 'Fertility today', path: '/dashboard/art/board' });
   }
   return out;
 }

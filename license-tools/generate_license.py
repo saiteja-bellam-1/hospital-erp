@@ -111,6 +111,9 @@ def cmd_create_license(args):
         "expires_at": expires_at.isoformat(),
         "features": features,
     }
+    customer_id = (getattr(args, "customer_id", None) or "").strip()
+    if customer_id:
+        license_data["customer_id"] = customer_id
 
     lic_content = sign_license_data(license_data, private_key_pem)
 
@@ -119,6 +122,8 @@ def cmd_create_license(args):
 
     print(f"License created: {args.output}")
     print(f"  License ID: {license_data['license_id']}")
+    if license_data.get("customer_id"):
+        print(f"  Customer ID: {license_data['customer_id']}")
     print(f"  Hospital: {args.hospital_name} (ID: {args.hospital_id})")
     print(f"  Plan: {args.plan}")
     print(f"  Max users: {args.max_users}")
@@ -128,6 +133,7 @@ def cmd_create_license(args):
     # Append to audit log
     log_entry = {
         "license_id": license_data["license_id"],
+        "customer_id": license_data.get("customer_id"),
         "hospital_id": args.hospital_id,
         "hospital_name": args.hospital_name,
         "plan": args.plan,
@@ -167,6 +173,7 @@ def main():
     create = subparsers.add_parser("create", help="Create a signed license file")
     create.add_argument("--private-key", required=True, help="Path to private key PEM")
     create.add_argument("--hospital-id", type=str, required=True, help="6-char alphanumeric hospital code (from login page)")
+    create.add_argument("--customer-id", default=None, help="Optional License Manager customer code to embed in the file")
     create.add_argument("--hospital-name", required=True)
     create.add_argument("--plan", default="standard", choices=["basic", "standard", "premium"])
     create.add_argument("--max-users", type=int, default=50)

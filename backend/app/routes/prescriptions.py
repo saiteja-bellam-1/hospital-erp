@@ -26,7 +26,7 @@ router = APIRouter()
 class PrescriptionItemCreate(BaseModel):
     medicine_id: Optional[int] = None
     medicine_name: Optional[str] = None
-    quantity_prescribed: int = Field(..., gt=0)
+    quantity_prescribed: float = Field(..., gt=0)
     dosage: str
     duration: str
     frequency_schedule: Optional[str] = Field("1-0-0", description="Morning-Afternoon-Night e.g. 1-0-1")
@@ -40,8 +40,8 @@ class PrescriptionItemResponse(BaseModel):
     medicine_name: str
     medicine_strength: str
     dosage_form: str
-    quantity_prescribed: int
-    quantity_dispensed: int
+    quantity_prescribed: float
+    quantity_dispensed: float
     dosage: str
     duration: str
     instructions: Optional[str]

@@ -33,7 +33,9 @@ const REPORT_CATALOG = [
   { id: 'daily-collection', label: 'Daily collection', modules: BILLING_MODULES_WITH_SCOPE, scopesModule: true, uses: ['period', 'patient'], hint: 'Cash, UPI, card and other tenders by day' },
   { id: 'tax-summary', label: 'Tax summary', modules: BILLING_MODULES_WITH_SCOPE, scopesModule: true, uses: ['period', 'patient'], hint: 'GST register by day' },
   { id: 'outstanding', label: 'Outstanding', modules: BILLING_MODULES_WITH_SCOPE, scopesModule: true, uses: ['period', 'patient'], hint: 'Unpaid billed amounts' },
-  { id: 'doctor-revenue', label: 'Doctor revenue', modules: ['all', 'opd', 'inpatient'], scopesModule: true, uses: ['period', 'patient', 'doctor'], hint: 'OPD and IP billed to each doctor' },
+  { id: 'doctor-revenue', label: 'Doctor revenue', modules: ['all', 'opd', 'inpatient', 'lab', 'pharmacy', 'pharmacy_ip'], scopesModule: true, uses: ['period', 'patient', 'doctor'], hint: 'Consults, admissions, lab, and pharmacy for each doctor' },
+  { id: 'patient-revenue', label: 'Patient revenue', modules: ['all', 'opd', 'inpatient', 'lab', 'pharmacy', 'pharmacy_ip'], uses: ['period', 'patient'], hint: 'Revenue from each patient in the selected period' },
+  { id: 'referral-revenue', label: 'Referral revenue', modules: ['all', 'opd', 'inpatient', 'lab', 'pharmacy', 'pharmacy_ip'], uses: ['period'], hint: 'Revenue from each referrer in the selected period' },
   { id: 'doctor-efficiency', label: 'Doctor efficiency', modules: ['all', 'opd', 'inpatient'], requires: 'inpatient', uses: ['period', 'doctor'], hint: 'OPD consults, IP admissions, visits, OT, LOS' },
 
   { id: 'opd-activity', label: 'OPD activity', modules: ['opd'], requires: 'outpatient', uses: ['period', 'doctor'], hint: 'Appointments, no-shows, and doctor load' },
@@ -61,6 +63,8 @@ const PATHS = {
   'daily-collection': '/api/hospital/billing/reports/daily-collection',
   'doctor-efficiency': '/api/hospital/billing/reports/doctor-efficiency',
   'doctor-revenue': '/api/hospital/billing/reports/doctor-revenue',
+  'patient-revenue': '/api/hospital/billing/reports/patient-revenue',
+  'referral-revenue': '/api/hospital/billing/reports/referral-revenue',
   'tax-summary': '/api/hospital/billing/reports/tax-summary',
   outstanding: '/api/hospital/billing/reports/outstanding',
   'opd-activity': '/api/hospital/billing/reports/opd-activity',
@@ -100,6 +104,40 @@ function KpiCards({ items }) {
 function doctorLabel(d) {
   const name = [d.first_name, d.last_name].filter(Boolean).join(' ') || d.username || `User #${d.id}`;
   return name.startsWith('Dr.') ? name : `Dr. ${name}`;
+}
+
+function doctorRevenueColumns(module) {
+  const cols = [{ key: 'doctor_name', label: 'Doctor' }];
+  const showConsult = !module || module === 'all' || module === 'opd';
+  const showAdmission = !module || module === 'all' || module === 'inpatient';
+  const showLab = !module || module === 'all' || module === 'lab';
+  const showPharmacy = !module || module === 'all' || module === 'pharmacy' || module === 'pharmacy_ip';
+  if (showConsult) {
+    cols.push(
+      { key: 'consultation_count', label: 'Consults', align: 'right' },
+      { key: 'consultation_revenue', label: 'Consult revenue', align: 'right', money: true },
+    );
+  }
+  if (showAdmission) {
+    cols.push(
+      { key: 'admission_count', label: 'Admissions', align: 'right' },
+      { key: 'admission_revenue', label: 'Admission revenue', align: 'right', money: true },
+    );
+  }
+  if (showLab) {
+    cols.push(
+      { key: 'lab_count', label: 'Lab', align: 'right' },
+      { key: 'lab_revenue', label: 'Lab revenue', align: 'right', money: true },
+    );
+  }
+  if (showPharmacy) {
+    cols.push(
+      { key: 'pharmacy_count', label: 'Pharmacy', align: 'right' },
+      { key: 'pharmacy_revenue', label: 'Pharmacy revenue', align: 'right', money: true },
+    );
+  }
+  cols.push({ key: 'total_revenue', label: 'Total', align: 'right', money: true });
+  return cols;
 }
 
 function filterRowsByDoctor(rows, doctorId) {
@@ -248,7 +286,7 @@ export default function ReportsPage() {
   const showContext = uses.includes('patient') || uses.includes('doctor') || uses.includes('test') || uses.includes('therapist');
 
   /** Reports that send patient_id to the API (vs client-side row filter). */
-  const patientViaApi = ['sales', 'daily-collection', 'tax-summary', 'outstanding', 'doctor-revenue'].includes(kind);
+  const patientViaApi = ['sales', 'daily-collection', 'tax-summary', 'outstanding', 'doctor-revenue', 'patient-revenue'].includes(kind);
   const doctorViaApi = kind === 'doctor-productivity';
 
   const filterParams = useMemo(() => {
@@ -304,6 +342,8 @@ export default function ReportsPage() {
         next.totals = {
           consultation_total: Math.round(rows.reduce((s, r) => s + Number(r.consultation_revenue || 0), 0) * 100) / 100,
           admission_total: Math.round(rows.reduce((s, r) => s + Number(r.admission_revenue || 0), 0) * 100) / 100,
+          lab_total: Math.round(rows.reduce((s, r) => s + Number(r.lab_revenue || 0), 0) * 100) / 100,
+          pharmacy_total: Math.round(rows.reduce((s, r) => s + Number(r.pharmacy_revenue || 0), 0) * 100) / 100,
           grand_total: Math.round(rows.reduce((s, r) => s + Number(r.total_revenue || 0), 0) * 100) / 100,
         };
       } else if (kind === 'opd-activity') {
@@ -400,10 +440,23 @@ export default function ReportsPage() {
         r.date, r.total, r.refunds, ...methods.map((m) => r.by_method?.[m] || 0),
       ]);
     } else if (kind === 'doctor-revenue') {
-      header = ['Doctor', 'Consultations', 'Consult revenue', 'Admissions', 'Admission revenue', 'Total'];
+      header = ['Doctor', 'Consultations', 'Consult revenue', 'Admissions', 'Admission revenue', 'Lab orders', 'Lab revenue', 'Pharmacy bills', 'Pharmacy revenue', 'Total'];
       lines = (data.rows || []).map((r) => [
         r.doctor_name, r.consultation_count, r.consultation_revenue,
-        r.admission_count, r.admission_revenue, r.total_revenue,
+        r.admission_count, r.admission_revenue, r.lab_count, r.lab_revenue,
+        r.pharmacy_count, r.pharmacy_revenue, r.total_revenue,
+      ]);
+    } else if (kind === 'patient-revenue') {
+      header = ['Patient', 'MRN', 'Phone', 'Referrer', 'Consult revenue', 'Lab revenue', 'Pharmacy revenue', 'Admission revenue', 'Other revenue', 'Total'];
+      lines = (data.rows || []).map((r) => [
+        r.patient_name, r.mrn, r.phone, r.referred_by, r.consultation_revenue, r.lab_revenue,
+        r.pharmacy_revenue, r.admission_revenue, r.other_revenue, r.total_revenue,
+      ]);
+    } else if (kind === 'referral-revenue') {
+      header = ['Referrer', 'Phone', 'Patients', 'Consult revenue', 'Lab revenue', 'Pharmacy revenue', 'Admission revenue', 'Other revenue', 'Total'];
+      lines = (data.rows || []).map((r) => [
+        r.referral_name, r.phone, r.patient_count, r.consultation_revenue, r.lab_revenue,
+        r.pharmacy_revenue, r.admission_revenue, r.other_revenue, r.total_revenue,
       ]);
     } else if (kind === 'tax-summary') {
       header = ['Date', 'Bills', 'Taxable value', 'Tax amount'];
@@ -1046,7 +1099,41 @@ export default function ReportsPage() {
           <CardHeader>
             <CardTitle className="text-base">Doctor revenue</CardTitle>
             <p className="text-xs font-normal text-gray-500 mt-1">
-              OPD consultations and inpatient admissions. Lab and pharmacy are not attributed to a single doctor.
+              {module === 'pharmacy_ip'
+                ? 'Inpatient pharmacy sales posted to an admission, grouped by the doctor on the sale.'
+                : 'Consults, admissions, outpatient lab, and counter pharmacy. Lab and pharmacy already included on an admission bill stay in admission revenue.'}
+            </p>
+          </CardHeader>
+          <CardContent>
+            {loading ? (
+              <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+            ) : (
+              <MoneyTable
+                columns={doctorRevenueColumns(module)}
+                rows={view?.rows || []}
+                totals={{
+                  consultation_count: (view?.rows || []).reduce((s, r) => s + Number(r.consultation_count || 0), 0),
+                  consultation_revenue: t.consultation_total,
+                  admission_count: (view?.rows || []).reduce((s, r) => s + Number(r.admission_count || 0), 0),
+                  admission_revenue: t.admission_total,
+                  lab_count: (view?.rows || []).reduce((s, r) => s + Number(r.lab_count || 0), 0),
+                  lab_revenue: t.lab_total,
+                  pharmacy_count: (view?.rows || []).reduce((s, r) => s + Number(r.pharmacy_count || 0), 0),
+                  pharmacy_revenue: t.pharmacy_total,
+                  total_revenue: t.grand_total,
+                }}
+              />
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {kind === 'patient-revenue' && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Patient revenue</CardTitle>
+            <p className="text-xs font-normal text-gray-500 mt-1">
+              Billed amount for each patient in the selected period. Lab and pharmacy already included on an admission bill are counted under admissions only.
             </p>
           </CardHeader>
           <CardContent>
@@ -1055,19 +1142,61 @@ export default function ReportsPage() {
             ) : (
               <MoneyTable
                 columns={[
-                  { key: 'doctor_name', label: 'Doctor' },
-                  { key: 'consultation_count', label: 'Consults', align: 'right' },
-                  { key: 'consultation_revenue', label: 'Consult revenue', align: 'right', money: true },
-                  { key: 'admission_count', label: 'Admissions', align: 'right' },
-                  { key: 'admission_revenue', label: 'Admission revenue', align: 'right', money: true },
+                  { key: 'patient_name', label: 'Patient' },
+                  { key: 'mrn', label: 'MRN' },
+                  { key: 'consultation_revenue', label: 'Consults', align: 'right', money: true },
+                  { key: 'lab_revenue', label: 'Lab', align: 'right', money: true },
+                  { key: 'pharmacy_revenue', label: 'Pharmacy', align: 'right', money: true },
+                  { key: 'admission_revenue', label: 'Admissions', align: 'right', money: true },
+                  { key: 'other_revenue', label: 'Other', align: 'right', money: true },
                   { key: 'total_revenue', label: 'Total', align: 'right', money: true },
                 ]}
                 rows={view?.rows || []}
                 totals={{
-                  consultation_count: (view?.rows || []).reduce((s, r) => s + Number(r.consultation_count || 0), 0),
                   consultation_revenue: t.consultation_total,
-                  admission_count: (view?.rows || []).reduce((s, r) => s + Number(r.admission_count || 0), 0),
+                  lab_revenue: t.lab_total,
+                  pharmacy_revenue: t.pharmacy_total,
                   admission_revenue: t.admission_total,
+                  other_revenue: t.other_total,
+                  total_revenue: t.grand_total,
+                }}
+              />
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {kind === 'referral-revenue' && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Referral revenue</CardTitle>
+            <p className="text-xs font-normal text-gray-500 mt-1">
+              Bill value from patients registered under each referrer in the selected period. This is revenue, not commission. Lab and pharmacy already on an admission bill are included in admissions.
+            </p>
+          </CardHeader>
+          <CardContent>
+            {loading ? (
+              <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+            ) : (
+              <MoneyTable
+                columns={[
+                  { key: 'referral_name', label: 'Referrer' },
+                  { key: 'total_revenue', label: 'Revenue', align: 'right', money: true },
+                  { key: 'patient_count', label: 'Patients', align: 'right' },
+                  { key: 'consultation_revenue', label: 'Consults', align: 'right', money: true },
+                  { key: 'lab_revenue', label: 'Lab', align: 'right', money: true },
+                  { key: 'pharmacy_revenue', label: 'Pharmacy', align: 'right', money: true },
+                  { key: 'admission_revenue', label: 'Admissions', align: 'right', money: true },
+                  { key: 'phone', label: 'Phone' },
+                ]}
+                rows={view?.rows || []}
+                totals={{
+                  patient_count: t.patient_count,
+                  consultation_revenue: t.consultation_total,
+                  lab_revenue: t.lab_total,
+                  pharmacy_revenue: t.pharmacy_total,
+                  admission_revenue: t.admission_total,
+                  other_revenue: t.other_total,
                   total_revenue: t.grand_total,
                 }}
               />

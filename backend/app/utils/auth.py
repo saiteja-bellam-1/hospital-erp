@@ -58,6 +58,11 @@ class UserRoles:
     LAB_TECHNICIAN = "lab_technician"
     PHARMACIST = "pharmacist"
     RECEPTIONIST = "receptionist"
+    ART_FRONTDESK = "art_frontdesk"
+    ART_CLINICIAN = "art_clinician"
+    ART_EMBRYOLOGIST = "art_embryologist"
+    ART_COUNSELLOR = "art_counsellor"
+    ART_BANK_OFFICER = "art_bank_officer"
 
 class Modules:
     LAB = "lab"
@@ -68,4 +73,5 @@ class Modules:
     INPATIENT = "inpatient"
     CANTEEN = "canteen"
     PHYSIOTHERAPY = "physiotherapy"
+    ART = "art"
     ADMIN = "admin"

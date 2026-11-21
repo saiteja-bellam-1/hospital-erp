@@ -27,13 +27,16 @@ STATUS_NONE = "none"
 
 # Product modules unlocked during an active trial. Paid add-ons
 # (customisation, and WhatsApp where that build has it) are intentionally
-# absent — keep this list aligned with CANONICAL_SYSTEM_MODULES names.
+# absent — keep the module names aligned with CANONICAL_SYSTEM_MODULES.
+# ``art_lab`` is not its own module; it opens Level 2 embryology inside Fertility.
 TRIAL_FEATURES = (
     "outpatient",
     "inpatient",
     "lab",
     "pharmacy",
     "physiotherapy",
+    "art",
+    "art_lab",
     "ehr",
     "billing",
     "admin",

@@ -49,6 +49,7 @@ NEW_COLUMNS = [
     ("patient_lab_orders", "bill_cancelled_by", "INTEGER REFERENCES users(id)"),
     ("patient_lab_orders", "bill_cancelled_at", "DATETIME"),
     ("licenses", "gdrive_config", "JSON"),
+    ("licenses", "customer_id", "VARCHAR(20)"),
     ("payments", "insurance_provider", "VARCHAR(200)"),
     ("payments", "policy_number", "VARCHAR(100)"),
     ("payments", "claim_reference", "VARCHAR(100)"),

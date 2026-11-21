@@ -237,6 +237,10 @@ const LicenseManagement = () => {
                 <p className="font-mono text-sm">{license?.license_id}</p>
               </div>
               <div>
+                <p className="text-sm text-gray-500">Customer ID</p>
+                <p className="font-mono text-sm">{license?.customer_id || '—'}</p>
+              </div>
+              <div>
                 <p className="text-sm text-gray-500">Hospital</p>
                 <p className="font-medium">{license?.hospital_name}</p>
               </div>
@@ -379,6 +383,9 @@ const LicenseManagement = () => {
                     <div className="space-y-0.5">
                       <div className="font-semibold">License valid for this machine</div>
                       <div>{pending.inspect.hospital_name} · {pending.inspect.plan} plan</div>
+                      {pending.inspect.customer_id && (
+                        <div>Customer ID: <code>{pending.inspect.customer_id}</code></div>
+                      )}
                       <div>
                         Expires {pending.inspect.expires_at
                           ? new Date(pending.inspect.expires_at).toLocaleDateString()

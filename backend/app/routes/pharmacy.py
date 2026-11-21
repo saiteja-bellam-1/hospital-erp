@@ -3970,6 +3970,7 @@ class SaleOut(BaseModel):
     status: str
     billing_mode: str = "cash_at_pharmacy"
     admission_id: Optional[int] = None
+    admission_number: Optional[str] = None
     inpatient_bill_id: Optional[int] = None
     store_id: Optional[int] = None
     stock_affected: bool = True
@@ -4185,6 +4186,7 @@ def _shape_sale(s: PharmacySale, db: Session) -> SaleOut:
         status=s.status, items=items_out, created_at=s.created_at,
         billing_mode=getattr(s, "billing_mode", None) or "cash_at_pharmacy",
         admission_id=getattr(s, "admission_id", None),
+        admission_number=_admission_number(db, _sale_display_admission_id(db, s)),
         inpatient_bill_id=getattr(s, "inpatient_bill_id", None),
         store_id=getattr(s, "store_id", None),
         stock_affected=bool(getattr(s, "stock_affected", True)),
@@ -4234,6 +4236,39 @@ def _resolve_sale_admission(
     # inpatient. The historical patient_ip_id column stores the patient's UUID
     # despite its name, so an active admission is only required for deferred IP
     # billing.
+    return None
+
+
+def _admission_number_map(db: Session, admission_ids) -> dict:
+    """Map admission PK → admission_number (ADM-YYYYMMDD-NNNN)."""
+    ids = {i for i in admission_ids if i}
+    if not ids:
+        return {}
+    from app.models.inpatient import Admission
+    rows = db.query(Admission.id, Admission.admission_number).filter(
+        Admission.id.in_(ids)
+    ).all()
+    return {row.id: row.admission_number for row in rows if row.admission_number}
+
+
+def _admission_number(db: Session, admission_id: Optional[int]) -> Optional[str]:
+    if not admission_id:
+        return None
+    return _admission_number_map(db, [admission_id]).get(admission_id)
+
+
+def _sale_display_admission_id(db: Session, sale: PharmacySale) -> Optional[int]:
+    """Admission to print on a pharmacy bill.
+
+    Prefer the sale's own link (medicines charged to the admission bill).
+    A counter sale of an inpatient prescription keeps the Rx's admission.
+    """
+    admission_id = getattr(sale, "admission_id", None)
+    if admission_id:
+        return admission_id
+    rx = db.query(Prescription).filter(Prescription.pharmacy_sale_id == sale.id).first()
+    if rx and getattr(rx, "admission_id", None):
+        return rx.admission_id
     return None
 
 
@@ -5060,10 +5095,55 @@ class PendingRxOut(BaseModel):
     status: str
     notes: Optional[str] = None
     admission_id: Optional[int] = None
+    admission_number: Optional[str] = None
     patient_id: Optional[str] = None
     patient_name: Optional[str] = None
     doctor_name: Optional[str] = None
     items: List[PendingRxItemOut] = Field(default_factory=list)
+
+
+class ActiveAdmissionOut(BaseModel):
+    admission_id: Optional[int] = None
+    admission_number: Optional[str] = None
+
+
+@router.get("/patients/{patient_uuid}/active-admission", response_model=ActiveAdmissionOut)
+def patient_active_admission(
+    patient_uuid: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission_any(
+        Modules.PHARMACY, "view_dispense_queue", "create_sale", "edit_sale"
+    )),
+):
+    """Admission number for the patient's current stay, if they are admitted.
+
+    Used by the sales counter so an inpatient charge shows Admission ID
+    (ADM-…) rather than the patient UUID stored in patient_ip_id.
+    """
+    from app.models.patient import Patient as _IPPatient
+    from app.models.inpatient import Admission as _IPAdmission
+
+    pat = db.query(_IPPatient).filter(
+        _IPPatient.patient_id == patient_uuid,
+        _IPPatient.hospital_id == current_user.hospital_id,
+    ).first()
+    if not pat:
+        return ActiveAdmissionOut()
+    active = (
+        db.query(_IPAdmission)
+        .filter(
+            _IPAdmission.patient_id == pat.id,
+            _IPAdmission.status == "admitted",
+        )
+        .order_by(_IPAdmission.id.desc())
+        .first()
+    )
+    if not active:
+        return ActiveAdmissionOut()
+    return ActiveAdmissionOut(
+        admission_id=active.id,
+        admission_number=active.admission_number,
+    )
 
 
 @router.get("/prescriptions/pending", response_model=List[PendingRxOut])
@@ -5087,6 +5167,7 @@ def list_pending_prescriptions(
     if patient_id:
         query = query.filter(Patient.patient_id == patient_id)
     rxs = query.order_by(Prescription.prescription_date.desc()).limit(limit).all()
+    admission_numbers = _admission_number_map(db, [rx.admission_id for rx in rxs])
 
     out = []
     for rx in rxs:
@@ -5113,6 +5194,7 @@ def list_pending_prescriptions(
             prescription_date=rx.prescription_date, status=rx.status,
             notes=rx.notes,
             admission_id=rx.admission_id,
+            admission_number=admission_numbers.get(rx.admission_id),
             patient_id=patient.patient_id if patient else None,
             patient_name=(
                 f"{patient.first_name} {patient.last_name}" if patient else None
@@ -5152,6 +5234,7 @@ def _shape_pending_rx(rx: Prescription, db: Session) -> PendingRxOut:
         prescription_date=rx.prescription_date, status=rx.status,
         notes=rx.notes,
         admission_id=rx.admission_id,
+        admission_number=_admission_number(db, rx.admission_id),
         patient_id=patient.patient_id if patient else None,
         patient_name=(
             f"{patient.first_name} {patient.last_name}" if patient else None
@@ -5351,7 +5434,7 @@ def edit_prescription_items(
                 "dosage": i.dosage or "",
                 "duration": i.duration or "",
                 "instructions": i.instructions or "",
-                "quantity": int(i.quantity_prescribed or 0) or None,
+                "quantity": round(float(i.quantity_prescribed or 0), 3) or None,
             })
         simple.medicines = mirrored
         if data.notes is not None:
@@ -6598,7 +6681,7 @@ def _pharmacy_hospital_info_for_pdf(db: Session, hospital_id: int) -> dict:
 
 
 def _resolve_sale_op_ip_meta(db: Session, sale: PharmacySale) -> dict:
-    """UHID (MRN), Opno (visit/appointment), Ipno (admission number)."""
+    """UHID (MRN), Opno (visit/appointment), Admission ID (admission number)."""
     uhid = ""
     village = ""
     district = ""
@@ -6613,17 +6696,10 @@ def _resolve_sale_op_ip_meta(db: Session, sale: PharmacySale) -> dict:
             village = pat.village or ""
             district = pat.district or ""
 
-    admission_id = getattr(sale, "admission_id", None)
+    admission_id = _sale_display_admission_id(db, sale)
+    ipno = _admission_number(db, admission_id) or "0"
+
     rx = db.query(Prescription).filter(Prescription.pharmacy_sale_id == sale.id).first()
-    if not admission_id and rx and getattr(rx, "admission_id", None):
-        admission_id = rx.admission_id
-
-    if admission_id:
-        from app.models.inpatient import Admission
-        adm = db.query(Admission).filter(Admission.id == admission_id).first()
-        if adm and adm.admission_number:
-            ipno = adm.admission_number
-
     if rx and getattr(rx, "consultation_id", None):
         from app.models.ehr import Consultation
         from app.models.outpatient import Appointment, OutpatientVisit

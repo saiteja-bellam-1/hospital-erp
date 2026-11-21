@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import func as sql_func, or_
 from pydantic import BaseModel, Field, field_validator
+from datetime import datetime
 from typing import Optional, List
 from config.database import get_db
 from app.models.user import User
@@ -183,28 +184,71 @@ async def list_all_referrals(
     return referrals
 
 
+def _period_bounds(date_from: Optional[str], date_to: Optional[str]):
+    if not date_from and not date_to:
+        return None, None
+    today = datetime.now().date()
+    d_to = datetime.strptime(date_to, "%Y-%m-%d").date() if date_to else today
+    d_from = datetime.strptime(date_from, "%Y-%m-%d").date() if date_from else d_to
+    return d_from, d_to
+
+
+def revenue_by_referral(db: Session, hospital_id: int, d_from=None, d_to=None):
+    """Bill revenue for each referrer. This is collected bill value, not commission."""
+    referrals = _referral_query(db).filter(
+        Referral.hospital_id == hospital_id
+    ).order_by(Referral.name).all()
+    rows = []
+    for referral in referrals:
+        details = _assemble_referral_details(db, referral, d_from, d_to)
+        summary = details["summary"]
+        patients = set()
+        for key in ("consultations", "lab_orders", "inpatient_bills", "pharmacy_sales"):
+            for bill in details[key]:
+                if bill.get("patient_name"):
+                    patients.add(bill["patient_name"])
+        rows.append({
+            "referral_id": referral.id,
+            "referral_name": referral.name,
+            "phone": referral.phone or "",
+            "is_active": bool(referral.is_active),
+            "patient_count": len(patients),
+            "consultation_revenue": summary["op_revenue"],
+            "consultation_count": summary["total_consultations"],
+            "lab_revenue": summary["lab_revenue"],
+            "lab_count": summary["total_lab_orders"],
+            "pharmacy_revenue": summary["pharmacy_revenue"],
+            "pharmacy_count": summary["total_pharmacy_sales"],
+            "admission_revenue": summary["ip_revenue"],
+            "admission_count": summary["total_ip_bills"],
+            "other_revenue": 0.0,
+            "other_count": 0,
+            "total_revenue": summary["total_revenue"],
+            "commission_earned": summary["total_commission_earned"],
+            "commission_paid": summary["total_commission_paid"],
+        })
+    rows.sort(key=lambda row: row["total_revenue"], reverse=True)
+    return rows
+
+
 @router.get("/dashboard")
 async def referral_dashboard(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Revenue and commission totals for every referrer at this hospital."""
+    """Bill revenue for every referrer. Commission totals stay available for payouts."""
     if not any(r in current_user.role_names for r in ALLOWED_ROLES):
         raise HTTPException(status_code=403, detail="Not authorized")
+    d_from, d_to = _period_bounds(date_from, date_to)
     referrals = _referral_query(db).filter(
         Referral.hospital_id == current_user.hospital_id
     ).all()
-    revenue = 0.0
-    earned = 0.0
-    paid = 0.0
-    for referral in referrals:
-        summary = _assemble_referral_details(db, referral)["summary"]
-        revenue += summary["total_revenue"]
-        earned += summary["total_commission_earned"]
-        paid += summary["total_commission_paid"]
-    revenue = round(revenue, 2)
-    earned = round(earned, 2)
-    paid = round(paid, 2)
+    by_referral = revenue_by_referral(db, current_user.hospital_id, d_from, d_to)
+    revenue = round(sum(row["total_revenue"] for row in by_referral), 2)
+    earned = round(sum(row["commission_earned"] for row in by_referral), 2)
+    paid = round(sum(row["commission_paid"] for row in by_referral), 2)
     return {
         "referral_count": len(referrals),
         "active_count": sum(1 for referral in referrals if referral.is_active),
@@ -212,6 +256,9 @@ async def referral_dashboard(
         "commission_earned": earned,
         "commission_paid": paid,
         "commission_due": round(earned - paid, 2),
+        "date_from": d_from.isoformat() if d_from else None,
+        "date_to": d_to.isoformat() if d_to else None,
+        "by_referral": by_referral,
     }
 
 
@@ -399,7 +446,20 @@ async def get_referral_details(
     return _assemble_referral_details(db, referral)
 
 
-def _assemble_referral_details(db: Session, referral: Referral):
+def _in_period(value, d_from, d_to) -> bool:
+    if d_from is None and d_to is None:
+        return True
+    if value is None:
+        return False
+    day = value.date() if isinstance(value, datetime) else value
+    if d_from is not None and day < d_from:
+        return False
+    if d_to is not None and day > d_to:
+        return False
+    return True
+
+
+def _assemble_referral_details(db: Session, referral: Referral, d_from=None, d_to=None):
     ref_name = (referral.name or "").strip()
     hospital_id = referral.hospital_id
 
@@ -426,6 +486,7 @@ def _assemble_referral_details(db: Session, referral: Referral):
             _not_cancelled(Appointment.payment_status),
             Appointment.bill_cancelled_at.is_(None),
         ).order_by(Appointment.created_at.desc()).all()
+        appointments = [row for row in appointments if _in_period(row.appointment_date, d_from, d_to)]
 
         doctor_ids = {a.doctor_id for a in appointments if a.doctor_id}
         doctors = {}
@@ -459,6 +520,7 @@ def _assemble_referral_details(db: Session, referral: Referral):
             PatientLabOrder.bill_cancelled_at.is_(None),
             _not_cancelled(PatientLabOrder.status),
         ).order_by(PatientLabOrder.order_date.desc()).all()
+        lab_orders = [row for row in lab_orders if _in_period(row.order_date, d_from, d_to)]
 
         category_rates = _category_rate_map(referral)
         default_lab_pct = _pct(referral.lab_commission_pct)
@@ -500,6 +562,7 @@ def _assemble_referral_details(db: Session, referral: Referral):
             _not_cancelled(Bill.status),
             or_(Bill.bill_subtype.is_(None), Bill.bill_subtype != "advance_receipt"),
         ).order_by(Bill.bill_date.desc()).all()
+        admission_bills = [row for row in admission_bills if _in_period(row.bill_date, d_from, d_to)]
 
         for bill in admission_bills:
             subtype = (bill.bill_subtype or "final").replace("_", " ").title()
@@ -526,6 +589,7 @@ def _assemble_referral_details(db: Session, referral: Referral):
                 PharmacySale.billing_mode != "inpatient_bill",
             ),
         ).order_by(PharmacySale.sale_date.desc()).all()
+        sales = [row for row in sales if _in_period(row.sale_date, d_from, d_to)]
 
         returned = {}
         sale_ids = [sale.id for sale in sales]

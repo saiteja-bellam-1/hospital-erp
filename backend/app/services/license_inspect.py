@@ -107,6 +107,19 @@ def resolve_support_contact(seller, support) -> dict | None:
     return support_info or None
 
 
+def signed_customer_id(license_data) -> str | None:
+    """Public customer code carried in a signed license, if the file has one."""
+    if not isinstance(license_data, dict):
+        return None
+    raw = license_data.get("customer_id")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raw = str(raw)
+    value = raw.strip()
+    return value[:20] or None
+
+
 def inspect_license_file(file_content: str) -> dict:
     """Dry-run: parse + verify a .lic file and report compatibility WITHOUT
     touching the database. Never raises on machine-ID mismatch — instead the
@@ -144,6 +157,7 @@ def inspect_license_file(file_content: str) -> dict:
         "license_machine_id": license_machine_id,
         "current_machine_id": current_machine_id,
         "license_id": license_data.get("license_id"),
+        "customer_id": signed_customer_id(license_data),
         "hospital_id": license_data.get("hospital_id"),
         "hospital_name": license_data.get("hospital_name"),
         "plan": license_data.get("plan"),

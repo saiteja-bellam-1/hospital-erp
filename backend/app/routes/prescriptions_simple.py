@@ -80,17 +80,21 @@ def generate_prescription_id() -> str:
     return f"RX-{timestamp}-{unique_id}"
 
 
-def _prescribed_quantity(value) -> int:
-    """Coerce the OP free-text quantity field to a positive stock quantity."""
+def _prescribed_quantity(value) -> float:
+    """Coerce the OP quantity field to a positive stock quantity, keeping decimals."""
+    import re
+
     if value is None or value == "":
-        return 1
+        return 1.0
     try:
-        return max(1, int(float(value)))
+        qty = float(value)
     except (TypeError, ValueError):
-        # Older records may contain values such as "10 tablets".
-        import re
-        match = re.search(r"\d+(?:\.\d+)?", str(value))
-        return max(1, int(float(match.group(0)))) if match else 1
+        # Older records may contain values such as "10 tablets" or "2.5 tabs".
+        match = re.search(r"\d+(?:\.\d+)?|\.\d+", str(value))
+        qty = float(match.group(0)) if match else 1.0
+    if not qty or qty <= 0:
+        return 1.0
+    return round(qty, 3)
 
 
 def _sync_to_pharmacy_prescription(

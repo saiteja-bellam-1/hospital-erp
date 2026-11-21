@@ -31,6 +31,7 @@ BILL_TYPE_TO_MODULE = {
     "day_care": "day_care",
     "procedure": "day_care",
     "physiotherapy": "physiotherapy",
+    "art": "art",
     "canteen": "canteen",
     "catch_up": "catch_up",
     "pharmacy": "pharmacy",
@@ -45,6 +46,7 @@ MODULE_LABELS = {
     "pharmacy_ip": "Pharmacy (IP)",
     "day_care": "Day Care",
     "physiotherapy": "Physiotherapy",
+    "art": "Fertility (ART)",
     "canteen": "Canteen",
     "catch_up": "Catch-up",
 }

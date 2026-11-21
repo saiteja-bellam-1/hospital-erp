@@ -28,7 +28,7 @@ import VisitDialog from './inpatient/VisitDialog';
 import DoctorRosterTab, { OnDutyNowPanel } from './inpatient/DoctorRosterTab';
 import MedicineLookupInput from '../../components/inpatient/MedicineLookupInput';
 import PrescriptionScheduleFields from '../../components/prescription/PrescriptionScheduleFields';
-import { BLANK_INPATIENT_RX_ITEM, serializeTakeHomeMed } from '../../utils/prescriptionSchedule';
+import { BLANK_INPATIENT_RX_ITEM, MEDICINE_QTY_HINT, medicineQuantityOrCalculated, patchMedicineLine, serializeTakeHomeMed } from '../../utils/prescriptionSchedule';
 import DischargeCheckoutPage from './inpatient/DischargeCheckoutPage';
 import DoctorDischargeSummaryPage from './inpatient/discharge/DoctorDischargeSummaryPage';
 import { canAccessDischargeCheckout, prepareDischargeSummaryEdit, summaryIsReadyForPrint } from './inpatient/discharge/dischargeSummaryUtils';
@@ -1471,7 +1471,7 @@ const InpatientModule = () => {
       .map(it => ({
         medicine_id: it.medicine_id ? parseInt(it.medicine_id) : null,
         medicine_name: it.medicine_id ? null : (it.medicine_name?.trim() || null),
-        quantity_prescribed: Math.max(1, parseInt(it.quantity_prescribed) || 1),
+        quantity_prescribed: medicineQuantityOrCalculated(it),
         dosage: it.dosage?.trim() || '',
         duration: it.duration?.trim() || '',
         frequency_schedule: it.frequency_schedule || '1-0-0',
@@ -8833,10 +8833,10 @@ const InpatientModule = () => {
                     <div>
                       <Label className="text-[10px] text-gray-500">Dosage *</Label>
                       <Input
-                        placeholder="1 tab"
+                        placeholder="0.5 tab"
                         value={it.dosage}
                         onChange={e => setPrescriptionForm(p => {
-                          const next = [...p.items]; next[idx] = { ...next[idx], dosage: e.target.value }; return { ...p, items: next };
+                          const next = [...p.items]; next[idx] = patchMedicineLine(next[idx], 'dosage', e.target.value); return { ...p, items: next };
                         })}
                       />
                     </div>
@@ -8844,7 +8844,7 @@ const InpatientModule = () => {
                       frequencySchedule={it.frequency_schedule}
                       foodTiming={it.food_timing}
                       onFrequencyChange={(v) => setPrescriptionForm(p => {
-                        const next = [...p.items]; next[idx] = { ...next[idx], frequency_schedule: v }; return { ...p, items: next };
+                        const next = [...p.items]; next[idx] = patchMedicineLine(next[idx], 'frequency_schedule', v); return { ...p, items: next };
                       })}
                       onFoodTimingChange={(v) => setPrescriptionForm(p => {
                         const next = [...p.items]; next[idx] = { ...next[idx], food_timing: v }; return { ...p, items: next };
@@ -8856,15 +8856,16 @@ const InpatientModule = () => {
                         placeholder="5 days"
                         value={it.duration}
                         onChange={e => setPrescriptionForm(p => {
-                          const next = [...p.items]; next[idx] = { ...next[idx], duration: e.target.value }; return { ...p, items: next };
+                          const next = [...p.items]; next[idx] = patchMedicineLine(next[idx], 'duration', e.target.value); return { ...p, items: next };
                         })}
                       />
                     </div>
                     <div>
                       <Label className="text-[10px] text-gray-500">Quantity</Label>
                       <QtyInput
-                        min="1"
-                        step="1"
+                        min="0.01"
+                        step="any"
+                        title={MEDICINE_QTY_HINT}
                         value={it.quantity_prescribed}
                         onChange={e => setPrescriptionForm(p => {
                           const next = [...p.items]; next[idx] = { ...next[idx], quantity_prescribed: e.target.value }; return { ...p, items: next };

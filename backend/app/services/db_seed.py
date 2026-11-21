@@ -42,6 +42,11 @@ SYSTEM_ROLES = [
     ("canteen_admin", "Canteen Administrator — manages food catalog, prices, and kitchen orders"),
     ("canteen_sales", "Canteen Sales — IP food order queue, kitchen status, and walk-in POS"),
     ("physiotherapist", "Physiotherapist — clinic sessions, attendance, and assigned patient care"),
+    ("art_frontdesk", "Fertility front desk — cases, queue, bookings, estimates, and advances"),
+    ("art_clinician", "Fertility clinician — workup, stimulation, procedures, and outcomes"),
+    ("art_embryologist", "Embryologist — culture, witnessing, and cryostorage"),
+    ("art_counsellor", "Fertility counsellor — counselling notes and consents"),
+    ("art_bank_officer", "ART bank officer — donor identity, screening, and gamete issue"),
     ("frontdesk", "Front Desk Staff — appointments, patient registration, scheduling"),
     ("receptionist", "Receptionist with patient registration access"),
 ]
@@ -107,6 +112,39 @@ _PHYSIO_RECEPTION = [
     "view_physio", "manage_packages", "schedule_sessions",
     "record_attendance", "bill_sessions",
     "view_physio_documents",
+]
+
+# Fertility (ART). Hospital reception does not receive these keys.
+_ART_ALL = [
+    "view_art", "manage_centre", "manage_catalog", "manage_packages",
+    "register_cases", "edit_workup", "record_counsellor_note", "upload_documents",
+    "schedule_procedures", "record_stimulation", "record_consent", "withdraw_consent",
+    "start_cycle", "collect_advance", "change_billing_mode", "issue_refunds",
+    "record_lab", "witness_lab", "manage_cryo",
+    "view_donor_identity", "manage_donors", "issue_gametes", "receive_shipment",
+    "view_reports", "record_outcome", "manage_equipment", "manage_grievances",
+]
+_ART_FRONTDESK = [
+    "view_art", "register_cases", "upload_documents", "schedule_procedures",
+    "record_consent", "start_cycle", "collect_advance",
+]
+_ART_CLINICIAN = [
+    "view_art", "edit_workup", "record_stimulation", "record_consent", "withdraw_consent",
+    "schedule_procedures", "start_cycle", "record_outcome", "view_reports",
+]
+_ART_EMBRYOLOGIST = [
+    "view_art", "record_lab", "witness_lab", "manage_cryo", "view_reports",
+]
+_ART_COUNSELLOR = [
+    "view_art", "record_counsellor_note", "record_consent",
+]
+_ART_BANK = [
+    "view_art", "view_donor_identity", "manage_donors", "issue_gametes",
+    "receive_shipment", "manage_cryo", "view_reports",
+]
+_ART_BILLING = [
+    "view_art", "manage_catalog", "manage_packages", "start_cycle",
+    "collect_advance", "change_billing_mode", "issue_refunds", "view_reports",
 ]
 _PHYSIO_THERAPIST = [
     "view_physio", "record_attendance", "schedule_sessions",
@@ -370,6 +408,34 @@ def _seed_module_permissions(db, ModulePermission):
         {"module_name": "physiotherapy", "permission_name": "view_physio_documents", "permission_description": "View scanned documents on a physio patient chart or session", "category": "user"},
         {"module_name": "physiotherapy", "permission_name": "upload_physio_documents", "permission_description": "Upload scanned documents for a physio patient or session", "category": "user"},
         {"module_name": "physiotherapy", "permission_name": "delete_physio_documents", "permission_description": "Delete physio patient or session documents", "category": "admin"},
+        # Fertility (ART)
+        {"module_name": "art", "permission_name": "view_art", "permission_description": "View fertility cases, cycles, and the daily board", "category": "user"},
+        {"module_name": "art", "permission_name": "manage_centre", "permission_description": "Set clinic level and ART bank registration", "category": "admin"},
+        {"module_name": "art", "permission_name": "manage_catalog", "permission_description": "Maintain the fertility service catalog", "category": "admin"},
+        {"module_name": "art", "permission_name": "manage_packages", "permission_description": "Maintain ART package templates", "category": "admin"},
+        {"module_name": "art", "permission_name": "register_cases", "permission_description": "Open couple or single-woman cases and the fertility queue", "category": "user"},
+        {"module_name": "art", "permission_name": "edit_workup", "permission_description": "Record the infertility workup and treatment plan", "category": "user"},
+        {"module_name": "art", "permission_name": "record_counsellor_note", "permission_description": "Write counsellor notes on a case", "category": "user"},
+        {"module_name": "art", "permission_name": "upload_documents", "permission_description": "Upload reports onto a fertility case", "category": "user"},
+        {"module_name": "art", "permission_name": "schedule_procedures", "permission_description": "Book and complete scans, IUI, and counselling slots", "category": "user"},
+        {"module_name": "art", "permission_name": "record_stimulation", "permission_description": "Record stimulation days and the trigger", "category": "user"},
+        {"module_name": "art", "permission_name": "record_consent", "permission_description": "Record ART consents", "category": "user"},
+        {"module_name": "art", "permission_name": "withdraw_consent", "permission_description": "Record withdrawal of ART consent", "category": "user"},
+        {"module_name": "art", "permission_name": "start_cycle", "permission_description": "Start a cycle and post cycle charges", "category": "user"},
+        {"module_name": "art", "permission_name": "collect_advance", "permission_description": "Collect a package advance", "category": "user"},
+        {"module_name": "art", "permission_name": "change_billing_mode", "permission_description": "Change package versus itemised billing on an open cycle", "category": "admin"},
+        {"module_name": "art", "permission_name": "issue_refunds", "permission_description": "Cancel a cycle and post the package refund", "category": "admin"},
+        {"module_name": "art", "permission_name": "record_lab", "permission_description": "Record retrieval, fertilisation, grading, and disposition", "category": "user"},
+        {"module_name": "art", "permission_name": "witness_lab", "permission_description": "Witness a lab or bank handoff", "category": "user"},
+        {"module_name": "art", "permission_name": "manage_cryo", "permission_description": "Manage cryostorage renewals and tank logs", "category": "user"},
+        {"module_name": "art", "permission_name": "view_donor_identity", "permission_description": "View donor name, address, and phone", "category": "admin"},
+        {"module_name": "art", "permission_name": "manage_donors", "permission_description": "Register donors, screening, and insurance", "category": "admin"},
+        {"module_name": "art", "permission_name": "issue_gametes", "permission_description": "Issue bank straws to this clinic or another clinic", "category": "user"},
+        {"module_name": "art", "permission_name": "receive_shipment", "permission_description": "Receive gametes from an outside ART bank", "category": "user"},
+        {"module_name": "art", "permission_name": "view_reports", "permission_description": "View outcome reports, lab indicators, and the monthly registry", "category": "user"},
+        {"module_name": "art", "permission_name": "record_outcome", "permission_description": "Record pregnancy and birth outcomes", "category": "user"},
+        {"module_name": "art", "permission_name": "manage_equipment", "permission_description": "Maintain the ART equipment register", "category": "admin"},
+        {"module_name": "art", "permission_name": "manage_grievances", "permission_description": "Open and close grievance records", "category": "admin"},
         # EHR
         {"module_name": "ehr", "permission_name": "view_records", "permission_description": "View patient electronic health records", "category": "user"},
         {"module_name": "ehr", "permission_name": "edit_records", "permission_description": "Edit patient records", "category": "user"},
@@ -410,6 +476,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
             "inpatient": list(_INPATIENT_ALL),
             "canteen": list(_CANTEEN_ALL),
             "physiotherapy": list(_PHYSIO_ALL),
+            "art": list(_ART_ALL),
             "ehr": ["view_records", "edit_records", "create_prescriptions", "manage_templates", "view_history", "generate_reports"],
         },
         "hospital_admin": {
@@ -421,6 +488,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
             "inpatient": list(_INPATIENT_ALL),
             "canteen": list(_CANTEEN_ALL),
             "physiotherapy": list(_PHYSIO_ALL),
+            "art": list(_ART_ALL),
             "ehr": ["view_records", "edit_records", "view_history", "generate_reports"],
         },
         "doctor": {
@@ -493,6 +561,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
                 "view_physio", "bill_sessions", "view_physio_reports", "manage_packages",
                 "view_physio_documents",
             ],
+            "art": list(_ART_BILLING),
             "inpatient": [
                 "view_occupancy",
                 "view_bill", "generate_interim_bill", "finalize_bill",
@@ -555,6 +624,11 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
             "physiotherapy": list(_PHYSIO_THERAPIST),
             "ehr": ["view_records", "view_history"],
         },
+        "art_frontdesk": {"art": list(_ART_FRONTDESK)},
+        "art_clinician": {"art": list(_ART_CLINICIAN)},
+        "art_embryologist": {"art": list(_ART_EMBRYOLOGIST)},
+        "art_counsellor": {"art": list(_ART_COUNSELLOR)},
+        "art_bank_officer": {"art": list(_ART_BANK)},
         "lab_admin": {
             "lab": ["manage_tests", "set_rates", "view_reports", "create_reports", "manage_equipment", "manage_templates"],
         },
@@ -738,6 +812,10 @@ def init_database_and_seed(seed: Mapping, db_path: str) -> None:
         PhysioService, PhysioPackageTemplate, PhysioPatientPackage, PhysioPackageLedger,
         PhysioTherapistAvailability, PhysioTherapistSpecialSchedule, PhysioAppointment,
         PhysioDocument,
+    )
+    from app.models.art import (  # noqa
+        ArtCentre, ArtService, ArtPackageTemplate, ArtCase, ArtWorkup, ArtCycle,
+        ArtSpecimen, ArtDonor, ArtBankUnit, ArtEquipment, ArtGrievance,
     )
     from app.models.settlement import Settlement, SettlementConfig  # noqa
 

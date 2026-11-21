@@ -450,7 +450,7 @@ const PharmacyModule = () => (
   <PharmacyStoreProvider>
     <Routes>
       <Route path="sales-counter" element={
-        <PharmacyPermGate permission="create_sale"><SalesCounter /></PharmacyPermGate>
+        <PharmacyPermGate anyOf={['create_sale', 'dispense_rx']}><SalesCounter /></PharmacyPermGate>
       } />
       <Route path="sales-counter/:saleId/edit" element={
         <PharmacyPermGate permission="edit_sale"><SalesCounter /></PharmacyPermGate>

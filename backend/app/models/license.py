@@ -8,6 +8,7 @@ class License(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     license_id = Column(String(50), unique=True, nullable=False)
+    customer_id = Column(String(20), nullable=True)  # License Manager customer code
     hospital_id = Column(String(10), nullable=False)  # 6-char alphanumeric code
     hospital_name = Column(String(200))
     plan = Column(String(50), default="standard")

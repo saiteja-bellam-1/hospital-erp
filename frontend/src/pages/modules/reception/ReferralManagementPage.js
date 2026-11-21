@@ -137,6 +137,8 @@ const ReferralManagementPage = () => {
   });
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [revFrom, setRevFrom] = useState('');
+  const [revTo, setRevTo] = useState('');
 
   // Form dialog
   const [showForm, setShowForm] = useState(false);
@@ -169,11 +171,14 @@ const ReferralManagementPage = () => {
       .finally(() => setCategoriesLoaded(true));
   }, []);
 
-  const fetchReferrals = async () => {
+  const fetchReferrals = async (from = revFrom, to = revTo) => {
     try {
+      const params = {};
+      if (from) params.date_from = from;
+      if (to) params.date_to = to;
       const [listRes, dashRes] = await Promise.all([
         axios.get('/api/referrals/all', { headers }),
-        axios.get('/api/referrals/dashboard', { headers }),
+        axios.get('/api/referrals/dashboard', { headers, params }),
       ]);
       setReferrals(listRes.data);
       setDashboard(dashRes.data);
@@ -613,10 +618,20 @@ const ReferralManagementPage = () => {
         </CardContent></Card>
       </div>
 
-      <div className="relative max-w-sm">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-        <Input placeholder="Search by name, village, mandal..." value={search}
-          onChange={(e) => setSearch(e.target.value)} className="pl-10" />
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="relative max-w-sm flex-1 min-w-[220px]">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+          <Input placeholder="Search by name, village, mandal..." value={search}
+            onChange={(e) => setSearch(e.target.value)} className="pl-10" />
+        </div>
+        <div>
+          <Label className="text-xs text-gray-500">Revenue from</Label>
+          <Input type="date" value={revFrom} onChange={(e) => { setRevFrom(e.target.value); fetchReferrals(e.target.value, revTo); }} className="h-9" />
+        </div>
+        <div>
+          <Label className="text-xs text-gray-500">Revenue to</Label>
+          <Input type="date" value={revTo} onChange={(e) => { setRevTo(e.target.value); fetchReferrals(revFrom, e.target.value); }} className="h-9" />
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -641,11 +656,19 @@ const ReferralManagementPage = () => {
                   {[ref.village, ref.mandal, ref.district].filter(Boolean).join(', ')}
                 </p>
               )}
-              <p className="text-xs text-gray-500 mb-3">
-                OP {ref.op_commission_pct ?? 0}% · Lab {ref.lab_commission_pct ?? 0}%
-                {(ref.category_rates || []).length > 0 ? ` · ${ref.category_rates.length} lab categor${ref.category_rates.length === 1 ? 'y' : 'ies'}` : ''}
-                {' · '}IP {ref.ip_commission_pct ?? 0}% · Pharmacy {ref.pharmacy_commission_pct ?? 0}%
-              </p>
+              {(() => {
+                const rev = (dashboard.by_referral || []).find((row) => row.referral_id === ref.id) || {};
+                return (
+                  <div className="mb-3">
+                    <p className="text-xs text-gray-500">Revenue</p>
+                    <p className="text-xl font-semibold">{formatCurrency(rev.total_revenue)}</p>
+                    <p className="text-[11px] text-gray-400 mt-0.5">
+                      OP {formatCurrency(rev.consultation_revenue)} · Lab {formatCurrency(rev.lab_revenue)}
+                      {' · '}IP {formatCurrency(rev.admission_revenue)} · Pharmacy {formatCurrency(rev.pharmacy_revenue)}
+                    </p>
+                  </div>
+                );
+              })()}
               <div className="flex gap-1.5" onClick={(e) => e.stopPropagation()}>
                 <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openDetails(ref)}>
                   <Eye className="h-3 w-3 mr-1" /> View

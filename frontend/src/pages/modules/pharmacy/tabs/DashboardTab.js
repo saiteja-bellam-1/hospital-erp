@@ -314,7 +314,12 @@ export default function DashboardTab() {
             {rows.map((rx) => (
               <tr key={rx.id} className="border-b hover:bg-gray-50">
                 <td className="py-2 pr-3 font-mono text-xs">{rx.prescription_number}</td>
-                <td className="py-2 pr-3">{rx.patient_name || '—'}</td>
+                <td className="py-2 pr-3">
+                  <div>{rx.patient_name || '—'}</div>
+                  {rx.admission_number ? (
+                    <div className="font-mono text-[10px] text-gray-500">{rx.admission_number}</div>
+                  ) : null}
+                </td>
                 <td className="py-2 pr-3 text-xs">{rx.doctor_name || '—'}</td>
                 <td className="py-2 pr-3">{rx.items?.length || 0}</td>
                 <td className="py-2 pr-3"><Badge variant="outline">{rx.status}</Badge></td>
@@ -323,7 +328,7 @@ export default function DashboardTab() {
                     size="sm"
                     onClick={() => {
                       closeDrill();
-                      navigate('/dashboard/pharmacy/pending-rx');
+                      navigate('/dashboard/pharmacy/sales-counter', { state: { dispenseRx: rx } });
                     }}
                   >
                     Dispense

@@ -76,6 +76,8 @@ const StatusBadge = ({ status }) => {
     expiring_soon: { bg: 'bg-amber-500/10', text: 'text-amber-400', dot: 'bg-amber-400', label: 'Expiring' },
     expired: { bg: 'bg-red-500/10', text: 'text-red-400', dot: 'bg-red-400', label: 'Expired' },
     renewed: { bg: 'bg-slate-500/10', text: 'text-slate-400', dot: 'bg-slate-500', label: 'Renewed' },
+    rebound: { bg: 'bg-sky-500/10', text: 'text-sky-400', dot: 'bg-sky-400', label: 'Rebound' },
+    revoked: { bg: 'bg-rose-500/10', text: 'text-rose-400', dot: 'bg-rose-400', label: 'Revoked' },
   };
   const c = statusConfig[status] || statusConfig.expired;
   return (
@@ -98,6 +100,7 @@ const DaysLeft = ({ days }) => {
 
 const FEATURE_LABELS = {
   physiotherapy: 'Physiotherapy',
+  art: 'IVF',
   customisation: 'Customisation',
 };
 
@@ -121,6 +124,21 @@ const Modal = ({ open, onClose, children, wide }) => {
 };
 
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+const CLOSED_LICENSE_STATUSES = new Set(['renewed', 'rebound', 'revoked']);
+
+const isClosedLicense = (lic) => CLOSED_LICENSE_STATUSES.has(lic?.computed_status) || CLOSED_LICENSE_STATUSES.has(lic?.status);
+
+const licenseChainLabel = (lic) => {
+  const prev = lic?.supersedes_license_id;
+  const notes = lic?.notes || '';
+  if (notes.startsWith('Rebound from ')) {
+    return prev ? `Rebound from ${prev}` : notes.split(' (')[0];
+  }
+  if (notes.startsWith('Renewed from ') || prev) {
+    return `Renewed from ${prev || notes.slice('Renewed from '.length).split(' ')[0]}`;
+  }
+  return null;
+};
 
 const EMPTY_LICENSE_FORM = {
   customer_id: '',
@@ -569,6 +587,7 @@ function App() {
 
   const generateStepError = (step = formStep) => {
     if (step === 0) {
+      if (!form.customer_id) return 'Select a customer';
       if (!form.hospital_id?.trim()) return 'Hospital ID is required';
       if (!form.hospital_name?.trim()) return 'Hospital name is required';
       if (!form.machine_id?.trim()) return 'Machine ID is required';
@@ -639,10 +658,7 @@ function App() {
         method: 'POST', body: JSON.stringify(payload)
       }, token);
       if (r.ok) {
-        const linked = !!payload.customer_id;
-        showMessage(linked
-          ? 'License generated — download it from this customer’s licenses'
-          : 'License generated successfully');
+        showMessage('License generated — download it from this customer’s licenses');
         closeGenerateForm();
         setForm({ ...EMPTY_LICENSE_FORM });
         fetchLicenses(); fetchDash();
@@ -711,6 +727,7 @@ function App() {
       window.URL.revokeObjectURL(url);
       showMessage('Rebind processed — new .lic downloaded. Send it to the hospital to upload.');
       fetchLicenses(); fetchDash();
+      if (selectedCust) fetchCustDetail(selectedCust);
     } catch {
       showMessage('Could not process rebind request', 'error');
     } finally { setProcessingRebind(false); }
@@ -736,11 +753,17 @@ function App() {
     }
   };
 
-  const deleteLicense = async (licenseId) => {
-    if (!window.confirm('Delete this license record permanently?')) return;
-    await apiFetch(`/licenses/${licenseId}`, { method: 'DELETE' }, token);
-    showMessage('License record deleted');
+  const revokeLicense = async (licenseId) => {
+    if (!window.confirm('Revoke this license? The license ID stays on the customer history.')) return;
+    const r = await apiFetch(`/licenses/${licenseId}`, { method: 'DELETE' }, token);
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      showMessage(apiErrorMessage(e, 'Could not revoke license'), 'error');
+      return;
+    }
+    showMessage('License revoked');
     fetchLicenses(); fetchDash();
+    if (selectedCust) fetchCustDetail(selectedCust);
   };
 
   // Customer functions
@@ -767,6 +790,7 @@ function App() {
           showMessage('Customer created — finish the license wizard');
           const newCust = {
             id: body.id,
+            customer_code: body.customer_code || null,
             hospital_name: savedForm.hospital_name,
             hospital_id: savedForm.hospital_id || null,
             contact_person: savedForm.contact_person || null,
@@ -1058,7 +1082,7 @@ function App() {
     finally { setSaving(false); }
   };
 
-  const allModules = ['outpatient', 'inpatient', 'lab', 'pharmacy', 'physiotherapy', 'ehr', 'admin', 'billing'];
+  const allModules = ['outpatient', 'inpatient', 'lab', 'pharmacy', 'physiotherapy', 'art', 'ehr', 'admin', 'billing'];
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: Icons.dashboard, roles: ['admin', 'support_agent'] },
@@ -1271,6 +1295,7 @@ function App() {
                         </div>
                         <div>
                           <p className="text-sm font-semibold text-white">{lic.hospital_name}</p>
+                          <p className="text-xs text-slate-400 font-mono">{lic.license_id}</p>
                           <p className="text-xs text-slate-500 font-mono">{lic.machine_id}</p>
                         </div>
                       </div>
@@ -1465,6 +1490,9 @@ function App() {
                                   }}
                                 >
                                   <p className="text-white font-medium whitespace-nowrap hover:text-blue-300">{log.hospital_name || '—'}</p>
+                                  {log.customer_code && (
+                                    <p className="text-[11px] text-blue-300/80 font-mono">{log.customer_code}</p>
+                                  )}
                                   {log.hospital_id && (
                                     <p className="text-[11px] text-slate-500 font-mono">{log.hospital_id}</p>
                                   )}
@@ -1563,7 +1591,7 @@ function App() {
                 <div className="relative flex-1 max-w-xs">
                   <Icon d={Icons.search} className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
                   <input value={search} onChange={e => setSearch(e.target.value)}
-                    placeholder="Search hospital, ID, machine..."
+                    placeholder="Search hospital, license ID, customer ID..."
                     className="w-full bg-slate-925 border border-slate-700/50 rounded-xl pl-10 pr-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50" />
                 </div>
                 <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
@@ -1573,6 +1601,9 @@ function App() {
                   <option value="active">Active</option>
                   <option value="expiring_soon">Expiring Soon</option>
                   <option value="expired">Expired</option>
+                  <option value="renewed">Renewed</option>
+                  <option value="rebound">Rebound</option>
+                  <option value="revoked">Revoked</option>
                 </select>
               </div>
 
@@ -1591,9 +1622,13 @@ function App() {
                       <tr key={lic.license_id} className="border-b border-slate-800/20 hover:bg-slate-800/20 transition-colors">
                         <td className="px-4 py-3.5">
                           <p className="font-semibold text-white">{lic.hospital_name}</p>
-                          <p className="text-[11px] text-slate-500 font-mono mt-0.5">{lic.hospital_id}</p>
-                          {lic.notes?.startsWith('Renewed from') && (
-                            <p className="text-[10px] text-blue-400/70 mt-0.5">{lic.notes}</p>
+                          <p className="text-[11px] text-slate-300 font-mono mt-0.5">{lic.license_id}</p>
+                          <p className="text-[11px] text-slate-500 font-mono">{lic.hospital_id}</p>
+                          {lic.customer_code && (
+                            <p className="text-[10px] text-blue-300/80 font-mono mt-0.5">Customer {lic.customer_code}</p>
+                          )}
+                          {licenseChainLabel(lic) && (
+                            <p className="text-[10px] text-blue-400/70 mt-0.5">{licenseChainLabel(lic)}</p>
                           )}
                         </td>
                         <td className="px-4 py-3.5 font-mono text-xs text-slate-300">{lic.machine_id}</td>
@@ -1619,14 +1654,18 @@ function App() {
                               className="p-1.5 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors">
                               <Icon d={Icons.download} className="w-3.5 h-3.5" />
                             </button>
-                            <button onClick={() => { setShowRenew(lic); setRenewCustomDuration(false); setRenewForm({ months: 12, days: 0, plan: lic.plan || 'standard', max_users: lic.max_users || 50, features: lic.features || [], gdrive_backup_enabled: false, seller_id: '', use_vendor_logo: false }); }} title="Renew"
-                              className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors">
-                              <Icon d={Icons.refresh} className="w-3.5 h-3.5" />
-                            </button>
-                            <button onClick={() => deleteLicense(lic.license_id)} title="Delete"
-                              className="p-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors">
-                              <Icon d={Icons.trash} className="w-3.5 h-3.5" />
-                            </button>
+                            {!isClosedLicense(lic) && (
+                              <button onClick={() => { setShowRenew(lic); setRenewCustomDuration(false); setRenewForm({ months: 12, days: 0, plan: lic.plan || 'standard', max_users: lic.max_users || 50, features: lic.features || [], gdrive_backup_enabled: false, seller_id: '', use_vendor_logo: false }); }} title="Renew"
+                                className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors">
+                                <Icon d={Icons.refresh} className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            {!isClosedLicense(lic) && (
+                              <button onClick={() => revokeLicense(lic.license_id)} title="Revoke"
+                                className="p-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors">
+                                <Icon d={Icons.trash} className="w-3.5 h-3.5" />
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -1663,7 +1702,7 @@ function App() {
 
               <div className="relative max-w-xs">
                 <Icon d={Icons.search} className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                <input value={custSearch} onChange={e => setCustSearch(e.target.value)} placeholder="Search customers..."
+                <input value={custSearch} onChange={e => setCustSearch(e.target.value)} placeholder="Search name, phone, customer ID..."
                   className="w-full bg-slate-925 border border-slate-700/50 rounded-xl pl-10 pr-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50" />
               </div>
 
@@ -1674,6 +1713,7 @@ function App() {
                     <div className="flex items-start justify-between mb-3">
                       <div>
                         <h3 className="font-semibold text-white">{c.hospital_name}</h3>
+                        {c.customer_code && <p className="text-xs text-blue-300/90 font-mono mt-0.5">{c.customer_code}</p>}
                         {c.hospital_id && <p className="text-xs text-slate-500 font-mono mt-0.5">{c.hospital_id}</p>}
                       </div>
                       <span className={`w-2 h-2 rounded-full mt-1.5 ${c.is_active ? 'bg-emerald-400' : 'bg-slate-600'}`} />
@@ -1718,6 +1758,7 @@ function App() {
                   <div>
                     <h2 className="text-2xl font-bold text-white">{custDetail.customer.hospital_name}</h2>
                     <div className="flex gap-3 text-xs text-slate-500 mt-1">
+                      {custDetail.customer.customer_code && <span className="font-mono bg-blue-500/10 text-blue-300 px-1.5 py-0.5 rounded">Customer {custDetail.customer.customer_code}</span>}
                       {custDetail.customer.hospital_id && <span className="font-mono bg-slate-800/50 px-1.5 py-0.5 rounded">{custDetail.customer.hospital_id}</span>}
                       {custDetail.customer.machine_id && <span className="font-mono bg-slate-800/50 px-1.5 py-0.5 rounded">{custDetail.customer.machine_id}</span>}
                     </div>
@@ -1861,7 +1902,7 @@ function App() {
               {isAdmin && (
               <div className="bg-slate-925 border border-slate-800/50 rounded-xl overflow-hidden">
                 <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800/30">
-                  <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Licenses</h3>
+                  <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">License timeline</h3>
                   <button onClick={() => openGenerateForm({
                     customer_id: selectedCust,
                     hospital_id: custDetail.customer.hospital_id || '',
@@ -1874,42 +1915,57 @@ function App() {
                 {custDetail.licenses.length === 0 ? (
                   <p className="text-center py-8 text-slate-600 text-sm">No licenses yet. Generate the first one above.</p>
                 ) : (
-                  <div className="divide-y divide-slate-800/20">
-                    {custDetail.licenses.map(lic => (
-                      <div key={lic.license_id} className="px-5 py-4">
-                        <div className="flex items-start justify-between">
-                          <div className="space-y-1.5">
-                            <div className="flex items-center gap-2">
-                              <StatusBadge status={lic.computed_status} />
-                              <span className="text-sm font-semibold text-white capitalize">{lic.plan}</span>
-                              <span className="text-xs text-slate-500 font-mono">{lic.machine_id}</span>
-                              <DaysLeft days={lic.days_left} />
+                  <div className="px-5 py-4">
+                    {custDetail.licenses.map((lic, idx) => {
+                      const chain = licenseChainLabel(lic);
+                      const closed = isClosedLicense(lic);
+                      return (
+                        <div key={lic.license_id} className="relative pl-6 pb-5 last:pb-0">
+                          <span className={`absolute left-0 top-1.5 w-2.5 h-2.5 rounded-full ${closed ? 'bg-slate-500' : 'bg-blue-400'}`} />
+                          {idx < custDetail.licenses.length - 1 && (
+                            <span className="absolute left-[4px] top-4 bottom-0 w-px bg-slate-700" />
+                          )}
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="space-y-1.5 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-sm font-semibold text-white font-mono">{lic.license_id}</span>
+                                <StatusBadge status={lic.computed_status} />
+                                <span className="text-sm text-slate-300 capitalize">{lic.plan}</span>
+                                <span className="text-xs text-slate-500 font-mono">{lic.machine_id}</span>
+                                <DaysLeft days={lic.days_left} />
+                              </div>
+                              <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
+                                <span>Issued: {formatDate(lic.issued_at)}</span>
+                                <span>Expires: {formatDate(lic.expires_at)}</span>
+                                <span>{lic.max_users} users</span>
+                              </div>
+                              {chain && <p className="text-[11px] text-blue-400/80">{chain}</p>}
+                              <div className="flex flex-wrap gap-1 mt-1">
+                                {(lic.features || []).map(f => <FeatureTag key={f} name={f} />)}
+                              </div>
                             </div>
-                            <div className="flex items-center gap-3 text-xs text-slate-500">
-                              <span>Issued: {formatDate(lic.issued_at)}</span>
-                              <span>→ Expires: {formatDate(lic.expires_at)}</span>
-                              <span>{lic.max_users} users</span>
-                            </div>
-                            <div className="flex flex-wrap gap-1 mt-1">
-                              {(lic.features || []).map(f => <FeatureTag key={f} name={f} />)}
-                            </div>
-                            {lic.notes && <p className="text-[10px] text-blue-400/60 mt-1">{lic.notes}</p>}
-                          </div>
-                          <div className="flex items-center gap-2 shrink-0 ml-4">
-                            <button onClick={() => downloadLicense(lic.license_id)} title="Download .lic"
-                              className="px-2.5 py-1.5 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 text-xs font-medium flex items-center gap-1">
-                              <Icon d={Icons.download} className="w-3 h-3" /> Download
-                            </button>
-                            {lic.computed_status !== 'renewed' && (
-                              <button onClick={() => { setShowRenew(lic); setRenewCustomDuration(false); setRenewForm({ months: 12, days: 0, plan: lic.plan || 'standard', max_users: lic.max_users || 50, features: lic.features || [], gdrive_backup_enabled: false, seller_id: '', use_vendor_logo: false }); }} title="Renew"
-                                className="px-2.5 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 text-xs font-medium flex items-center gap-1">
-                                <Icon d={Icons.refresh} className="w-3 h-3" /> Renew
+                            <div className="flex items-center gap-2 shrink-0">
+                              <button onClick={() => downloadLicense(lic.license_id)} title="Download .lic"
+                                className="px-2.5 py-1.5 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 text-xs font-medium flex items-center gap-1">
+                                <Icon d={Icons.download} className="w-3 h-3" /> Download
                               </button>
-                            )}
+                              {!closed && (
+                                <button onClick={() => { setShowRenew(lic); setRenewCustomDuration(false); setRenewForm({ months: 12, days: 0, plan: lic.plan || 'standard', max_users: lic.max_users || 50, features: lic.features || [], gdrive_backup_enabled: false, seller_id: '', use_vendor_logo: false }); }} title="Renew"
+                                  className="px-2.5 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 text-xs font-medium flex items-center gap-1">
+                                  <Icon d={Icons.refresh} className="w-3 h-3" /> Renew
+                                </button>
+                              )}
+                              {!closed && (
+                                <button onClick={() => revokeLicense(lic.license_id)} title="Revoke"
+                                  className="px-2.5 py-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 text-xs font-medium">
+                                  Revoke
+                                </button>
+                              )}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -2339,18 +2395,27 @@ function App() {
           {formStep === 0 && (
             <div className="space-y-4 min-h-[220px]">
               <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1.5">Customer (optional)</label>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">Customer</label>
                 <select
                   value={form.customer_id === '' || form.customer_id == null ? '' : String(form.customer_id)}
                   onChange={(e) => applyCustomerToLicenseForm(e.target.value)}
                   className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50"
                 >
-                  <option value="">No customer (orphan license)</option>
+                  <option value="">Select a customer</option>
                   {customers.map((c) => (
-                    <option key={c.id} value={c.id}>{c.hospital_name}{c.hospital_id ? ` (${c.hospital_id})` : ''}</option>
+                    <option key={c.id} value={c.id}>
+                      {c.hospital_name}{c.customer_code ? ` (${c.customer_code})` : ''}
+                    </option>
                   ))}
                 </select>
-                <p className="text-[10px] text-slate-500 mt-1">Selecting a customer prefills hospital fields below.</p>
+                <p className="text-[10px] text-slate-500 mt-1">
+                  {(() => {
+                    const selected = customers.find((c) => String(c.id) === String(form.customer_id));
+                    return selected?.customer_code
+                      ? `Customer ID ${selected.customer_code} is written into the license file.`
+                      : 'Every license is attached to a customer. Their customer ID is written into the license file.';
+                  })()}
+                </p>
               </div>
               <Input label="Hospital ID" required value={form.hospital_id}
                 onChange={e => setForm({...form, hospital_id: e.target.value})} placeholder="HOSP01" />
@@ -2724,6 +2789,12 @@ function App() {
               <Icon d={Icons.x} className="w-5 h-5" />
             </button>
           </div>
+          {editingCust?.customer_code && (
+            <div>
+              <p className="text-xs font-medium text-slate-400 mb-1.5">Customer ID</p>
+              <p className="font-mono text-sm text-blue-300 bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5">{editingCust.customer_code}</p>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-4">
             <Input label="Hospital Name" required value={custForm.hospital_name}
               onChange={e => setCustForm({...custForm, hospital_name: e.target.value})}

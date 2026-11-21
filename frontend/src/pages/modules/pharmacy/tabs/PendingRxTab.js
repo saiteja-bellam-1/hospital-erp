@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../../components/ui/card';
 import { Button } from '../../../../components/ui/button';
 import { Input } from '../../../../components/ui/input';
@@ -9,11 +10,9 @@ import { useToast } from '../../../../hooks/use-toast';
 import { RefreshCw, Pill, XCircle, Pencil, Plus, Trash2 } from 'lucide-react';
 import { Textarea } from '../../../../components/ui/textarea';
 import { Label } from '../../../../components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../../components/ui/select';
 import { errMsg } from '../../PharmacyModule';
-import { printPdfFromUrl } from '../../../../utils/printPdf';
-import { displayPharmacyNumericInput, pharmacyNoSpinInputClass, supportsStripSale } from '../../../../utils/pharmacyUnits';
-import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
+import { displayPharmacyNumericInput, pharmacyNoSpinInputClass } from '../../../../utils/pharmacyUnits';
+import { MEDICINE_QTY_HINT, patchMedicineLine } from '../../../../utils/prescriptionSchedule';
 import PharmacyMedicinePicker from '../../../../components/pharmacy/PharmacyMedicinePicker';
 
 const blankEditRow = () => ({
@@ -48,15 +47,9 @@ function rowsFromRx(rx) {
 
 export default function PendingRxTab() {
   const { toast } = useToast();
-  const { activeStoreId } = usePharmacyStore();
+  const navigate = useNavigate();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [open, setOpen] = useState(false);
-  const [target, setTarget] = useState(null);
-  const [qtyTabs, setQtyTabs] = useState({});
-  const [qtyStrips, setQtyStrips] = useState({});
-  const [billingMode, setBillingMode] = useState('inpatient_bill');
-  const [paymentType, setPaymentType] = useState('cash');
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelTarget, setCancelTarget] = useState(null);
   const [cancelReason, setCancelReason] = useState('');
@@ -77,18 +70,12 @@ export default function PendingRxTab() {
   useEffect(() => { load(); }, []);
 
   const openDispense = (rx) => {
-    setTarget(rx);
-    const initTabs = {};
-    const initStrips = {};
-    rx.items.forEach(it => {
-      initTabs[it.item_id] = String(it.quantity_remaining);
-      initStrips[it.item_id] = '0';
-    });
-    setQtyTabs(initTabs);
-    setQtyStrips(initStrips);
-    setBillingMode(rx.admission_id ? 'inpatient_bill' : 'cash_at_pharmacy');
-    setPaymentType('cash');
-    setOpen(true);
+    const pending = (rx.items || []).filter((it) => Number(it.quantity_remaining || 0) > 0);
+    if (pending.length === 0) {
+      toast({ variant: 'destructive', title: 'Nothing left to dispense on this prescription' });
+      return;
+    }
+    navigate('/dashboard/pharmacy/sales-counter', { state: { dispenseRx: rx } });
   };
 
   const openEdit = (rx) => {
@@ -99,7 +86,19 @@ export default function PendingRxTab() {
   };
 
   const updateEditRow = (key, patch) => {
-    setEditRows((prev) => prev.map((row) => (row.key === key ? { ...row, ...patch } : row)));
+    setEditRows((prev) => prev.map((row) => {
+      if (row.key !== key) return row;
+      const driver = ['dosage', 'duration'].find((field) => (
+        Object.prototype.hasOwnProperty.call(patch, field) && Object.keys(patch).length === 1
+      ));
+      if (!driver) return { ...row, ...patch };
+      let next = patchMedicineLine(row, driver, patch[driver]);
+      const floor = Number(row.quantity_dispensed || 0);
+      if (floor > 0 && Number(next.quantity_prescribed) < floor) {
+        next = { ...next, quantity_prescribed: String(floor) };
+      }
+      return next;
+    }));
   };
 
   const submitEdit = async () => {
@@ -148,45 +147,6 @@ export default function PendingRxTab() {
       toast({ variant: 'destructive', title: 'Update failed', description: errMsg(e) });
     } finally {
       setSavingEdit(false);
-    }
-  };
-
-  const submit = async () => {
-    const items = target.items
-      .map(it => ({
-        item_id: it.item_id,
-        qty_tabs: parseFloat(qtyTabs[it.item_id] || 0),
-        qty_strips: parseFloat(qtyStrips[it.item_id] || 0),
-      }))
-      .filter(x => x.qty_tabs > 0 || x.qty_strips > 0);
-    if (items.length === 0) {
-      toast({ variant: 'destructive', title: 'Enter at least one quantity to dispense' });
-      return;
-    }
-    try {
-      const r = await axios.post(`/api/pharmacy/prescriptions/${target.id}/dispense`, {
-        items,
-        store_id: activeStoreId || null,
-        billing_mode: billingMode,
-        payment_type: paymentType,
-      });
-      const d = r.data || {};
-      toast({
-        title: `Dispensed (Rx now ${d.status})`,
-        description: d.billing_mode === 'cash_at_pharmacy' && d.grand_total != null
-          ? `Collected ₹${Number(d.grand_total).toFixed(2)} · Sale ${d.pharmacy_sale_number}`
-          : d.billing_mode === 'inpatient_bill' && target.admission_id
-            ? 'Added to inpatient bill (pay at discharge or interim bill)'
-            : undefined,
-      });
-      const rxId = target.id;
-      setOpen(false); load();
-      printPdfFromUrl(`/api/pharmacy/prescriptions/${rxId}/dispense/pdf`);
-      if (d.pharmacy_sale_id) {
-        printPdfFromUrl(`/api/pharmacy/sales/${d.pharmacy_sale_id}/invoice/pdf`);
-      }
-    } catch (e) {
-      toast({ variant: 'destructive', title: 'Dispense failed', description: errMsg(e) });
     }
   };
 
@@ -250,7 +210,9 @@ export default function PendingRxTab() {
                     <td className="py-2 pr-4 font-mono text-xs">{rx.prescription_number}</td>
                     <td className="py-2 pr-4 text-xs">
                       {rx.patient_name || '—'}
-                      {rx.admission_id ? <Badge variant="outline" className="ml-1 text-[10px]">IP</Badge> : null}
+                      {rx.admission_number ? (
+                        <span className="ml-1 font-mono text-[10px] text-gray-500">{rx.admission_number}</span>
+                      ) : rx.admission_id ? <Badge variant="outline" className="ml-1 text-[10px]">IP</Badge> : null}
                     </td>
                     <td className="py-2 pr-4 text-xs">{new Date(rx.prescription_date).toLocaleString()}</td>
                     <td className="py-2 pr-4">{rx.items.length}</td>
@@ -346,7 +308,7 @@ export default function PendingRxTab() {
                       <Label className="text-[10px] text-gray-500">Dosage</Label>
                       <Input
                         className="h-8"
-                        placeholder="1 tab BD"
+                        placeholder="0.5 tab BD"
                         value={row.dosage}
                         onChange={(e) => updateEditRow(row.key, { dosage: e.target.value })}
                       />
@@ -365,8 +327,9 @@ export default function PendingRxTab() {
                       <Input
                         className={`h-8 ${pharmacyNoSpinInputClass}`}
                         type="number"
-                        min={locked ? row.quantity_dispensed : 1}
-                        step="1"
+                        min={locked ? row.quantity_dispensed : 0.01}
+                        step="any"
+                        title={MEDICINE_QTY_HINT}
                         value={displayPharmacyNumericInput(row.quantity_prescribed)}
                         onChange={(e) => updateEditRow(row.key, { quantity_prescribed: e.target.value })}
                       />
@@ -392,88 +355,6 @@ export default function PendingRxTab() {
             <Button onClick={submitEdit} disabled={savingEdit}>
               {savingEdit ? 'Saving…' : 'Save changes'}
             </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-4xl w-[96vw] max-h-[90vh] flex flex-col overflow-hidden gap-0 p-0">
-          <div className="shrink-0 border-b px-6 pt-5 pb-3 space-y-3">
-            <DialogHeader className="space-y-0">
-              <DialogTitle>Dispense — {target?.prescription_number}</DialogTitle>
-            </DialogHeader>
-            {target?.admission_id && (
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <Label className="text-xs">Billing</Label>
-                  <Select value={billingMode} onValueChange={setBillingMode}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="inpatient_bill">Add to inpatient bill</SelectItem>
-                      <SelectItem value="cash_at_pharmacy">Collect cash now</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                {billingMode === 'cash_at_pharmacy' && (
-                  <div>
-                    <Label className="text-xs">Payment</Label>
-                    <Select value={paymentType} onValueChange={setPaymentType}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="cash">Cash</SelectItem>
-                        <SelectItem value="credit">Credit</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
-              </div>
-            )}
-            <p className="text-xs text-gray-500">FIFO batch picking is used. Leave qty 0 to skip a line.</p>
-          </div>
-          <div className="flex-1 min-h-0 max-h-[50vh] overflow-y-auto px-6 py-2">
-            <table className="w-full text-sm">
-              <thead className="sticky top-0 bg-white"><tr className="border-b text-left text-gray-600">
-                <th className="py-2 pr-4">Medicine</th><th className="py-2 pr-4">Rate</th>
-                <th className="py-2 pr-4">Prescribed</th>
-                <th className="py-2 pr-4">Already</th><th className="py-2 pr-4">Remaining</th>
-                <th className="py-2 pr-4">Qty Tab</th>
-                <th className="py-2 pr-4">Qty Strip</th>
-              </tr></thead>
-              <tbody>
-                {target?.items.map(it => (
-                  <tr key={it.item_id} className="border-b">
-                    <td className="py-2 pr-4">
-                      {it.medicine_name}
-                      {it.is_unmapped && (
-                        <Badge variant="outline" className="ml-1 text-[10px] text-amber-700 border-amber-300">Unmapped</Badge>
-                      )}
-                    </td>
-                    <td className="py-2 pr-4">₹{Number(it.unit_price || 0).toFixed(2)}</td>
-                    <td className="py-2 pr-4">{it.quantity_prescribed}</td>
-                    <td className="py-2 pr-4">{it.quantity_dispensed}</td>
-                    <td className="py-2 pr-4 font-medium">{it.quantity_remaining}</td>
-                    <td className="py-2 pr-4">
-                      <Input className={`h-7 w-20 ${pharmacyNoSpinInputClass}`} type="number" min="0"
-                        value={displayPharmacyNumericInput(qtyTabs[it.item_id] ?? 0)}
-                        onChange={e => setQtyTabs(s => ({ ...s, [it.item_id]: e.target.value }))} />
-                    </td>
-                    <td className="py-2 pr-4">
-                      {supportsStripSale({ strip_conversion_factor: it.strip_conversion_factor }) ? (
-                        <Input className={`h-7 w-20 ${pharmacyNoSpinInputClass}`} type="number" min="0"
-                          value={displayPharmacyNumericInput(qtyStrips[it.item_id] ?? 0)}
-                          onChange={e => setQtyStrips(s => ({ ...s, [it.item_id]: e.target.value }))} />
-                      ) : (
-                        <span className="text-xs text-gray-400">—</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="shrink-0 border-t px-6 py-3 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
-            <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button onClick={submit}>Dispense</Button>
           </div>
         </DialogContent>
       </Dialog>
