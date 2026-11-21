@@ -10,9 +10,10 @@ import { Badge } from '../../../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../../../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../../components/ui/select';
 import { useToast } from '../../../../hooks/use-toast';
-import { Search, RefreshCw, Sliders, ScrollText, Upload, Download, Loader2, X, Trash2, Printer, AlertTriangle, CalendarX2 } from 'lucide-react';
+import { Search, RefreshCw, Sliders, ScrollText, Upload, Download, Loader2, X, Trash2, Printer, AlertTriangle, CalendarX2, Plus } from 'lucide-react';
 import LabelPreviewDialog from '../../../../components/LabelPreviewDialog';
 import PharmacyImportDialog, { downloadPharmacyBlob } from '../../../../components/pharmacy/PharmacyImportDialog';
+import OpeningStockDialog from '../../../../components/pharmacy/OpeningStockDialog';
 import PharmacyMedicinePicker from '../../../../components/pharmacy/PharmacyMedicinePicker';
 import { errMsg } from '../../PharmacyModule';
 import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
@@ -85,6 +86,7 @@ export default function InventoryTab() {
   const [batchesForFilter, setBatchesForFilter] = useState([]);
 
   const [adjustOpen, setAdjustOpen] = useState(false);
+  const [openingOpen, setOpeningOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [adjustTarget, setAdjustTarget] = useState(null);
@@ -331,9 +333,14 @@ export default function InventoryTab() {
               {showStockImportExport && (
                 <>
                   {canAdjustStock && (
-                    <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
-                      <Upload className="h-3 w-3 mr-1" /> Import opening stock
-                    </Button>
+                    <>
+                      <Button size="sm" variant="outline" onClick={() => setOpeningOpen(true)}>
+                        <Plus className="h-3 w-3 mr-1" /> Enter opening stock
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
+                        <Upload className="h-3 w-3 mr-1" /> Import opening stock
+                      </Button>
+                    </>
                   )}
                   <Button size="sm" variant="outline" onClick={handleExport} disabled={exporting}>
                     {exporting ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Download className="h-3 w-3 mr-1" />}
@@ -458,6 +465,12 @@ export default function InventoryTab() {
             )}
         </CardContent>
       </Card>
+
+      <OpeningStockDialog
+        open={openingOpen}
+        onOpenChange={setOpeningOpen}
+        onSaved={load}
+      />
 
       <PharmacyImportDialog
         open={importOpen}
