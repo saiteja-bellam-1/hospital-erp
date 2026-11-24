@@ -1,6 +1,16 @@
 from reportlab.lib.pagesizes import A4, A5, landscape
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, HRFlowable, XPreformatted, Flowable
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import (
+    SimpleDocTemplate as _RLDoc,
+    Table,
+    TableStyle as _RLTableStyle,
+    Paragraph,
+    Spacer as _RLSpacer,
+    Image,
+    HRFlowable as _RLHR,
+    XPreformatted,
+    Flowable,
+)
+from reportlab.lib.styles import ParagraphStyle as _RLParagraphStyle, getSampleStyleSheet
 from reportlab.lib import colors
 from reportlab.lib.units import inch
 from reportlab.pdfgen import canvas
@@ -11,8 +21,146 @@ import json
 import os
 
 from app.utils.patient_age import age_display_from_data
+from app.utils.pdf_layout import active_pdf_layout, section_on as _section_on, use_pdf_layout
 from app.utils.prescription_schedule import frequency_schedule_label
 from app.utils.time import format_bill_date, format_system_dt, system_now, to_system_local
+
+# Public names stay the ReportLab classes so tests can monkeypatch them.
+# Generators call the themed wrappers below, which delegate here.
+SimpleDocTemplate = _RLDoc
+ParagraphStyle = _RLParagraphStyle
+TableStyle = _RLTableStyle
+HRFlowable = _RLHR
+
+
+def _usable_width(side_subtract_pt: float) -> float:
+    """Content width for a portrait page. Default layout keeps A4 minus the
+    document's existing side margins."""
+    layout = active_pdf_layout()
+    if layout is None or layout.format_is_default:
+        return A4[0] - side_subtract_pt
+    return layout.pagesize[0] - side_subtract_pt * layout.margin_factor
+
+
+def _doc_template(*args, **kwargs):
+    layout = active_pdf_layout()
+    pagesize = kwargs.get("pagesize")
+    if (
+        layout is not None
+        and not layout.format_is_default
+        and pagesize == A4
+    ):
+        kwargs["pagesize"] = layout.pagesize
+        factor = layout.margin_factor
+        left = kwargs.get("leftMargin")
+        right = kwargs.get("rightMargin")
+        if isinstance(left, (int, float)):
+            kwargs["leftMargin"] = left * factor
+        if isinstance(right, (int, float)):
+            kwargs["rightMargin"] = right * factor
+    doc_cls = SimpleDocTemplate
+    return doc_cls(*args, **kwargs)
+
+
+# Public alias so callers can still patch Spacer. Generators use _spacer.
+Spacer = _RLSpacer
+
+_ALIGN_TA = {"left": 0, "center": 1, "right": 2}
+_ALIGN_NAME = {"left": "LEFT", "center": "CENTER", "right": "RIGHT"}
+
+
+def _paragraph_style(name, **kwargs):
+    layout = active_pdf_layout()
+    if layout is None or (layout.style_is_default and layout.line_factor == 1 and layout.align_is_default):
+        return _RLParagraphStyle(name, **kwargs)
+    kwargs = dict(kwargs)
+    font_name = kwargs.get("fontName")
+    original_size = kwargs.get("fontSize")
+    if not layout.style_is_default:
+        if isinstance(font_name, str):
+            kwargs["fontName"] = layout.map_font(font_name)
+        scale = layout.font_scale
+        if scale != 1:
+            if isinstance(original_size, (int, float)):
+                kwargs["fontSize"] = original_size * scale
+            leading = kwargs.get("leading")
+            if isinstance(leading, (int, float)):
+                kwargs["leading"] = leading * scale
+        accent = layout.accent_hex
+        if accent and isinstance(original_size, (int, float)) and original_size >= 11:
+            alignment = kwargs.get("alignment", 0)
+            bold = isinstance(font_name, str) and "Bold" in font_name
+            if alignment == 1 or bold:
+                text_color = kwargs.get("textColor", colors.black)
+                if text_color == colors.black or text_color == colors.darkblue:
+                    kwargs["textColor"] = colors.HexColor(accent)
+    if layout.line_factor != 1:
+        size = kwargs.get("fontSize") if isinstance(kwargs.get("fontSize"), (int, float)) else original_size
+        leading = kwargs.get("leading")
+        if isinstance(leading, (int, float)):
+            kwargs["leading"] = leading * layout.line_factor
+        elif isinstance(size, (int, float)):
+            kwargs["leading"] = size * 1.2 * layout.line_factor
+    if not layout.align_is_default:
+        alignment = kwargs.get("alignment", 0)
+        size = original_size if isinstance(original_size, (int, float)) else 10
+        if alignment == 1 and size >= 11 and layout.title_align != "center":
+            kwargs["alignment"] = _ALIGN_TA[layout.title_align]
+        elif alignment == 0 and size < 12 and layout.body_align != "left":
+            kwargs["alignment"] = _ALIGN_TA[layout.body_align]
+    return _RLParagraphStyle(name, **kwargs)
+
+
+def _table_style(commands):
+    layout = active_pdf_layout()
+    needs_font = layout is not None and not layout.style_is_default
+    needs_pad = layout is not None and (layout.spacing_factor != 1 or layout.padding_factor != 1)
+    needs_align = layout is not None and layout.body_align != "left"
+    if layout is None or not commands or not (needs_font or needs_pad or needs_align):
+        return _RLTableStyle(commands)
+    remapped = []
+    for cmd in commands:
+        if isinstance(cmd, (list, tuple)) and len(cmd) >= 4:
+            op = cmd[0]
+            if needs_font and op == "FONTNAME" and isinstance(cmd[3], str):
+                mapped = layout.map_font(cmd[3])
+                if mapped != cmd[3]:
+                    cmd = (cmd[0], cmd[1], cmd[2], mapped, *cmd[4:])
+            elif needs_pad and op in ("TOPPADDING", "BOTTOMPADDING") and isinstance(cmd[3], (int, float)):
+                cmd = (cmd[0], cmd[1], cmd[2], cmd[3] * layout.spacing_factor, *cmd[4:])
+            elif needs_pad and op in ("LEFTPADDING", "RIGHTPADDING") and isinstance(cmd[3], (int, float)):
+                cmd = (cmd[0], cmd[1], cmd[2], cmd[3] * layout.padding_factor, *cmd[4:])
+            elif (
+                needs_align
+                and op == "ALIGN"
+                and isinstance(cmd[3], str)
+                and cmd[3].upper() == "LEFT"
+            ):
+                cmd = (cmd[0], cmd[1], cmd[2], _ALIGN_NAME[layout.body_align], *cmd[4:])
+        remapped.append(cmd)
+    return _RLTableStyle(remapped)
+
+
+def _spacer(width, height, *args, **kwargs):
+    layout = active_pdf_layout()
+    if (
+        layout is not None
+        and layout.spacing_factor != 1
+        and isinstance(height, (int, float))
+        and 0 < height <= 48
+    ):
+        height = height * layout.spacing_factor
+    return _RLSpacer(width, height, *args, **kwargs)
+
+
+def _hr_flowable(*args, **kwargs):
+    layout = active_pdf_layout()
+    accent = layout.accent_hex if layout is not None and not layout.style_is_default else None
+    if accent:
+        color = kwargs.get("color", colors.black)
+        if color == colors.black or color == colors.darkblue:
+            kwargs["color"] = colors.HexColor(accent)
+    return _RLHR(*args, **kwargs)
 
 DEFAULT_LETTERHEAD_GAP_PT = 100.0
 # No extra empty band above the hospital letterhead. Pre-printed stationery
@@ -108,7 +256,7 @@ class _PatientInfoWithBarcode(Flowable):
             [[self.info_table, barcode, ""]],
             colWidths=[info_w, bar_col, spacer_w],
         )
-        wrap.setStyle(TableStyle([
+        wrap.setStyle(_table_style([
             ("BOX", (0, 0), (-1, -1), 1, colors.black),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("LEFTPADDING", (0, 0), (0, 0), 0),
@@ -280,6 +428,72 @@ def _aadhaar_display(data) -> str:
     return aadhaar_from_payload(data)
 
 
+def _field_text(data, *keys) -> str:
+    """First non-empty value from the payload, then from a nested patient dict."""
+    sources = [data]
+    nested = data.get("patient") if isinstance(data, dict) else None
+    if isinstance(nested, dict):
+        sources.append(nested)
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in keys:
+            value = source.get(key)
+            text = "" if value is None else str(value).strip()
+            if text:
+                return text
+    return ""
+
+
+def _extra_lines(group: str, specs) -> list[tuple[str, str]]:
+    lines = []
+    for key, label, value in specs:
+        if not _section_on(group, key):
+            continue
+        text = "" if value is None else str(value).strip()
+        if text:
+            lines.append((label, text))
+    return lines
+
+
+def _append_extra_lines(elements, page_width, lines, make_cell) -> None:
+    if not lines:
+        return
+    table = Table([[make_cell(label, value)] for label, value in lines], colWidths=[page_width])
+    table.setStyle(_table_style([
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 2),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ('BOX', (0, 0), (-1, -1), 0.4, colors.black),
+    ]))
+    elements.append(table)
+    elements.append(_spacer(1, 6))
+
+
+def _bill_extra_specs(data):
+    return [
+        ("email", "Email", _field_text(data, "patient_email", "email")),
+        ("aadhaar", "Aadhaar", _aadhaar_display(data) or _field_text(data, "aadhaar_number")),
+        ("blood_group", "Blood group", _field_text(data, "patient_blood_group", "blood_group")),
+        ("abha", "ABHA", _field_text(data, "abha_id")),
+        ("emergency_contact", "Emergency contact", _field_text(data, "emergency_contact")),
+        ("gstin", "GSTIN", _field_text(data, "gstin")),
+    ]
+
+
+def _lab_extra_specs(data):
+    return [
+        ("email", "Email", _field_text(data, "patient_email", "email")),
+        ("aadhaar", "Aadhaar", _aadhaar_display(data) or _field_text(data, "aadhaar_number")),
+        ("blood_group", "Blood group", _field_text(data, "patient_blood_group", "blood_group")),
+        ("abha", "ABHA", _field_text(data, "abha_id")),
+        ("emergency_contact", "Emergency contact", _field_text(data, "emergency_contact")),
+        ("sample_type", "Sample type", _field_text(data, "sample_type")),
+    ]
+
+
 def _append_aadhaar_row(info_data, style_list, data, lv):
     """Append a full-width Aadhaar row when the payload carries a number."""
     aadhaar = _aadhaar_display(data)
@@ -398,7 +612,7 @@ def _format_lab_result_with_unit(value, unit):
 def _format_lab_parameter_cell(parameter_name, remarks=''):
     """Parameter name with optional technician remarks on the next line."""
     param_text = _escape_pdf_inline(parameter_name or '')
-    if remarks:
+    if remarks and _section_on("lab_report", "remarks"):
         param_text = (
             f"{param_text}<br/><i><font size='7' color='grey'>"
             f"{_escape_pdf_inline(remarks)}</font></i>"
@@ -409,8 +623,9 @@ def _format_lab_parameter_cell(parameter_name, remarks=''):
 def _build_lab_results_table(results_list, *, page_width, cell_label, cell_value, cell_abnormal, section_label_style, cell_ref_range=None):
     """Build a lab results table. Adds METHOD/NOTES columns when any parameter has them."""
     ref_cell_style = cell_ref_range or cell_value
-    show_method = _lab_results_show_method_column(results_list)
+    show_method = _lab_results_show_method_column(results_list) and _section_on("lab_report", "method")
     show_notes = _lab_results_show_notes_column(results_list)
+    show_ref = _section_on("lab_report", "reference_range")
 
     if show_method and show_notes:
         col_widths = [
@@ -465,6 +680,12 @@ def _build_lab_results_table(results_list, *, page_width, cell_label, cell_value
             Paragraph('<b>BIO. REF. RANGE</b>', cell_label),
         ]
 
+    if not show_ref and len(header) >= 3:
+        header = header[:2] + header[3:]
+        col_widths = col_widths[:2] + col_widths[3:]
+        total = sum(col_widths) or 1
+        col_widths = [page_width * (width / total) for width in col_widths]
+
     results_data = [header]
     section_row_indices = []
     current_section = None
@@ -511,8 +732,9 @@ def _build_lab_results_table(results_list, *, page_width, cell_label, cell_value
         row = [
             Paragraph(param_text, cell_value),
             Paragraph(result_text, value_style),
-            Paragraph(ref_range, ref_style),
         ]
+        if show_ref:
+            row.append(Paragraph(ref_range, ref_style))
         if show_method:
             method_text = (r.get('method') or '').strip()
             row.append(Paragraph(_escape_pdf_inline(method_text) if method_text else '-', cell_value))
@@ -538,7 +760,7 @@ def _build_lab_results_table(results_list, *, page_width, cell_label, cell_value
         table_style_cmds.append(('BOTTOMPADDING', (0, sec_row), (-1, sec_row), 5))
 
     results_table = Table(results_data, colWidths=col_widths)
-    results_table.setStyle(TableStyle(table_style_cmds))
+    results_table.setStyle(_table_style(table_style_cmds))
     return results_table
 
 
@@ -546,10 +768,22 @@ class PDFService:
     def __init__(self):
         self.styles = getSampleStyleSheet()
         self.setup_custom_styles()
-    
+
+    def __getattribute__(self, name):
+        if isinstance(name, str) and name.startswith("generate_"):
+            fn = object.__getattribute__(self, name)
+
+            def wrapped(*args, **kwargs):
+                layout = kwargs.pop("pdf_layout", None)
+                with use_pdf_layout(layout):
+                    return fn(*args, **kwargs)
+
+            return wrapped
+        return object.__getattribute__(self, name)
+
     def setup_custom_styles(self):
         """Setup custom paragraph styles"""
-        self.styles.add(ParagraphStyle(
+        self.styles.add(_paragraph_style(
             'CustomTitle',
             parent=self.styles['Title'],
             fontSize=20,
@@ -558,7 +792,7 @@ class PDFService:
             textColor=colors.darkblue
         ))
         
-        self.styles.add(ParagraphStyle(
+        self.styles.add(_paragraph_style(
             'CustomHeading',
             parent=self.styles['Heading2'],
             fontSize=14,
@@ -570,7 +804,7 @@ class PDFService:
             backColor=colors.lightblue
         ))
         
-        self.styles.add(ParagraphStyle(
+        self.styles.add(_paragraph_style(
             'InfoText',
             parent=self.styles['Normal'],
             fontSize=10,
@@ -597,34 +831,34 @@ class PDFService:
           - prepared_by_name
         """
         buffer = BytesIO()
-        doc = SimpleDocTemplate(
+        doc = _doc_template(
             buffer, pagesize=A4,
             rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt),
         )
         elements = []
-        page_width = A4[0] - 60
+        page_width = _usable_width(60)
 
         # --- Styles (black & white to match OPD bill) ---
-        title_style = ParagraphStyle('BillTitle', parent=self.styles['Title'],
+        title_style = _paragraph_style('BillTitle', parent=self.styles['Title'],
             fontSize=16, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=2)
-        subtitle_style = ParagraphStyle('BillSubtitle', parent=self.styles['Normal'],
+        subtitle_style = _paragraph_style('BillSubtitle', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica',
             textColor=colors.black, spaceAfter=2)
-        receipt_title_style = ParagraphStyle('ReceiptTitle', parent=self.styles['Normal'],
+        receipt_title_style = _paragraph_style('ReceiptTitle', parent=self.styles['Normal'],
             fontSize=12, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=4)
-        cell_label = ParagraphStyle('CellLabel', parent=self.styles['Normal'],
+        cell_label = _paragraph_style('CellLabel', parent=self.styles['Normal'],
             fontSize=8, fontName='Helvetica-Bold', textColor=colors.black)
-        cell_value = ParagraphStyle('CellValue', parent=self.styles['Normal'],
+        cell_value = _paragraph_style('CellValue', parent=self.styles['Normal'],
             fontSize=8, fontName='Helvetica', textColor=colors.black)
-        cell_value_sm = ParagraphStyle('CellValueSm', parent=self.styles['Normal'],
+        cell_value_sm = _paragraph_style('CellValueSm', parent=self.styles['Normal'],
             fontSize=7, fontName='Helvetica', textColor=colors.black)
-        cell_value_right = ParagraphStyle('CellValueRight', parent=cell_value_sm, alignment=2)
+        cell_value_right = _paragraph_style('CellValueRight', parent=cell_value_sm, alignment=2)
 
         def lv(label, value):
             return Paragraph(f"<b>{label}</b> :  {value}",
-                             ParagraphStyle('LV', parent=cell_value, leading=11))
+                             _paragraph_style('LV', parent=cell_value, leading=11))
 
         def lv_sm(label, value):
             return Paragraph(f"<b>{label}</b> :  {value}", cell_value_sm)
@@ -672,7 +906,7 @@ class PDFService:
                         [[logo_img, header_text_elems]],
                         colWidths=[75, page_width - 75],
                     )
-                    header_table.setStyle(TableStyle([
+                    header_table.setStyle(_table_style([
                         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                         ('LEFTPADDING', (0, 0), (-1, -1), 0),
                         ('RIGHTPADDING', (0, 0), (-1, -1), 0),
@@ -687,16 +921,16 @@ class PDFService:
                 for el in header_text_elems:
                     elements.append(el)
 
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 6))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, letterhead_gap_pt))
+            elements.append(_spacer(1, letterhead_gap_pt))
 
-        elements.append(Spacer(1, 4))
+        elements.append(_spacer(1, 4))
         bill_subtype = (bill_data.get('bill_subtype') or 'final').upper()
         elements.append(Paragraph(f"INPATIENT BILL — {bill_subtype}", receipt_title_style))
-        elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
-        elements.append(Spacer(1, 6))
+        elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
+        elements.append(_spacer(1, 6))
 
         # ============================================================
         # PATIENT INFO BOX (left) + BILL INFO (right) — bordered
@@ -713,14 +947,23 @@ class PDFService:
             payer_str = f"{payer_str} ({a['payer_status']})"
 
         col_w = page_width / 2
+        phone_cell = (
+            lv('Phone', p.get('phone', ''))
+            if _section_on("bill", "phone") else Paragraph('', cell_value)
+        )
+        address_cell = (
+            lv('Address', _patient_address_line(bill_data))
+            if _section_on("bill", "address") else Paragraph('', cell_value)
+        )
         info_data = [
             [lv('Name', p.get('name', '')),                 lv('Bill No',    bill_data.get('bill_number', ''))],
             [lv('Age / Gender', age_sex),                   lv('Bill Date',  bill_date_str)],
-            [lv('Phone', p.get('phone', '')),               lv('Address', _patient_address_line(bill_data))],
+            [phone_cell,                                    address_cell],
             [lv('MRN',   p.get('mrn', '')),
              lv('Pay Mode',   payer_str)],
-            [lv('Referred By', ref_value),                  Paragraph('', cell_value)],
         ]
+        if _section_on("bill", "referral"):
+            info_data.append([lv('Referred By', ref_value), Paragraph('', cell_value)])
         info_style = [
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
@@ -731,9 +974,11 @@ class PDFService:
         ]
         _append_aadhaar_row(info_data, info_style, p, lv)
         info_table = Table(info_data, colWidths=[col_w, col_w])
-        info_table.setStyle(TableStyle(info_style))
+        info_table.setStyle(_table_style(info_style))
         elements.append(info_table)
-        elements.append(Spacer(1, 6))
+        elements.append(_spacer(1, 6))
+        ip_specs = [row for row in _bill_extra_specs(bill_data) if row[0] != "aadhaar"]
+        _append_extra_lines(elements, page_width, _extra_lines("bill", ip_specs), lv)
 
         # ============================================================
         # ADMISSION INFO BOX (inpatient-specific)
@@ -759,7 +1004,7 @@ class PDFService:
                 Paragraph('', cell_value),
             ])
         adm_table = Table(adm_data, colWidths=[col_w, col_w])
-        adm_table.setStyle(TableStyle([
+        adm_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
@@ -768,7 +1013,7 @@ class PDFService:
             ('BOX', (0, 0), (-1, -1), 1, colors.black),
         ]))
         elements.append(adm_table)
-        elements.append(Spacer(1, 6))
+        elements.append(_spacer(1, 6))
 
         # ============================================================
         # ITEMS TABLE — Sno | Description | Qty | Rate | Amount
@@ -782,9 +1027,9 @@ class PDFService:
         items_header = [
             Paragraph('<b>Sno</b>', cell_label),
             Paragraph('<b>Description</b>', cell_label),
-            Paragraph('<b>Qty</b>', ParagraphStyle('Qc', parent=cell_label, alignment=1)),
-            Paragraph('<b>Rate</b>', ParagraphStyle('Rr', parent=cell_label, alignment=2)),
-            Paragraph('<b>Amount</b>', ParagraphStyle('Ra', parent=cell_label, alignment=2)),
+            Paragraph('<b>Qty</b>', _paragraph_style('Qc', parent=cell_label, alignment=1)),
+            Paragraph('<b>Rate</b>', _paragraph_style('Rr', parent=cell_label, alignment=2)),
+            Paragraph('<b>Amount</b>', _paragraph_style('Ra', parent=cell_label, alignment=2)),
         ]
         items_data = [items_header]
         items = bill_data.get('items') or []
@@ -798,14 +1043,14 @@ class PDFService:
                 Paragraph(str(idx), cell_value),
                 Paragraph(it.get('description', ''), cell_value),
                 Paragraph(str(it.get('qty', '')) or '—',
-                    ParagraphStyle('Qc', parent=cell_value, alignment=1)),
+                    _paragraph_style('Qc', parent=cell_value, alignment=1)),
                 Paragraph(
                     rate_str,
-                    ParagraphStyle('Rr', parent=cell_value, alignment=2),
+                    _paragraph_style('Rr', parent=cell_value, alignment=2),
                 ),
                 Paragraph(
                     f"{float(it.get('amount') or 0):,.2f}",
-                    ParagraphStyle('Ra', parent=cell_value, alignment=2),
+                    _paragraph_style('Ra', parent=cell_value, alignment=2),
                 ),
             ])
         if len(items_data) == 1:
@@ -814,12 +1059,12 @@ class PDFService:
                 Paragraph('No itemised charges', cell_value),
                 Paragraph('—', cell_value),
                 Paragraph('—',
-                    ParagraphStyle('Rr', parent=cell_value, alignment=2)),
+                    _paragraph_style('Rr', parent=cell_value, alignment=2)),
                 Paragraph('0.00',
-                    ParagraphStyle('Ra', parent=cell_value, alignment=2)),
+                    _paragraph_style('Ra', parent=cell_value, alignment=2)),
             ])
         items_table = Table(items_data, colWidths=[sno_w, desc_w, qty_w, rate_w, amt_w])
-        items_table.setStyle(TableStyle([
+        items_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 4),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
@@ -829,17 +1074,17 @@ class PDFService:
             ('LINEBELOW', (0, 0), (-1, 0), 1, colors.black),
         ]))
         elements.append(items_table)
-        elements.append(Spacer(1, 6))
+        elements.append(_spacer(1, 6))
 
         # ============================================================
         # DEPOSITS — itemised receipts before the payment summary
         # ============================================================
         deposits = bill_data.get('deposits') or []
         if deposits:
-            elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.grey))
-            elements.append(Spacer(1, 2))
+            elements.append(_hr_flowable(width="100%", thickness=0.5, color=colors.grey))
+            elements.append(_spacer(1, 2))
             elements.append(Paragraph("<b>Deposits / Payments Received</b>", cell_label))
-            elements.append(Spacer(1, 2))
+            elements.append(_spacer(1, 2))
             dep_header = [
                 Paragraph('<b>Sno</b>', cell_label),
                 Paragraph('<b>Receipt No</b>', cell_label),
@@ -848,7 +1093,7 @@ class PDFService:
                 Paragraph('<b>Method</b>', cell_label),
                 Paragraph('<b>Reference</b>', cell_label),
                 Paragraph('<b>Amount</b>',
-                    ParagraphStyle('R', parent=cell_label, alignment=2)),
+                    _paragraph_style('R', parent=cell_label, alignment=2)),
             ]
             dep_rows = [dep_header]
             for idx, d in enumerate(deposits, start=1):
@@ -863,7 +1108,7 @@ class PDFService:
                     Paragraph(str(d.get('method') or '—').title(), cell_value),
                     Paragraph(d.get('reference') or '—', cell_value),
                     Paragraph(amt_str,
-                        ParagraphStyle('R', parent=cell_value, alignment=2)),
+                        _paragraph_style('R', parent=cell_value, alignment=2)),
                 ])
             ref_w = 0.8 * inch
             type_w = 0.65 * inch
@@ -875,7 +1120,7 @@ class PDFService:
                            page_width - sno_w - 1.1 * inch - date_w - type_w - 0.75 * inch - rate_w,
                            rate_w],
             )
-            dep_table.setStyle(TableStyle([
+            dep_table.setStyle(_table_style([
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('TOPPADDING', (0, 0), (-1, -1), 3),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
@@ -884,7 +1129,7 @@ class PDFService:
                 ('LINEBELOW', (0, 0), (-1, 0), 0.5, colors.black),
             ]))
             elements.append(dep_table)
-            elements.append(Spacer(1, 6))
+            elements.append(_spacer(1, 6))
 
         # ============================================================
         # PAYMENT SUMMARY — same column geometry as OPD
@@ -951,12 +1196,12 @@ class PDFService:
                            '<b>Balance</b>', cell_value_sm),
                  Paragraph(
                     f"{abs(balance):,.2f}" if abs(balance) > 0.01 else "0.00",
-                    ParagraphStyle('Bal', parent=cell_value_right,
+                    _paragraph_style('Bal', parent=cell_value_right,
                         fontName='Helvetica-Bold')),
                 ],
             ])
         payment_table = Table(payment_data, colWidths=[summary_label_w, qty_w, amt_w])
-        payment_table.setStyle(TableStyle([
+        payment_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
@@ -965,7 +1210,7 @@ class PDFService:
             ('LINEABOVE', (1, -1), (-1, -1), 1, colors.black),
         ]))
         elements.append(payment_table)
-        elements.append(Spacer(1, 4))
+        elements.append(_spacer(1, 4))
 
         # ============================================================
         # Amount in words — uses the balance the patient sees
@@ -1004,17 +1249,18 @@ class PDFService:
             except Exception:
                 return str(amount)
 
-        words_text = f"Rupees {amount_to_words(total)}"
-        words_data = [[lv('In words', words_text)]]
-        words_table = Table(words_data, colWidths=[page_width])
-        words_table.setStyle(TableStyle([
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('TOPPADDING', (0, 0), (-1, -1), 3),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
-            ('LEFTPADDING', (0, 0), (-1, -1), 6),
-        ]))
-        elements.append(words_table)
-        elements.append(Spacer(1, 8))
+        if _section_on("bill", "amount_in_words"):
+            words_text = f"Rupees {amount_to_words(total)}"
+            words_data = [[lv('In words', words_text)]]
+            words_table = Table(words_data, colWidths=[page_width])
+            words_table.setStyle(_table_style([
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ]))
+            elements.append(words_table)
+            elements.append(_spacer(1, 8))
 
         # ============================================================
         # FOOTER — prepared by / printed by (same as OPD)
@@ -1025,7 +1271,7 @@ class PDFService:
             lv('Printed by', prepared_by),
         ]]
         footer_table = Table(footer_data, colWidths=[page_width / 2, page_width / 2])
-        footer_table.setStyle(TableStyle([
+        footer_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
@@ -1051,7 +1297,7 @@ class PDFService:
         """Generate PDF for bill/receipt in tabular format"""
         buffer = BytesIO()
 
-        doc = SimpleDocTemplate(
+        doc = _doc_template(
             buffer,
             pagesize=A4,
             rightMargin=30,
@@ -1061,31 +1307,31 @@ class PDFService:
         )
 
         elements = []
-        page_width = A4[0] - 60  # total usable width
+        page_width = _usable_width(60)  # total usable width
 
         # --- Styles (no colors, black & white only) ---
-        title_style = ParagraphStyle('BillTitle', parent=self.styles['Title'],
+        title_style = _paragraph_style('BillTitle', parent=self.styles['Title'],
             fontSize=16, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=2)
 
-        subtitle_style = ParagraphStyle('BillSubtitle', parent=self.styles['Normal'],
+        subtitle_style = _paragraph_style('BillSubtitle', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica',
             textColor=colors.black, spaceAfter=2)
 
-        receipt_title_style = ParagraphStyle('ReceiptTitle', parent=self.styles['Normal'],
+        receipt_title_style = _paragraph_style('ReceiptTitle', parent=self.styles['Normal'],
             fontSize=12, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=4)
 
-        cell_label = ParagraphStyle('CellLabel', parent=self.styles['Normal'],
+        cell_label = _paragraph_style('CellLabel', parent=self.styles['Normal'],
             fontSize=8, fontName='Helvetica-Bold', textColor=colors.black)
 
-        cell_value = ParagraphStyle('CellValue', parent=self.styles['Normal'],
+        cell_value = _paragraph_style('CellValue', parent=self.styles['Normal'],
             fontSize=8, fontName='Helvetica', textColor=colors.black)
 
-        cell_label_sm = ParagraphStyle('CellLabelSm', parent=self.styles['Normal'],
+        cell_label_sm = _paragraph_style('CellLabelSm', parent=self.styles['Normal'],
             fontSize=7, fontName='Helvetica-Bold', textColor=colors.black)
 
-        cell_value_sm = ParagraphStyle('CellValueSm', parent=self.styles['Normal'],
+        cell_value_sm = _paragraph_style('CellValueSm', parent=self.styles['Normal'],
             fontSize=7, fontName='Helvetica', textColor=colors.black)
 
         # Helper to make label:value pairs
@@ -1135,7 +1381,7 @@ class PDFService:
                     logo_img = Image(full_logo_path, width=60, height=60)
                     logo_img.hAlign = 'CENTER'
                     header_table = Table([[logo_img, header_text_elems]], colWidths=[75, page_width - 75])
-                    header_table.setStyle(TableStyle([
+                    header_table.setStyle(_table_style([
                         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                         ('LEFTPADDING', (0, 0), (-1, -1), 0),
                         ('RIGHTPADDING', (0, 0), (-1, -1), 0),
@@ -1150,16 +1396,16 @@ class PDFService:
                 for el in header_text_elems:
                     elements.append(el)
 
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 6))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
             # Leave blank space for pre-printed letterhead (~100pt ≈ 3.5cm)
-            elements.append(Spacer(1, letterhead_gap_pt))
+            elements.append(_spacer(1, letterhead_gap_pt))
 
-        elements.append(Spacer(1, 4))
+        elements.append(_spacer(1, 4))
         elements.append(Paragraph("RECEIPT CUM REQUISITION", receipt_title_style))
-        elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
-        elements.append(Spacer(1, 6))
+        elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
+        elements.append(_spacer(1, 6))
 
         # ============================================================
         # PATIENT INFO + BILL INFO (bordered box, like lab report)
@@ -1188,19 +1434,28 @@ class PDFService:
         col_w = page_width / 2
 
         token_num = bill_data.get('token_number')
-        if token_num:
-            token_style = ParagraphStyle('TokenCell', parent=self.styles['Normal'],
+        if token_num and _section_on("bill", "token"):
+            token_style = _paragraph_style('TokenCell', parent=self.styles['Normal'],
                 fontSize=12, fontName='Helvetica-Bold', textColor=colors.black)
             token_cell = Paragraph(f"<b>TOKEN #</b> &nbsp; <font size='16'>{token_num}</font>", token_style)
         else:
             token_cell = Paragraph('', cell_value)
 
+        phone_cell = lv('Phone', phone) if _section_on("bill", "phone") else Paragraph('', cell_value)
+        address_cell = (
+            lv('Address', _patient_address_line(bill_data))
+            if _section_on("bill", "address") else Paragraph('', cell_value)
+        )
+        if _section_on("bill", "referral"):
+            referral_row = [lv(ref_label, ref_value), lv('Pay Mode', pay_category)]
+        else:
+            referral_row = [lv('Pay Mode', pay_category), Paragraph('', cell_value)]
         patient_info_data = [
             [lv('Name', patient_name), token_cell],
             [lv('Age / Gender', age_sex), lv('Bill No', bill_no)],
-            [lv('Phone', phone), lv('Bill Date', bill_date_str)],
-            [lv('MRN', patient_id), lv('Address', _patient_address_line(bill_data))],
-            [lv(ref_label, ref_value), lv('Pay Mode', pay_category)],
+            [phone_cell, lv('Bill Date', bill_date_str)],
+            [lv('MRN', patient_id), address_cell],
+            referral_row,
         ]
 
         info_style = [
@@ -1213,7 +1468,7 @@ class PDFService:
         ]
 
         info_table = Table(patient_info_data, colWidths=[col_w, col_w])
-        info_table.setStyle(TableStyle(info_style))
+        info_table.setStyle(_table_style(info_style))
         _append_patient_info_with_optional_barcode(
             elements,
             info_table,
@@ -1221,7 +1476,8 @@ class PDFService:
             show_barcode=bool(show_patient_barcode),
             mrn=bill_data.get("mrn") or "",
         )
-        elements.append(Spacer(1, 6))
+        elements.append(_spacer(1, 6))
+        _append_extra_lines(elements, page_width, _extra_lines("bill", _bill_extra_specs(bill_data)), lv)
 
         # ============================================================
         # ITEMS TABLE: Sno | Description | Code | Rate
@@ -1229,27 +1485,43 @@ class PDFService:
         sno_w = 0.4 * inch
         code_w = 1.0 * inch
         rate_w = 1.0 * inch
-        desc_w = page_width - sno_w - code_w - rate_w
+        show_item_code = _section_on("bill", "item_code")
+        show_qty = _section_on("bill", "quantity")
+        qty_w = 0.55 * inch if show_qty else 0
+        desc_w = page_width - sno_w - (code_w if show_item_code else 0) - qty_w - rate_w
 
         items_header = [
             Paragraph('<b>Sno</b>', cell_label),
             Paragraph('<b>Description</b>', cell_label),
-            Paragraph('<b>Code</b>', cell_label),
-            Paragraph('<b>Rate</b>', cell_label),
         ]
+        if show_qty:
+            items_header.append(Paragraph('<b>Qty</b>', cell_label))
+        if show_item_code:
+            items_header.append(Paragraph('<b>Code</b>', cell_label))
+        items_header.append(Paragraph('<b>Rate</b>', cell_label))
 
         items_data = [items_header]
         for idx, item in enumerate(bill_data.get('items', []), 1):
-            items_data.append([
+            row = [
                 Paragraph(str(idx), cell_value),
                 Paragraph(item.get('item_name', ''), cell_value),
-                Paragraph(item.get('item_code', ''), cell_value),
-                Paragraph(f"{item.get('total_price', 0):.2f}", cell_value),
-            ])
+            ]
+            if show_qty:
+                qty = item.get('quantity')
+                row.append(Paragraph('' if qty in (None, '') else str(qty), cell_value))
+            if show_item_code:
+                row.append(Paragraph(item.get('item_code', ''), cell_value))
+            row.append(Paragraph(f"{item.get('total_price', 0):.2f}", cell_value))
+            items_data.append(row)
 
-
-        items_table = Table(items_data, colWidths=[sno_w, desc_w, code_w, rate_w])
-        items_table.setStyle(TableStyle([
+        item_widths = [sno_w, desc_w]
+        if show_qty:
+            item_widths.append(qty_w)
+        if show_item_code:
+            item_widths.append(code_w)
+        item_widths.append(rate_w)
+        items_table = Table(items_data, colWidths=item_widths)
+        items_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 4),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
@@ -1259,7 +1531,7 @@ class PDFService:
             ('LINEBELOW', (0, 0), (-1, 0), 1, colors.black),
         ]))
         elements.append(items_table)
-        elements.append(Spacer(1, 6))
+        elements.append(_spacer(1, 6))
 
         # ============================================================
         # PAYMENT SUMMARY TABLE
@@ -1320,7 +1592,7 @@ class PDFService:
 
         # Summary right-aligned under Rate column
         summary_label_w = page_width - code_w - rate_w
-        cell_value_right = ParagraphStyle('CellValueRight', parent=cell_value_sm, alignment=2)
+        cell_value_right = _paragraph_style('CellValueRight', parent=cell_value_sm, alignment=2)
 
         has_adjustments = (discount or 0) > 0 or (tax_amt or 0) > 0
         payment_data = []
@@ -1388,7 +1660,7 @@ class PDFService:
             ])
 
         payment_table = Table(payment_data, colWidths=[summary_label_w, code_w, rate_w])
-        payment_table.setStyle(TableStyle([
+        payment_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
@@ -1396,35 +1668,36 @@ class PDFService:
             ('RIGHTPADDING', (0, 0), (-1, -1), 6),
         ]))
         elements.append(payment_table)
-        elements.append(Spacer(1, 4))
+        elements.append(_spacer(1, 4))
 
         # Amount in words — use the net total so an unpaid bill still reads
         # the actual sum due (paid_amt would be 0 for a fresh procedure bill).
-        words_text = f"Rupees {amount_to_words(net_total)}"
-        words_data = [[lv('In words', words_text)]]
-        words_table = Table(words_data, colWidths=[page_width])
-        words_table.setStyle(TableStyle([
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('TOPPADDING', (0, 0), (-1, -1), 3),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
-            ('LEFTPADDING', (0, 0), (-1, -1), 6),
-        ]))
-        elements.append(words_table)
-        elements.append(Spacer(1, 4))
+        if _section_on("bill", "amount_in_words"):
+            words_text = f"Rupees {amount_to_words(net_total)}"
+            words_data = [[lv('In words', words_text)]]
+            words_table = Table(words_data, colWidths=[page_width])
+            words_table.setStyle(_table_style([
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ]))
+            elements.append(words_table)
+            elements.append(_spacer(1, 4))
 
         # Notes (free-text on the bill — surfaced for procedure bills etc.)
         notes_text = (bill_data.get('notes') or '').strip()
         if notes_text:
             notes_table = Table([[lv('Notes', notes_text)]], colWidths=[page_width])
-            notes_table.setStyle(TableStyle([
+            notes_table.setStyle(_table_style([
                 ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                 ('TOPPADDING', (0, 0), (-1, -1), 3),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
                 ('LEFTPADDING', (0, 0), (-1, -1), 6),
             ]))
             elements.append(notes_table)
-            elements.append(Spacer(1, 4))
-        elements.append(Spacer(1, 4))
+            elements.append(_spacer(1, 4))
+        elements.append(_spacer(1, 4))
 
         # ============================================================
         # FOOTER: prepared by / printed by
@@ -1435,7 +1708,7 @@ class PDFService:
                 [lv('Prepared by', prepared_by), lv('Printed by', prepared_by)],
             ]
             footer_table = Table(footer_data, colWidths=[page_width / 2, page_width / 2])
-            footer_table.setStyle(TableStyle([
+            footer_table.setStyle(_table_style([
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('TOPPADDING', (0, 0), (-1, -1), 3),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
@@ -1502,13 +1775,13 @@ class PDFService:
 
         buffer = BytesIO()
 
-        doc = SimpleDocTemplate(
+        doc = _doc_template(
             buffer, pagesize=A4,
             rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt)
         )
 
         elements = []
-        page_width = A4[0] - 80  # usable width
+        page_width = _usable_width(80)  # usable width
 
         # Colors — black & white only
         accent = colors.black
@@ -1517,31 +1790,31 @@ class PDFService:
         text_muted = colors.HexColor('#444444')
 
         # --- Styles ---
-        title_style = ParagraphStyle('RxTitle', parent=self.styles['Title'],
+        title_style = _paragraph_style('RxTitle', parent=self.styles['Title'],
             fontSize=18, alignment=1, fontName='Helvetica-Bold',
             textColor=text_dark, spaceAfter=2)
 
-        subtitle_style = ParagraphStyle('RxSubtitle', parent=self.styles['Normal'],
+        subtitle_style = _paragraph_style('RxSubtitle', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica',
             textColor=text_muted, spaceAfter=2)
 
-        section_hdr = ParagraphStyle('RxSectionHdr', parent=self.styles['Normal'],
+        section_hdr = _paragraph_style('RxSectionHdr', parent=self.styles['Normal'],
             fontSize=11, fontName='Helvetica-Bold', textColor=accent,
             spaceBefore=0, spaceAfter=4)
 
-        cell_lbl = ParagraphStyle('RxCellLbl', parent=self.styles['Normal'],
+        cell_lbl = _paragraph_style('RxCellLbl', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica-Bold', textColor=text_dark)
 
-        cell_val = ParagraphStyle('RxCellVal', parent=self.styles['Normal'],
+        cell_val = _paragraph_style('RxCellVal', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica', textColor=text_dark)
 
-        cell_val_sm = ParagraphStyle('RxCellValSm', parent=self.styles['Normal'],
+        cell_val_sm = _paragraph_style('RxCellValSm', parent=self.styles['Normal'],
             fontSize=8, fontName='Helvetica', textColor=text_dark)
 
-        blank_line_style = ParagraphStyle('RxBlankLine', parent=self.styles['Normal'],
+        blank_line_style = _paragraph_style('RxBlankLine', parent=self.styles['Normal'],
             fontSize=10, fontName='Helvetica', textColor=text_dark, leading=18)
 
-        footer_style = ParagraphStyle('RxFooter', parent=self.styles['Normal'],
+        footer_style = _paragraph_style('RxFooter', parent=self.styles['Normal'],
             fontSize=7, alignment=1, fontName='Helvetica', textColor=colors.grey)
 
         vital_field_defs = resolve_prescription_vital_field_defs(
@@ -1596,7 +1869,7 @@ class PDFService:
                         [[logo_img, header_text_elems]],
                         colWidths=[80, page_width - 80]
                     )
-                    header_table.setStyle(TableStyle([
+                    header_table.setStyle(_table_style([
                         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                         ('LEFTPADDING', (0, 0), (-1, -1), 0),
                         ('RIGHTPADDING', (0, 0), (-1, -1), 0),
@@ -1611,10 +1884,10 @@ class PDFService:
                 for el in header_text_elems:
                     elements.append(el)
 
-            elements.append(Spacer(1, 10))
+            elements.append(_spacer(1, 10))
         else:
             # Leave blank space for pre-printed letterhead (~100pt ≈ 3.5cm)
-            elements.append(Spacer(1, letterhead_gap_pt))
+            elements.append(_spacer(1, letterhead_gap_pt))
 
         # ============================================================
         # PATIENT + DOCTOR INFO — bordered box (like lab report)
@@ -1643,7 +1916,10 @@ class PDFService:
         info_data = [
             [Paragraph(f"<b>Name</b> :  {patient_name}", cell_val), Paragraph(f"<b>Prescribed By</b> :  {doctor_display}", cell_val)],
             [Paragraph(f"<b>Age / Gender</b> :  {age_sex}", cell_val), Paragraph(f"<b>{reg_or_rx_label}</b> :  {reg_or_rx_value}", cell_val)],
-            [Paragraph(f"<b>Phone</b> :  {patient_phone}", cell_val), Paragraph(f"<b>Date</b> :  {rx_date}", cell_val)],
+            [
+                Paragraph(f"<b>Phone</b> :  {patient_phone}", cell_val) if _section_on("prescription", "phone") else Paragraph('', cell_val),
+                Paragraph(f"<b>Date</b> :  {rx_date}", cell_val),
+            ],
             [Paragraph(f"<b>MRN</b> :  {patient_id}", cell_val), Paragraph(
                 f"<b>Appointment</b> :  {appointment_number or '—'}" if blank_mode and appointment_number
                 else f"<b>Blood Group</b> :  {patient_blood_group or '—'}",
@@ -1660,19 +1936,19 @@ class PDFService:
             ('BOX', (0, 0), (-1, -1), 1, colors.black),
         ]
         _rx_addr = _patient_address_line(prescription_data)
-        if _rx_addr:
+        if _rx_addr and _section_on("prescription", "address"):
             _addr_row_idx = len(info_data)
             info_data.append([Paragraph(f"<b>Address</b> :  {_rx_addr}", cell_val), ''])
             info_style.append(('SPAN', (0, _addr_row_idx), (1, _addr_row_idx)))
 
         referred_by = (prescription_data.get('referred_by') or '').strip()
-        if referred_by:
+        if referred_by and _section_on("prescription", "referral"):
             _ref_row_idx = len(info_data)
             info_data.append([Paragraph(f"<b>Referred By</b> :  {referred_by}", cell_val), ''])
             info_style.append(('SPAN', (0, _ref_row_idx), (1, _ref_row_idx)))
 
         info_table = Table(info_data, colWidths=[col_w, col_w])
-        info_table.setStyle(TableStyle(info_style))
+        info_table.setStyle(_table_style(info_style))
         _append_patient_info_with_optional_barcode(
             elements,
             info_table,
@@ -1680,7 +1956,20 @@ class PDFService:
             show_barcode=bool(show_patient_barcode),
             mrn=prescription_data.get("mrn") or "",
         )
-        elements.append(Spacer(1, 10))
+        elements.append(_spacer(1, 10))
+        rx_specs = [
+            ("email", "Email", _field_text(prescription_data, "patient_email", "email")),
+            ("aadhaar", "Aadhaar", _aadhaar_display(prescription_data) or _field_text(prescription_data, "aadhaar_number")),
+            ("abha", "ABHA", _field_text(prescription_data, "abha_id")),
+            ("emergency_contact", "Emergency contact", _field_text(prescription_data, "emergency_contact")),
+            ("allergies", "Allergies", _field_text(prescription_data, "allergies")),
+        ]
+        _append_extra_lines(
+            elements,
+            page_width,
+            _extra_lines("prescription", rx_specs),
+            lambda label, value: Paragraph(f"<b>{label}</b> :  {value}", cell_val),
+        )
 
         # ============================================================
         # DIAGNOSIS — full-width section (filled prescriptions only)
@@ -1689,7 +1978,7 @@ class PDFService:
         consultation = prescription_data.get('consultation')
         appointment_reason = prescription_data.get('appointment_reason', '')
 
-        if not blank_mode:
+        if not blank_mode and _section_on("prescription", "diagnosis"):
             diag_content = []
             if appointment_reason:
                 diag_content.append(Paragraph(f"Appointment Reason: {appointment_reason}", cell_val))
@@ -1709,7 +1998,7 @@ class PDFService:
             ] + [[c] for c in diag_content]
 
             diag_table = Table(diag_rows, colWidths=[page_width])
-            diag_table.setStyle(TableStyle([
+            diag_table.setStyle(_table_style([
                 ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                 ('TOPPADDING', (0, 0), (-1, -1), 4),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
@@ -1717,7 +2006,7 @@ class PDFService:
                 ('RIGHTPADDING', (0, 0), (-1, -1), 8),
             ]))
             elements.append(diag_table)
-            elements.append(Spacer(1, 10))
+            elements.append(_spacer(1, 10))
 
         # ============================================================
         # VITALS + MEDICINES — position: left | right | top
@@ -1812,7 +2101,7 @@ class PDFService:
                     ('BOTTOMPADDING', (0, 1), (-1, -1), 10),
                     ('LINEBELOW', (1, 1), (1, -1), 0.5, border_color),
                 ])
-            vitals_table.setStyle(TableStyle(vitals_style))
+            vitals_table.setStyle(_table_style(vitals_style))
 
         # --- Build horizontal (top) vitals strip ---
         top_vitals_table = None
@@ -1824,7 +2113,7 @@ class PDFService:
                     [[title_cell, Paragraph('No vitals recorded', cell_val_sm)]],
                     colWidths=[page_width * 0.12, page_width * 0.88],
                 )
-                top_vitals_table.setStyle(TableStyle([
+                top_vitals_table.setStyle(_table_style([
                     ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                     ('TOPPADDING', (0, 0), (-1, -1), 4),
                     ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
@@ -1871,13 +2160,13 @@ class PDFService:
                     for r in range(1, len(grid_rows), 2):
                         body_style.append(('LINEBELOW', (0, r), (-1, r), 0.5, border_color))
                         body_style.append(('BOTTOMPADDING', (0, r), (-1, r), 8))
-                body.setStyle(TableStyle(body_style))
+                body.setStyle(_table_style(body_style))
 
                 top_vitals_table = Table(
                     [[title_cell], [body]],
                     colWidths=[page_width],
                 )
-                top_vitals_table.setStyle(TableStyle([
+                top_vitals_table.setStyle(_table_style([
                     ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                     ('TOPPADDING', (0, 0), (-1, -1), 2),
                     ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
@@ -1887,7 +2176,7 @@ class PDFService:
                 ]))
         elif vitals_layout == "blank" and vitals_position == "top":
             # Reserve a horizontal strip for pre-printed vitals stationery.
-            top_vitals_table = Spacer(page_width, 48)
+            top_vitals_table = _spacer(page_width, 48)
 
         # --- Lab tests ---
         # Blank slips stay handwritten. Do not print orders or statuses that
@@ -1916,7 +2205,7 @@ class PDFService:
                 lab_rows,
                 colWidths=[lab_col_width * 0.65, lab_col_width * 0.35],
             )
-            lab_tests_table.setStyle(TableStyle([
+            lab_tests_table.setStyle(_table_style([
                 ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                 ('TOPPADDING', (0, 0), (-1, -1), 2),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
@@ -1935,7 +2224,7 @@ class PDFService:
                 side_col_parts.append([vitals_table])
             if lab_tests_table and vitals_layout == "show":
                 if side_col_parts:
-                    side_col_parts.append([Spacer(1, 14 if blank_mode else 8)])
+                    side_col_parts.append([_spacer(1, 14 if blank_mode else 8)])
                 side_col_parts.append([lab_tests_table])
             elif lab_tests_table and vitals_layout == "blank":
                 full_width_labs = lab_tests_table
@@ -1945,14 +2234,14 @@ class PDFService:
         side_col_wrapper = None
         if side_col_parts:
             side_col_wrapper = Table(side_col_parts, colWidths=[vitals_side_width])
-            side_col_wrapper.setStyle(TableStyle([
+            side_col_wrapper.setStyle(_table_style([
                 ('LEFTPADDING', (0, 0), (-1, -1), 0),
                 ('RIGHTPADDING', (0, 0), (-1, -1), 0),
                 ('TOPPADDING', (0, 0), (-1, -1), 0),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
             ]))
         elif reserve_side_for_preprint:
-            side_col_wrapper = Spacer(vitals_side_width, 1)
+            side_col_wrapper = _spacer(vitals_side_width, 1)
 
         # --- Build medicines sub-table ---
         food_timing_map = {
@@ -1983,9 +2272,18 @@ class PDFService:
                 food = food_timing_map.get(item.get('food_timing', 'after_food'), 'After food')
                 freq_text = f"{frequency_schedule_label(freq)}\n{food}"
 
+                name_html = f"<b>{item.get('medicine_name', '')}</b>"
+                note = (item.get('instructions') or '').strip()
+                if (
+                    note
+                    and note.lower() != "as directed"
+                    and _section_on("prescription", "medicine_notes")
+                ):
+                    safe_note = note.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                    name_html += f"<br/><font size='7'>{safe_note}</font>"
                 med_data.append([
                     Paragraph(str(idx), cell_val),
-                    Paragraph(f"<b>{item.get('medicine_name', '')}</b>", cell_val),
+                    Paragraph(name_html, cell_val),
                     Paragraph(item.get('dosage', 'As directed'), cell_val_sm),
                     Paragraph(freq_text, cell_val_sm),
                     Paragraph(item.get('duration', '—'), cell_val),
@@ -1993,13 +2291,13 @@ class PDFService:
 
         meds_header_row = [[Paragraph('<b>Medicines</b>', section_hdr)]]
         meds_title_table = Table(meds_header_row, colWidths=[meds_width])
-        meds_title_table.setStyle(TableStyle([
+        meds_title_table.setStyle(_table_style([
             ('LEFTPADDING', (0, 0), (-1, -1), 8),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
         ]))
 
         med_table = Table(med_data, colWidths=[sno_w, name_w, dosage_w, freq_w, dur_w])
-        med_table.setStyle(TableStyle([
+        med_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 4),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
@@ -2011,36 +2309,41 @@ class PDFService:
             ('LINEBELOW', (0, 0), (-1, 0), 1, border_color),
         ]))
 
-        meds_combined = [[meds_title_table], [med_table]]
-        if blank_mode:
+        meds_combined = []
+        if _section_on("prescription", "medicines"):
+            meds_combined = [[meds_title_table], [med_table]]
+        if blank_mode and _section_on("prescription", "diagnosis"):
             diag_right_rows = [[Paragraph('<b>Diagnosis</b>', section_hdr)]]
             diag_right_table = Table(diag_right_rows, colWidths=[meds_width])
-            diag_right_table.setStyle(TableStyle([
+            diag_right_table.setStyle(_table_style([
                 ('LEFTPADDING', (0, 0), (-1, -1), 8),
                 ('TOPPADDING', (0, 0), (-1, -1), 2),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
             ]))
-            meds_combined.append([Spacer(1, 8)])
+            meds_combined.append([_spacer(1, 8)])
             meds_combined.append([diag_right_table])
 
-        meds_wrapper = Table(meds_combined, colWidths=[meds_width])
-        meds_wrapper.setStyle(TableStyle([
-            ('LEFTPADDING', (0, 0), (-1, -1), 0),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-            ('TOPPADDING', (0, 0), (-1, -1), 0),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
-        ]))
+        if meds_combined:
+            meds_wrapper = Table(meds_combined, colWidths=[meds_width])
+            meds_wrapper.setStyle(_table_style([
+                ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                ('TOPPADDING', (0, 0), (-1, -1), 0),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+            ]))
+        else:
+            meds_wrapper = _spacer(max(meds_width, 1), 1)
 
         # --- Assemble by position ---
         if top_vitals_table is not None:
             elements.append(top_vitals_table)
-            elements.append(Spacer(1, 8))
+            elements.append(_spacer(1, 8))
 
         if full_width_labs is not None and (
             vitals_layout == "remove" or vitals_position == "top"
         ):
             elements.append(full_width_labs)
-            elements.append(Spacer(1, 8))
+            elements.append(_spacer(1, 8))
 
         if has_side_column:
             if vitals_position == "right":
@@ -2061,20 +2364,20 @@ class PDFService:
             ]
             if vitals_layout == "show":
                 layout_style.append(divider)
-            layout_table.setStyle(TableStyle(layout_style))
+            layout_table.setStyle(_table_style(layout_style))
             elements.append(layout_table)
         else:
             elements.append(meds_wrapper)
 
         if full_width_labs is not None and vitals_layout == "blank" and side_by_side:
-            elements.append(Spacer(1, 8))
+            elements.append(_spacer(1, 8))
             elements.append(full_width_labs)
 
         # ============================================================
         # INSTRUCTIONS — filled prescriptions only
         # ============================================================
-        if not blank_mode:
-            elements.append(Spacer(1, 10))
+        if not blank_mode and _section_on("prescription", "instructions"):
+            elements.append(_spacer(1, 10))
             notes = prescription_data.get('notes', '')
             follow_up = None
             if consultation and consultation.get('follow_up_date'):
@@ -2093,7 +2396,7 @@ class PDFService:
             ] + [[c] for c in instr_content]
 
             instr_table = Table(instr_rows, colWidths=[page_width])
-            instr_table.setStyle(TableStyle([
+            instr_table.setStyle(_table_style([
                 ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                 ('TOPPADDING', (0, 0), (-1, -1), 4),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
@@ -2102,35 +2405,36 @@ class PDFService:
             ]))
             elements.append(instr_table)
         else:
-            elements.append(Spacer(1, 10))
+            elements.append(_spacer(1, 10))
 
         # ============================================================
         # SIGNATURE
         # ============================================================
-        elements.append(Spacer(1, 30))
-        if blank_mode and prescription_number:
-            sig_doctor_detail = (f"<b>{doctor_name}</b><br/>{doctor_spec}<br/>"
-                                 f"Rx No: {prescription_number}")
-        elif doctor_reg:
-            sig_doctor_detail = (f"<b>{doctor_name}</b><br/>{doctor_spec}<br/>"
-                                 f"Reg. No: {doctor_reg}")
-        else:
-            sig_doctor_detail = f"<b>{doctor_name}</b><br/>{doctor_spec}"
-        sig_rows = [[
-            Paragraph(f"Date: {rx_date}", cell_val),
-            Paragraph(sig_doctor_detail,
-                      ParagraphStyle('SigStyle', parent=cell_val_sm, alignment=2))
-        ]]
-        sig_table = Table(sig_rows, colWidths=[page_width * 0.50, page_width * 0.50])
-        sig_table.setStyle(TableStyle([
-            ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
-            ('TOPPADDING', (0, 0), (-1, -1), 0),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
-        ]))
-        elements.append(sig_table)
+        if _section_on("prescription", "signature"):
+            elements.append(_spacer(1, 30))
+            if blank_mode and prescription_number:
+                sig_doctor_detail = (f"<b>{doctor_name}</b><br/>{doctor_spec}<br/>"
+                                     f"Rx No: {prescription_number}")
+            elif doctor_reg:
+                sig_doctor_detail = (f"<b>{doctor_name}</b><br/>{doctor_spec}<br/>"
+                                     f"Reg. No: {doctor_reg}")
+            else:
+                sig_doctor_detail = f"<b>{doctor_name}</b><br/>{doctor_spec}"
+            sig_rows = [[
+                Paragraph(f"Date: {rx_date}", cell_val),
+                Paragraph(sig_doctor_detail,
+                          _paragraph_style('SigStyle', parent=cell_val_sm, alignment=2))
+            ]]
+            sig_table = Table(sig_rows, colWidths=[page_width * 0.50, page_width * 0.50])
+            sig_table.setStyle(_table_style([
+                ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
+                ('TOPPADDING', (0, 0), (-1, -1), 0),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+            ]))
+            elements.append(sig_table)
 
         # Footer
-        elements.append(Spacer(1, 15))
+        elements.append(_spacer(1, 15))
         elements.append(Paragraph(f"Generated on {_generated_on()}", footer_style))
 
         _finalize(doc, elements, hospital_info)
@@ -2144,47 +2448,47 @@ class PDFService:
 
         buffer = BytesIO()
 
-        doc = SimpleDocTemplate(
+        doc = _doc_template(
             buffer, pagesize=A4,
             rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt)
         )
 
         elements = []
-        page_width = A4[0] - 60
+        page_width = _usable_width(60)
 
         # --- Styles ---
-        title_style = ParagraphStyle('LabTitle', parent=self.styles['Title'],
+        title_style = _paragraph_style('LabTitle', parent=self.styles['Title'],
             fontSize=16, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=2)
 
-        subtitle_style = ParagraphStyle('LabSubtitle', parent=self.styles['Normal'],
+        subtitle_style = _paragraph_style('LabSubtitle', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica',
             textColor=colors.black, spaceAfter=2)
 
-        reg_style = ParagraphStyle('LabReg', parent=self.styles['Normal'],
+        reg_style = _paragraph_style('LabReg', parent=self.styles['Normal'],
             fontSize=8, alignment=1, fontName='Helvetica',
             textColor=colors.grey, spaceAfter=1)
 
-        report_title_style = ParagraphStyle('LabReportTitle', parent=self.styles['Normal'],
+        report_title_style = _paragraph_style('LabReportTitle', parent=self.styles['Normal'],
             fontSize=12, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=4)
 
-        cell_label = ParagraphStyle('LabCellLabel', parent=self.styles['Normal'],
+        cell_label = _paragraph_style('LabCellLabel', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica-Bold', textColor=colors.black)
 
-        cell_value = ParagraphStyle('LabCellValue', parent=self.styles['Normal'],
+        cell_value = _paragraph_style('LabCellValue', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica', textColor=colors.black)
 
-        cell_abnormal = ParagraphStyle('LabCellAbnormal', parent=self.styles['Normal'],
+        cell_abnormal = _paragraph_style('LabCellAbnormal', parent=self.styles['Normal'],
             fontSize=10, fontName='Helvetica-Bold', textColor=colors.black)
 
-        cell_ref_range = ParagraphStyle('LabCellRefRange', parent=cell_value,
+        cell_ref_range = _paragraph_style('LabCellRefRange', parent=cell_value,
             fontSize=7, leading=9, textColor=colors.black)
 
-        normal_text = ParagraphStyle('LabNormalText', parent=self.styles['Normal'],
+        normal_text = _paragraph_style('LabNormalText', parent=self.styles['Normal'],
             fontSize=10, spaceAfter=6, fontName='Helvetica', textColor=colors.black)
 
-        footer_style = ParagraphStyle('LabFooter', parent=self.styles['Normal'],
+        footer_style = _paragraph_style('LabFooter', parent=self.styles['Normal'],
             fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.grey)
 
         def lv(label, value):
@@ -2249,7 +2553,7 @@ class PDFService:
                         [[logo_img, header_text_parts]],
                         colWidths=[80, page_width - 80]
                     )
-                    header_table.setStyle(TableStyle([
+                    header_table.setStyle(_table_style([
                         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                         ('LEFTPADDING', (0, 0), (-1, -1), 0),
                         ('RIGHTPADDING', (0, 0), (-1, -1), 0),
@@ -2286,16 +2590,16 @@ class PDFService:
             if reg_parts:
                 elements.append(Paragraph("  |  ".join(reg_parts), reg_style))
 
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 6))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
             # Leave blank space for pre-printed letterhead (~100pt ≈ 3.5cm)
-            elements.append(Spacer(1, letterhead_gap_pt))
+            elements.append(_spacer(1, letterhead_gap_pt))
 
-        elements.append(Spacer(1, 4))
+        elements.append(_spacer(1, 4))
         elements.append(Paragraph("LABORATORY REPORT", report_title_style))
-        elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
-        elements.append(Spacer(1, 6))
+        elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
+        elements.append(_spacer(1, 6))
 
         # ============================================================
         # PATIENT INFO — bordered box matching reference layout
@@ -2335,7 +2639,7 @@ class PDFService:
         ]
         _append_address_row(info_data, info_style, report_data, lv)
         info_table = Table(info_data, colWidths=[col_w, col_w])
-        info_table.setStyle(TableStyle(info_style))
+        info_table.setStyle(_table_style(info_style))
         _append_patient_info_with_optional_barcode(
             elements,
             info_table,
@@ -2343,12 +2647,13 @@ class PDFService:
             show_barcode=bool(show_patient_barcode),
             mrn=report_data.get("mrn") or "",
         )
-        elements.append(Spacer(1, 10))
+        elements.append(_spacer(1, 10))
+        _append_extra_lines(elements, page_width, _extra_lines("lab_report", _lab_extra_specs(report_data)), lv)
 
         # ============================================================
         # TEST NAME — centered bold heading
         # ============================================================
-        test_name_style = ParagraphStyle('LabTestName', parent=self.styles['Normal'],
+        test_name_style = _paragraph_style('LabTestName', parent=self.styles['Normal'],
             fontSize=11, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=2)
 
@@ -2359,7 +2664,7 @@ class PDFService:
             test_display = f"{test_display} ({test_code})"
 
         elements.append(Paragraph(test_display, test_name_style))
-        elements.append(Spacer(1, 6))
+        elements.append(_spacer(1, 6))
 
         # ============================================================
         # RESULTS TABLE
@@ -2372,16 +2677,16 @@ class PDFService:
             cell_value=cell_value,
             cell_abnormal=cell_abnormal,
             cell_ref_range=cell_ref_range,
-            section_label_style=ParagraphStyle('LabSectionLabel', parent=self.styles['Normal'],
+            section_label_style=_paragraph_style('LabSectionLabel', parent=self.styles['Normal'],
                 fontSize=9, fontName='Helvetica-Bold', textColor=colors.black),
         )
         elements.append(results_table)
-        elements.append(Spacer(1, 10))
+        elements.append(_spacer(1, 10))
 
         # ============================================================
         # INTERPRETATION
         # ============================================================
-        literal_style = ParagraphStyle('LabLiteral', parent=normal_text,
+        literal_style = _paragraph_style('LabLiteral', parent=normal_text,
             fontName='Helvetica', fontSize=9, leading=12, spaceAfter=0)
 
         def _escape_literal(s):
@@ -2390,9 +2695,9 @@ class PDFService:
         interpretation = report_data.get('interpretation')
         if interpretation:
             elements.append(Paragraph("<b>Interpretation:</b>", cell_label))
-            elements.append(Spacer(1, 4))
+            elements.append(_spacer(1, 4))
             elements.append(XPreformatted(_escape_literal(interpretation), literal_style))
-            elements.append(Spacer(1, 10))
+            elements.append(_spacer(1, 10))
 
         # ============================================================
         # REFERENCE INFORMATION (from LabTest.description, strictly literal)
@@ -2400,15 +2705,15 @@ class PDFService:
         test_description = report_data.get('test_description')
         if test_description and test_description.strip():
             elements.append(Paragraph("<b>Reference Information:</b>", cell_label))
-            elements.append(Spacer(1, 4))
+            elements.append(_spacer(1, 4))
             elements.append(XPreformatted(_escape_literal(test_description), literal_style))
-            elements.append(Spacer(1, 10))
+            elements.append(_spacer(1, 10))
 
         # ============================================================
         # SIGNATURES
         # ============================================================
         if include_footer:
-            elements.append(Spacer(1, 30))
+            elements.append(_spacer(1, 30))
             tech_name = report_data.get('technician_name', '')
 
             # Build signatory column — use pathologist info from lab config
@@ -2439,7 +2744,7 @@ class PDFService:
             if pathologist_name:
                 right_col_parts.append(Paragraph(f"<b>{pathologist_name}</b>", cell_value))
             if pathologist_qual:
-                qual_style = ParagraphStyle('LabQual', parent=self.styles['Normal'],
+                qual_style = _paragraph_style('LabQual', parent=self.styles['Normal'],
                     fontSize=8, fontName='Helvetica', textColor=colors.grey)
                 right_col_parts.append(Paragraph(pathologist_qual, qual_style))
             if not pathologist_name:
@@ -2449,14 +2754,14 @@ class PDFService:
                 [left_col, right_col_parts],
             ]
             sig_table = Table(sig_data, colWidths=[page_width / 2, page_width / 2])
-            sig_table.setStyle(TableStyle([
+            sig_table.setStyle(_table_style([
                 ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
                 ('TOPPADDING', (0, 0), (-1, -1), 3),
             ]))
             elements.append(sig_table)
 
             # Footer timestamp
-            elements.append(Spacer(1, 20))
+            elements.append(_spacer(1, 20))
             elements.append(Paragraph(f"Generated on {_generated_on()}", footer_style))
 
         _finalize(doc, elements, hospital_info)
@@ -2473,11 +2778,11 @@ class PDFService:
         buffer = BytesIO()
         # Reserve top margin only for the onPage header / letterhead gap (no extra pad)
         header_height = 100 if include_header else letterhead_gap_pt
-        doc = SimpleDocTemplate(buffer, pagesize=A4,
+        doc = _doc_template(buffer, pagesize=A4,
             rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT + header_height, bottomMargin=_bottom_margin(20, footer_gap_pt))
 
         elements = []
-        page_width = A4[0] - 60
+        page_width = _usable_width(60)
 
         first_report = reports_list[0]
 
@@ -2581,23 +2886,23 @@ class PDFService:
             c.restoreState()
 
         # --- Styles ---
-        report_title_style = ParagraphStyle('CLabReportTitle', parent=self.styles['Normal'],
+        report_title_style = _paragraph_style('CLabReportTitle', parent=self.styles['Normal'],
             fontSize=12, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
-        test_name_style = ParagraphStyle('CLabTestName', parent=self.styles['Normal'],
+        test_name_style = _paragraph_style('CLabTestName', parent=self.styles['Normal'],
             fontSize=11, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=2)
-        cell_label = ParagraphStyle('CLabCellLabel', parent=self.styles['Normal'],
+        cell_label = _paragraph_style('CLabCellLabel', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica-Bold', textColor=colors.black)
-        cell_value = ParagraphStyle('CLabCellValue', parent=self.styles['Normal'],
+        cell_value = _paragraph_style('CLabCellValue', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica', textColor=colors.black)
-        cell_abnormal = ParagraphStyle('CLabCellAbnormal', parent=self.styles['Normal'],
+        cell_abnormal = _paragraph_style('CLabCellAbnormal', parent=self.styles['Normal'],
             fontSize=10, fontName='Helvetica-Bold', textColor=colors.black)
-        cell_ref_range = ParagraphStyle('CLabCellRefRange', parent=cell_value,
+        cell_ref_range = _paragraph_style('CLabCellRefRange', parent=cell_value,
             fontSize=7, leading=9, textColor=colors.black)
-        normal_text = ParagraphStyle('CLabNormalText', parent=self.styles['Normal'],
+        normal_text = _paragraph_style('CLabNormalText', parent=self.styles['Normal'],
             fontSize=10, spaceAfter=6, fontName='Helvetica', textColor=colors.black)
-        footer_style = ParagraphStyle('CLabFooter', parent=self.styles['Normal'],
+        footer_style = _paragraph_style('CLabFooter', parent=self.styles['Normal'],
             fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.grey)
-        section_label_style = ParagraphStyle('CLabSectionLabel', parent=self.styles['Normal'],
+        section_label_style = _paragraph_style('CLabSectionLabel', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica-Bold', textColor=colors.black)
 
         def lv(label, value):
@@ -2610,8 +2915,8 @@ class PDFService:
         # REPORT TITLE (in flowable area, below header)
         # ============================================================
         elements.append(Paragraph("LABORATORY REPORT", report_title_style))
-        elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
-        elements.append(Spacer(1, 6))
+        elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
+        elements.append(_spacer(1, 6))
 
         # ============================================================
         # PATIENT INFO (once, from first report)
@@ -2641,7 +2946,7 @@ class PDFService:
         ]
         _append_address_row(info_data, info_style, first_report, lv)
         info_table = Table(info_data, colWidths=[col_w, col_w])
-        info_table.setStyle(TableStyle(info_style))
+        info_table.setStyle(_table_style(info_style))
         _append_patient_info_with_optional_barcode(
             elements,
             info_table,
@@ -2649,7 +2954,8 @@ class PDFService:
             show_barcode=bool(show_patient_barcode),
             mrn=first_report.get("mrn") or "",
         )
-        elements.append(Spacer(1, 10))
+        elements.append(_spacer(1, 10))
+        _append_extra_lines(elements, page_width, _extra_lines("lab_report", _lab_extra_specs(first_report)), lv)
 
         # ============================================================
         # LOOP THROUGH EACH TEST — continuous flow
@@ -2663,9 +2969,9 @@ class PDFService:
 
             # Test name heading
             if idx > 0:
-                elements.append(Spacer(1, 8))
+                elements.append(_spacer(1, 8))
             elements.append(Paragraph(test_display, test_name_style))
-            elements.append(Spacer(1, 4))
+            elements.append(_spacer(1, 4))
 
             results_list_inner = report_data.get('results', [])
             results_table = _build_lab_results_table(
@@ -2680,7 +2986,7 @@ class PDFService:
             elements.append(results_table)
 
             # Interpretation (per test, if any) — strictly literal (preserve whitespace + newlines)
-            literal_style = ParagraphStyle('CLabLiteral', parent=normal_text,
+            literal_style = _paragraph_style('CLabLiteral', parent=normal_text,
                 fontName='Helvetica', fontSize=9, leading=12, spaceAfter=0)
 
             def _escape_literal(s):
@@ -2688,24 +2994,24 @@ class PDFService:
 
             interpretation = report_data.get('interpretation')
             if interpretation:
-                elements.append(Spacer(1, 4))
+                elements.append(_spacer(1, 4))
                 elements.append(Paragraph(f"<b>Interpretation ({test_name}):</b>", cell_label))
-                elements.append(Spacer(1, 2))
+                elements.append(_spacer(1, 2))
                 elements.append(XPreformatted(_escape_literal(interpretation), literal_style))
 
             # Reference Information (per test, from LabTest.description) — strictly literal
             test_description = report_data.get('test_description')
             if test_description and test_description.strip():
-                elements.append(Spacer(1, 4))
+                elements.append(_spacer(1, 4))
                 elements.append(Paragraph(f"<b>Reference Information ({test_name}):</b>", cell_label))
-                elements.append(Spacer(1, 2))
+                elements.append(_spacer(1, 2))
                 elements.append(XPreformatted(_escape_literal(test_description), literal_style))
 
         # ============================================================
         # SIGNATURES (once at the end)
         # ============================================================
         if include_footer:
-            elements.append(Spacer(1, 30))
+            elements.append(_spacer(1, 30))
             uploads_base = _get_uploads_base()
 
             # Collect unique technician names from all reports
@@ -2734,20 +3040,20 @@ class PDFService:
             if pathologist_name:
                 right_col_parts.append(Paragraph(f"<b>{pathologist_name}</b>", cell_value))
             if pathologist_qual:
-                qual_style = ParagraphStyle('CLabQual', parent=self.styles['Normal'],
+                qual_style = _paragraph_style('CLabQual', parent=self.styles['Normal'],
                     fontSize=8, fontName='Helvetica', textColor=colors.grey)
                 right_col_parts.append(Paragraph(pathologist_qual, qual_style))
             if not pathologist_name:
                 right_col_parts.append(Paragraph("<b>Authorized Signatory</b>", cell_value))
 
             sig_table = Table([[left_col, right_col_parts]], colWidths=[page_width / 2, page_width / 2])
-            sig_table.setStyle(TableStyle([
+            sig_table.setStyle(_table_style([
                 ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
                 ('TOPPADDING', (0, 0), (-1, -1), 3),
             ]))
             elements.append(sig_table)
 
-            elements.append(Spacer(1, 20))
+            elements.append(_spacer(1, 20))
             elements.append(Paragraph(f"Generated on {_generated_on()}", footer_style))
 
         _finalize(doc, elements, hospital_info, header_cb=_draw_header)
@@ -2780,7 +3086,7 @@ class PDFService:
 
         buffer = BytesIO()
 
-        doc = SimpleDocTemplate(
+        doc = _doc_template(
             buffer,
             pagesize=A4,
             rightMargin=30,
@@ -2790,29 +3096,29 @@ class PDFService:
         )
 
         elements = []
-        page_width = A4[0] - 60  # total usable width
+        page_width = _usable_width(60)  # total usable width
 
         # --- Styles (black & white, consistent with bill PDF) ---
-        title_style = ParagraphStyle('DischTitle', parent=self.styles['Title'],
+        title_style = _paragraph_style('DischTitle', parent=self.styles['Title'],
             fontSize=16, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=2)
 
-        subtitle_style = ParagraphStyle('DischSubtitle', parent=self.styles['Normal'],
+        subtitle_style = _paragraph_style('DischSubtitle', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica',
             textColor=colors.black, spaceAfter=2)
 
-        doc_title_style = ParagraphStyle('DischDocTitle', parent=self.styles['Normal'],
+        doc_title_style = _paragraph_style('DischDocTitle', parent=self.styles['Normal'],
             fontSize=13, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=4)
 
-        section_heading = ParagraphStyle('DischSection', parent=self.styles['Heading2'],
+        section_heading = _paragraph_style('DischSection', parent=self.styles['Heading2'],
             fontSize=11, fontName='Helvetica-Bold', textColor=colors.black,
             spaceAfter=4, spaceBefore=8)
 
-        cell_value = ParagraphStyle('DischCellValue', parent=self.styles['Normal'],
+        cell_value = _paragraph_style('DischCellValue', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
 
-        footer_style = ParagraphStyle('DischFooter', parent=self.styles['Normal'],
+        footer_style = _paragraph_style('DischFooter', parent=self.styles['Normal'],
             fontSize=7, fontName='Helvetica-Oblique', textColor=colors.grey,
             alignment=1)
 
@@ -2869,7 +3175,7 @@ class PDFService:
                     logo_img = Image(full_logo_path, width=60, height=60)
                     logo_img.hAlign = 'CENTER'
                     header_table = Table([[logo_img, header_text_elems]], colWidths=[75, page_width - 75])
-                    header_table.setStyle(TableStyle([
+                    header_table.setStyle(_table_style([
                         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                         ('LEFTPADDING', (0, 0), (-1, -1), 0),
                         ('RIGHTPADDING', (0, 0), (-1, -1), 0),
@@ -2884,10 +3190,10 @@ class PDFService:
                 for el in header_text_elems:
                     elements.append(el)
 
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 6))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, letterhead_gap_pt))
+            elements.append(_spacer(1, letterhead_gap_pt))
 
         discharge_kind = discharge_data.get("discharge_type") or ""
         doc_title = (template.get("document_title") or "DISCHARGE SUMMARY").strip() or "DISCHARGE SUMMARY"
@@ -2897,17 +3203,17 @@ class PDFService:
             doc_title = "DEATH SUMMARY"
         elif discharge_kind == "transfer":
             doc_title = "TRANSFER SUMMARY"
-        elements.append(Spacer(1, 4))
+        elements.append(_spacer(1, 4))
         elements.append(Paragraph(_escape_pdf_inline(doc_title), doc_title_style))
         if template.get("show_department_line", True):
             dept_name = (discharge_data.get('department_name') or '').strip()
             if dept_name:
-                dept_style = ParagraphStyle('DischDept', parent=subtitle_style,
+                dept_style = _paragraph_style('DischDept', parent=subtitle_style,
                     fontSize=10, fontName='Helvetica-Bold', alignment=1, spaceAfter=2)
                 elements.append(Paragraph(
                     f"DEPARTMENT OF {_escape_pdf_inline(dept_name.upper())}", dept_style))
-        elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
-        elements.append(Spacer(1, 6))
+        elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
+        elements.append(_spacer(1, 6))
 
         col_w = page_width / 2
         custom_fields = discharge_data.get("custom_fields") or {}
@@ -2973,9 +3279,9 @@ class PDFService:
                 _append_address_row(patient_info_data, info_style, discharge_data, lv)
                 _append_aadhaar_row(patient_info_data, info_style, discharge_data, lv)
                 info_table = Table(patient_info_data, colWidths=[col_w, col_w])
-                info_table.setStyle(TableStyle(info_style))
+                info_table.setStyle(_table_style(info_style))
                 elements.append(info_table)
-                elements.append(Spacer(1, 8))
+                elements.append(_spacer(1, 8))
                 if (discharge_data.get("discharge_type") or "") == "against_advice":
                     _append_section(
                         "Discharge Against Medical Advice",
@@ -3053,7 +3359,7 @@ class PDFService:
                         if sdept:
                             sec = f"{sec} ({sdept})"
                         elements.append(Paragraph(_escape_pdf_inline(sec), cell_value))
-                    elements.append(Spacer(1, 6))
+                    elements.append(_spacer(1, 6))
 
             elif btype == "standard_section":
                 content = standard_section_content(discharge_data, block.get("field_key") or "")
@@ -3093,7 +3399,7 @@ class PDFService:
                             str(m.get('duration') or '—'),
                         ])
                     med_table = Table(rows, colWidths=[28, 130, 62, 52, 118, 65])
-                    med_table.setStyle(TableStyle([
+                    med_table.setStyle(_table_style([
                         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                         ('FONTSIZE', (0, 0), (-1, -1), 8),
                         ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
@@ -3105,7 +3411,7 @@ class PDFService:
                         ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
                     ]))
                     elements.append(med_table)
-                    elements.append(Spacer(1, 4))
+                    elements.append(_spacer(1, 4))
                 else:
                     medications = discharge_data.get("medications", "")
                     if medications:
@@ -3153,24 +3459,24 @@ class PDFService:
             elif btype == "condition_on_discharge":
                 if (discharge_data.get("discharge_type") or "") == "death":
                     continue
-                elements.append(Spacer(1, 16))
+                elements.append(_spacer(1, 16))
                 condition_discharge = discharge_data.get("condition_on_discharge", "")
                 if condition_discharge:
                     elements.append(Paragraph(
                         f"<b>Condition on Discharge:</b> {_escape_pdf_inline(condition_discharge)}",
                         cell_value))
-                    elements.append(Spacer(1, 12))
+                    elements.append(_spacer(1, 12))
 
             elif btype == "signatures":
                 doctor_name = (
                     discharge_data.get("consultant_name") or discharge_data.get("doctor_name", "")
                 )
-                sig_label_style = ParagraphStyle(
+                sig_label_style = _paragraph_style(
                     'SigLabel', parent=self.styles['Normal'],
                     fontSize=8, fontName='Helvetica', textColor=colors.grey, alignment=1)
-                sig_line_style = ParagraphStyle(
+                sig_line_style = _paragraph_style(
                     'SigLine', parent=self.styles['Normal'], fontSize=9, alignment=1)
-                sig_name_style = ParagraphStyle(
+                sig_name_style = _paragraph_style(
                     'SigName', parent=self.styles['Normal'],
                     fontSize=9, fontName='Helvetica-Bold', alignment=1)
                 sig_data = [
@@ -3182,16 +3488,16 @@ class PDFService:
                          sig_name_style)],
                 ]
                 sig_table = Table(sig_data, colWidths=[page_width / 2, page_width / 2])
-                sig_table.setStyle(TableStyle([
+                sig_table.setStyle(_table_style([
                     ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
                     ('TOPPADDING', (0, 0), (-1, -1), 2),
                     ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
                 ]))
                 elements.append(sig_table)
-                elements.append(Spacer(1, 14))
+                elements.append(_spacer(1, 14))
 
             elif btype == "acknowledgement":
-                ack_style = ParagraphStyle('AckText', parent=cell_value, fontSize=8, leading=10)
+                ack_style = _paragraph_style('AckText', parent=cell_value, fontSize=8, leading=10)
                 elements.append(Paragraph(
                     "I acknowledge that I have been explained in my understandable language about the "
                     "post-discharge care instructions, the medications, the diet to be taken at home "
@@ -3203,18 +3509,18 @@ class PDFService:
                     [lv('If by attendant, relationship', '_' * 40), ''],
                 ]
                 ack_table = Table(ack_rows, colWidths=[col_w, col_w])
-                ack_table.setStyle(TableStyle([
+                ack_table.setStyle(_table_style([
                     ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                     ('LEFTPADDING', (0, 0), (-1, -1), 0),
                 ]))
                 elements.append(ack_table)
-                elements.append(Spacer(1, 10))
+                elements.append(_spacer(1, 10))
                 elements.append(Paragraph("Discharge Summary Explained by", section_heading))
                 explained_rows = [
                     [lv('Clinical Pharmacist', '_' * 35), lv('DMO / Incharge Sister', '_' * 35)],
                 ]
                 explained_table = Table(explained_rows, colWidths=[col_w, col_w])
-                explained_table.setStyle(TableStyle([
+                explained_table.setStyle(_table_style([
                     ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                     ('LEFTPADDING', (0, 0), (-1, -1), 0),
                 ]))
@@ -3233,7 +3539,7 @@ class PDFService:
             ):
                 _append_section(title, discharge_data.get(key, ""))
 
-        elements.append(Spacer(1, 20))
+        elements.append(_spacer(1, 20))
         elements.append(Paragraph(
             f"Generated on {_generated_on()}",
             footer_style
@@ -3250,7 +3556,7 @@ class PDFService:
     def generate_admission_detail_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Detailed Admission Summary — auto-aggregated clinical dossier for a stay."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(
+        doc = _doc_template(
             buffer,
             pagesize=A4,
             rightMargin=30,
@@ -3259,25 +3565,25 @@ class PDFService:
             bottomMargin=_bottom_margin(20, footer_gap_pt),
         )
         elements = []
-        page_width = A4[0] - 60
+        page_width = _usable_width(60)
         meta = payload.get("admission_meta") or {}
 
-        title_style = ParagraphStyle('AdmDetTitle', parent=self.styles['Title'],
+        title_style = _paragraph_style('AdmDetTitle', parent=self.styles['Title'],
             fontSize=16, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=2)
-        subtitle_style = ParagraphStyle('AdmDetSubtitle', parent=self.styles['Normal'],
+        subtitle_style = _paragraph_style('AdmDetSubtitle', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica',
             textColor=colors.black, spaceAfter=2)
-        doc_title_style = ParagraphStyle('AdmDetDocTitle', parent=self.styles['Normal'],
+        doc_title_style = _paragraph_style('AdmDetDocTitle', parent=self.styles['Normal'],
             fontSize=13, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=4)
-        section_heading = ParagraphStyle('AdmDetSection', parent=self.styles['Heading2'],
+        section_heading = _paragraph_style('AdmDetSection', parent=self.styles['Heading2'],
             fontSize=11, fontName='Helvetica-Bold', textColor=colors.black,
             spaceAfter=4, spaceBefore=8)
-        cell_value = ParagraphStyle('AdmDetCell', parent=self.styles['Normal'],
+        cell_value = _paragraph_style('AdmDetCell', parent=self.styles['Normal'],
             fontSize=8, fontName='Helvetica', textColor=colors.black, spaceAfter=1, leading=10)
-        cell_bold = ParagraphStyle('AdmDetCellBold', parent=cell_value, fontName='Helvetica-Bold')
-        footer_style = ParagraphStyle('AdmDetFooter', parent=self.styles['Normal'],
+        cell_bold = _paragraph_style('AdmDetCellBold', parent=cell_value, fontName='Helvetica-Bold')
+        footer_style = _paragraph_style('AdmDetFooter', parent=self.styles['Normal'],
             fontSize=7, fontName='Helvetica-Oblique', textColor=colors.grey, alignment=1)
 
         def lv(label, value):
@@ -3296,7 +3602,7 @@ class PDFService:
                 n = len(headers)
                 col_widths = [page_width / n] * n
             tbl = Table(data, colWidths=col_widths, repeatRows=1)
-            tbl.setStyle(TableStyle([
+            tbl.setStyle(_table_style([
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, -1), 7),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
@@ -3308,7 +3614,7 @@ class PDFService:
                 ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
             ]))
             elements.append(tbl)
-            elements.append(Spacer(1, 4))
+            elements.append(_spacer(1, 4))
 
         if include_header:
             logo_path = hospital_info.get('logo_url', '')
@@ -3341,7 +3647,7 @@ class PDFService:
                     logo_img = Image(full_logo_path, width=60, height=60)
                     logo_img.hAlign = 'CENTER'
                     header_table = Table([[logo_img, header_text_elems]], colWidths=[75, page_width - 75])
-                    header_table.setStyle(TableStyle([
+                    header_table.setStyle(_table_style([
                         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                         ('LEFTPADDING', (0, 0), (-1, -1), 0),
                         ('RIGHTPADDING', (0, 0), (-1, -1), 0),
@@ -3353,15 +3659,15 @@ class PDFService:
             else:
                 for el in header_text_elems:
                     elements.append(el)
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 6))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, letterhead_gap_pt))
+            elements.append(_spacer(1, letterhead_gap_pt))
 
-        elements.append(Spacer(1, 4))
+        elements.append(_spacer(1, 4))
         elements.append(Paragraph("DETAILED ADMISSION SUMMARY", doc_title_style))
-        elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
-        elements.append(Spacer(1, 6))
+        elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
+        elements.append(_spacer(1, 6))
 
         age_gender = _age_gender_str(meta, gender=meta.get('gender', ''), age_key='age')
         col_w = page_width / 2
@@ -3387,9 +3693,9 @@ class PDFService:
         _append_address_row(patient_info_data, info_style, meta, lv)
         _append_aadhaar_row(patient_info_data, info_style, meta, lv)
         info_table = Table(patient_info_data, colWidths=[col_w, col_w])
-        info_table.setStyle(TableStyle(info_style))
+        info_table.setStyle(_table_style(info_style))
         elements.append(info_table)
-        elements.append(Spacer(1, 8))
+        elements.append(_spacer(1, 8))
 
         visits = payload.get('visits') or []
         if visits:
@@ -3404,7 +3710,7 @@ class PDFService:
                     elements.append(Paragraph(f"Plan: {v['plan_for_today']}", cell_value))
                 if v.get('notes'):
                     elements.append(Paragraph(v['notes'], cell_value))
-                elements.append(Spacer(1, 3))
+                elements.append(_spacer(1, 3))
 
         vitals = payload.get('vitals') or []
         if vitals:
@@ -3528,7 +3834,7 @@ class PDFService:
                     _add_table(r_headers, r_rows, [120, 80, 50, 50])
                 else:
                     elements.append(Paragraph("No verified results on file.", cell_value))
-                elements.append(Spacer(1, 4))
+                elements.append(_spacer(1, 4))
 
         notes = payload.get('nursing_notes') or []
         if notes:
@@ -3544,9 +3850,9 @@ class PDFService:
                         line = line.strip()
                         if line:
                             elements.append(Paragraph(line, cell_value))
-                elements.append(Spacer(1, 3))
+                elements.append(_spacer(1, 3))
 
-        elements.append(Spacer(1, 16))
+        elements.append(_spacer(1, 16))
         elements.append(Paragraph(
             f"Generated on {_generated_on()}",
             footer_style,
@@ -3560,29 +3866,29 @@ class PDFService:
         (logo+hospital header, bordered patient/receipt info box, single-line
         item table, payment summary, amount-in-words, prepared-by footer)."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(
+        doc = _doc_template(
             buffer, pagesize=A4,
             rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt),
         )
         elements = []
-        page_width = A4[0] - 60
+        page_width = _usable_width(60)
 
-        title_style = ParagraphStyle('DRTitle', parent=self.styles['Title'],
+        title_style = _paragraph_style('DRTitle', parent=self.styles['Title'],
             fontSize=16, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=2)
-        subtitle_style = ParagraphStyle('DRSubtitle', parent=self.styles['Normal'],
+        subtitle_style = _paragraph_style('DRSubtitle', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica',
             textColor=colors.black, spaceAfter=2)
-        receipt_title_style = ParagraphStyle('DRReceiptTitle', parent=self.styles['Normal'],
+        receipt_title_style = _paragraph_style('DRReceiptTitle', parent=self.styles['Normal'],
             fontSize=12, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=4)
-        cell_label = ParagraphStyle('DRCellLabel', parent=self.styles['Normal'],
+        cell_label = _paragraph_style('DRCellLabel', parent=self.styles['Normal'],
             fontSize=8, fontName='Helvetica-Bold', textColor=colors.black)
-        cell_value = ParagraphStyle('DRCellValue', parent=self.styles['Normal'],
+        cell_value = _paragraph_style('DRCellValue', parent=self.styles['Normal'],
             fontSize=8, fontName='Helvetica', textColor=colors.black)
-        cell_value_sm = ParagraphStyle('DRCellValueSm', parent=self.styles['Normal'],
+        cell_value_sm = _paragraph_style('DRCellValueSm', parent=self.styles['Normal'],
             fontSize=7, fontName='Helvetica', textColor=colors.black)
-        cell_value_right = ParagraphStyle('DRCellValueRight', parent=cell_value_sm, alignment=2)
+        cell_value_right = _paragraph_style('DRCellValueRight', parent=cell_value_sm, alignment=2)
 
         def lv(label, value):
             return Paragraph(f"<b>{label}</b> :  {value}", cell_value)
@@ -3632,7 +3938,7 @@ class PDFService:
                     logo_img = Image(full_logo_path, width=60, height=60)
                     logo_img.hAlign = 'CENTER'
                     header_table = Table([[logo_img, header_text_elems]], colWidths=[75, page_width - 75])
-                    header_table.setStyle(TableStyle([
+                    header_table.setStyle(_table_style([
                         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                         ('LEFTPADDING', (0, 0), (-1, -1), 0),
                         ('RIGHTPADDING', (0, 0), (-1, -1), 0),
@@ -3647,18 +3953,18 @@ class PDFService:
                 for el in header_text_elems:
                     elements.append(el)
 
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 6))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, letterhead_gap_pt))
+            elements.append(_spacer(1, letterhead_gap_pt))
 
-        elements.append(Spacer(1, 4))
+        elements.append(_spacer(1, 4))
         elements.append(Paragraph(
             "REFUND RECEIPT" if is_refund else "ADVANCE DEPOSIT RECEIPT",
             receipt_title_style,
         ))
-        elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
-        elements.append(Spacer(1, 6))
+        elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
+        elements.append(_spacer(1, 6))
 
         # ============================================================
         # PATIENT + RECEIPT INFO — bordered box, two-column
@@ -3688,9 +3994,9 @@ class PDFService:
         ]
         _append_aadhaar_row(info_data, info_style, deposit_data, lv)
         info_table = Table(info_data, colWidths=[col_w, col_w])
-        info_table.setStyle(TableStyle(info_style))
+        info_table.setStyle(_table_style(info_style))
         elements.append(info_table)
-        elements.append(Spacer(1, 6))
+        elements.append(_spacer(1, 6))
 
         # ============================================================
         # ITEMS — single row describing the deposit
@@ -3715,7 +4021,7 @@ class PDFService:
              Paragraph(f"{abs(amount):.2f}", cell_value)],
         ]
         items_table = Table(items_data, colWidths=[sno_w, desc_w, code_w, rate_w])
-        items_table.setStyle(TableStyle([
+        items_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 4),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
@@ -3725,7 +4031,7 @@ class PDFService:
             ('LINEBELOW', (0, 0), (-1, 0), 1, colors.black),
         ]))
         elements.append(items_table)
-        elements.append(Spacer(1, 6))
+        elements.append(_spacer(1, 6))
 
         # ============================================================
         # PAYMENT SUMMARY — right aligned, mirrors bill layout
@@ -3744,7 +4050,7 @@ class PDFService:
              Paragraph("0.00", cell_value_right)],
         ]
         payment_table = Table(payment_data, colWidths=[summary_label_w, code_w, rate_w])
-        payment_table.setStyle(TableStyle([
+        payment_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
@@ -3752,7 +4058,7 @@ class PDFService:
             ('RIGHTPADDING', (0, 0), (-1, -1), 6),
         ]))
         elements.append(payment_table)
-        elements.append(Spacer(1, 4))
+        elements.append(_spacer(1, 4))
 
         # ----- Amount in words (same inline routine as generate_bill_pdf) -----
         def _amount_to_words(num):
@@ -3787,19 +4093,19 @@ class PDFService:
         words_text = f"Rupees {_amount_to_words(abs(amount))}"
         words_data = [[lv('In words', words_text)]]
         words_table = Table(words_data, colWidths=[page_width])
-        words_table.setStyle(TableStyle([
+        words_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
             ('LEFTPADDING', (0, 0), (-1, -1), 6),
         ]))
         elements.append(words_table)
-        elements.append(Spacer(1, 8))
+        elements.append(_spacer(1, 8))
 
         # Notes (optional)
         if deposit_data.get('notes'):
             elements.append(Paragraph(f"<b>Notes:</b> {deposit_data['notes']}", cell_value))
-            elements.append(Spacer(1, 8))
+            elements.append(_spacer(1, 8))
 
         # ============================================================
         # FOOTER — prepared by / printed by (matches bill PDF)
@@ -3810,17 +4116,17 @@ class PDFService:
             lv('Printed by', received_by_name),
         ]]
         footer_table = Table(footer_data, colWidths=[page_width / 2, page_width / 2])
-        footer_table.setStyle(TableStyle([
+        footer_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
             ('LEFTPADDING', (0, 0), (-1, -1), 6),
         ]))
         elements.append(footer_table)
-        elements.append(Spacer(1, 4))
+        elements.append(_spacer(1, 4))
         elements.append(Paragraph(
             f"Generated on {_generated_on()}",
-            ParagraphStyle('DRFootMeta', parent=self.styles['Normal'],
+            _paragraph_style('DRFootMeta', parent=self.styles['Normal'],
                 fontSize=7, fontName='Helvetica-Oblique', alignment=1, textColor=colors.grey),
         ))
 
@@ -3831,26 +4137,26 @@ class PDFService:
     def generate_refund_receipt_pdf(self, refund_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Refund receipt for a reversed bill payment (Payment row with negative amount)."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(
+        doc = _doc_template(
             buffer, pagesize=A4,
             rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt),
         )
         elements = []
-        page_width = A4[0] - 80
+        page_width = _usable_width(80)
 
-        title_style = ParagraphStyle('Title', parent=self.styles['Title'],
+        title_style = _paragraph_style('Title', parent=self.styles['Title'],
             fontSize=15, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
-        sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
+        sub_style = _paragraph_style('Sub', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
-        receipt_title_style = ParagraphStyle('RT', parent=self.styles['Normal'],
+        receipt_title_style = _paragraph_style('RT', parent=self.styles['Normal'],
             fontSize=12, alignment=1, fontName='Helvetica-Bold', textColor=colors.red, spaceAfter=6)
-        label_style = ParagraphStyle('Label', parent=self.styles['Normal'],
+        label_style = _paragraph_style('Label', parent=self.styles['Normal'],
             fontSize=10, fontName='Helvetica-Bold', textColor=colors.black)
-        value_style = ParagraphStyle('Value', parent=self.styles['Normal'],
+        value_style = _paragraph_style('Value', parent=self.styles['Normal'],
             fontSize=10, fontName='Helvetica', textColor=colors.black)
-        amount_style = ParagraphStyle('Amount', parent=self.styles['Normal'],
+        amount_style = _paragraph_style('Amount', parent=self.styles['Normal'],
             fontSize=14, fontName='Helvetica-Bold', alignment=1, textColor=colors.red, spaceAfter=4)
-        footer_style = ParagraphStyle('Footer', parent=self.styles['Normal'],
+        footer_style = _paragraph_style('Footer', parent=self.styles['Normal'],
             fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.black)
 
         if include_header:
@@ -3862,15 +4168,15 @@ class PDFService:
             if hospital_info.get('email'): contact.append(f"Email: {hospital_info['email']}")
             if contact:
                 elements.append(Paragraph("  |  ".join(contact), sub_style))
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 6))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, letterhead_gap_pt))
+            elements.append(_spacer(1, letterhead_gap_pt))
 
-        elements.append(Spacer(1, 8))
+        elements.append(_spacer(1, 8))
         elements.append(Paragraph("REFUND RECEIPT", receipt_title_style))
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
-        elements.append(Spacer(1, 10))
+        elements.append(_hr_flowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(_spacer(1, 10))
 
         rows = [
             [Paragraph("Refund No:", label_style), Paragraph(str(refund_data.get('refund_number', '')), value_style),
@@ -3894,33 +4200,33 @@ class PDFService:
             rows.append([Paragraph("Address:", label_style), Paragraph(_refund_addr, value_style), '', ''])
             _refund_style.append(('SPAN', (1, _row_idx), (3, _row_idx)))
         meta_table = Table(rows, colWidths=[page_width * 0.20, page_width * 0.30, page_width * 0.18, page_width * 0.32])
-        meta_table.setStyle(TableStyle(_refund_style))
+        meta_table.setStyle(_table_style(_refund_style))
         elements.append(meta_table)
-        elements.append(Spacer(1, 14))
+        elements.append(_spacer(1, 14))
 
         elements.append(Paragraph("AMOUNT REFUNDED", label_style))
-        elements.append(Spacer(1, 4))
+        elements.append(_spacer(1, 4))
         elements.append(Paragraph(f"Rs. {float(refund_data.get('amount', 0)):,.2f}", amount_style))
-        elements.append(Spacer(1, 10))
+        elements.append(_spacer(1, 10))
 
         if refund_data.get('reason'):
             elements.append(Paragraph("<b>Reason:</b>", label_style))
             elements.append(Paragraph(str(refund_data['reason']), value_style))
-            elements.append(Spacer(1, 10))
+            elements.append(_spacer(1, 10))
 
         sig_table = Table(
             [[Paragraph("____________________<br/>Refunded By", value_style),
               Paragraph("____________________<br/>Patient / Attendant", value_style)]],
             colWidths=[page_width / 2, page_width / 2],
         )
-        sig_table.setStyle(TableStyle([
+        sig_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('ALIGN', (0, 0), (0, 0), 'LEFT'),
             ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
             ('TOPPADDING', (0, 0), (-1, -1), 30),
         ]))
         elements.append(sig_table)
-        elements.append(Spacer(1, 16))
+        elements.append(_spacer(1, 16))
         elements.append(Paragraph(
             f"Generated on {_generated_on()}",
             footer_style,
@@ -3933,26 +4239,26 @@ class PDFService:
     def generate_credit_note_pdf(self, cn_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Credit note PDF — reduces patient liability against a parent bill."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(
+        doc = _doc_template(
             buffer, pagesize=A4,
             rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt),
         )
         elements = []
-        page_width = A4[0] - 80
+        page_width = _usable_width(80)
 
-        title_style = ParagraphStyle('Title', parent=self.styles['Title'],
+        title_style = _paragraph_style('Title', parent=self.styles['Title'],
             fontSize=15, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
-        sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
+        sub_style = _paragraph_style('Sub', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
-        cn_title_style = ParagraphStyle('CT', parent=self.styles['Normal'],
+        cn_title_style = _paragraph_style('CT', parent=self.styles['Normal'],
             fontSize=13, alignment=1, fontName='Helvetica-Bold', textColor=colors.HexColor('#b91c1c'), spaceAfter=6)
-        label_style = ParagraphStyle('Label', parent=self.styles['Normal'],
+        label_style = _paragraph_style('Label', parent=self.styles['Normal'],
             fontSize=10, fontName='Helvetica-Bold', textColor=colors.black)
-        value_style = ParagraphStyle('Value', parent=self.styles['Normal'],
+        value_style = _paragraph_style('Value', parent=self.styles['Normal'],
             fontSize=10, fontName='Helvetica', textColor=colors.black)
-        amount_style = ParagraphStyle('Amount', parent=self.styles['Normal'],
+        amount_style = _paragraph_style('Amount', parent=self.styles['Normal'],
             fontSize=14, fontName='Helvetica-Bold', alignment=1, textColor=colors.HexColor('#b91c1c'), spaceAfter=4)
-        footer_style = ParagraphStyle('Footer', parent=self.styles['Normal'],
+        footer_style = _paragraph_style('Footer', parent=self.styles['Normal'],
             fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.black)
 
         if include_header:
@@ -3964,15 +4270,15 @@ class PDFService:
             if hospital_info.get('email'): contact.append(f"Email: {hospital_info['email']}")
             if contact:
                 elements.append(Paragraph("  |  ".join(contact), sub_style))
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 6))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, letterhead_gap_pt))
+            elements.append(_spacer(1, letterhead_gap_pt))
 
-        elements.append(Spacer(1, 8))
+        elements.append(_spacer(1, 8))
         elements.append(Paragraph("CREDIT NOTE", cn_title_style))
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
-        elements.append(Spacer(1, 10))
+        elements.append(_hr_flowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(_spacer(1, 10))
 
         rows = [
             [Paragraph("Credit Note No:", label_style), Paragraph(str(cn_data.get('credit_note_number', '')), value_style),
@@ -3989,9 +4295,9 @@ class PDFService:
             rows.append([Paragraph("Address:", label_style), Paragraph(_cn_addr, value_style), '', ''])
             _cn_style.append(('SPAN', (1, _row_idx), (3, _row_idx)))
         meta = Table(rows, colWidths=[page_width * 0.20, page_width * 0.30, page_width * 0.18, page_width * 0.32])
-        meta.setStyle(TableStyle(_cn_style))
+        meta.setStyle(_table_style(_cn_style))
         elements.append(meta)
-        elements.append(Spacer(1, 10))
+        elements.append(_spacer(1, 10))
 
         # Line items
         items = cn_data.get('items') or []
@@ -4007,38 +4313,38 @@ class PDFService:
                     Paragraph(f"{float(it.get('total', 0)):,.2f}", value_style),
                 ])
             t = Table(body, colWidths=[page_width * 0.55, page_width * 0.10, page_width * 0.17, page_width * 0.18])
-            t.setStyle(TableStyle([
+            t.setStyle(_table_style([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#fee2e2')),
                 ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
             ]))
             elements.append(t)
-            elements.append(Spacer(1, 12))
+            elements.append(_spacer(1, 12))
 
         elements.append(Paragraph("TOTAL CREDITED", label_style))
-        elements.append(Spacer(1, 4))
+        elements.append(_spacer(1, 4))
         elements.append(Paragraph(f"Rs. {float(cn_data.get('amount', 0)):,.2f}", amount_style))
-        elements.append(Spacer(1, 10))
+        elements.append(_spacer(1, 10))
 
         if cn_data.get('reason'):
             elements.append(Paragraph("<b>Reason:</b>", label_style))
             elements.append(Paragraph(str(cn_data['reason']), value_style))
-            elements.append(Spacer(1, 10))
+            elements.append(_spacer(1, 10))
 
         sig = Table(
             [[Paragraph("____________________<br/>Issued By", value_style),
               Paragraph("____________________<br/>Patient / Attendant", value_style)]],
             colWidths=[page_width / 2, page_width / 2],
         )
-        sig.setStyle(TableStyle([
+        sig.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('ALIGN', (0, 0), (0, 0), 'LEFT'),
             ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
             ('TOPPADDING', (0, 0), (-1, -1), 30),
         ]))
         elements.append(sig)
-        elements.append(Spacer(1, 16))
+        elements.append(_spacer(1, 16))
         elements.append(Paragraph(
             f"Generated on {_generated_on()}",
             footer_style,
@@ -4051,21 +4357,21 @@ class PDFService:
     def generate_consent_pdf(self, consent_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Signed consent form PDF."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
+        doc = _doc_template(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
         elements = []
-        page_width = A4[0] - 80
+        page_width = _usable_width(80)
 
-        title_style = ParagraphStyle('Title', parent=self.styles['Title'],
+        title_style = _paragraph_style('Title', parent=self.styles['Title'],
             fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
-        sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
+        sub_style = _paragraph_style('Sub', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
-        heading = ParagraphStyle('Heading', parent=self.styles['Normal'],
+        heading = _paragraph_style('Heading', parent=self.styles['Normal'],
             fontSize=11, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
-        body = ParagraphStyle('Body', parent=self.styles['Normal'],
+        body = _paragraph_style('Body', parent=self.styles['Normal'],
             fontSize=10, fontName='Helvetica', textColor=colors.black, spaceAfter=4)
-        label_small = ParagraphStyle('Label', parent=self.styles['Normal'],
+        label_small = _paragraph_style('Label', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica-Bold', textColor=colors.black)
-        footer_style = ParagraphStyle('Footer', parent=self.styles['Normal'],
+        footer_style = _paragraph_style('Footer', parent=self.styles['Normal'],
             fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.black)
 
         doc_number = consent_data.get('doc_number') or ''
@@ -4099,7 +4405,7 @@ class PDFService:
 
             doc_num_para = Paragraph(
                 f'<b>Doc No:</b><br/>{doc_number}' if doc_number else '',
-                ParagraphStyle('DocNum', parent=self.styles['Normal'],
+                _paragraph_style('DocNum', parent=self.styles['Normal'],
                     fontSize=9, fontName='Helvetica-Bold', alignment=2, textColor=colors.black)
             )
 
@@ -4121,7 +4427,7 @@ class PDFService:
                     [[centre_elems, doc_num_para]],
                     colWidths=[page_width - 90, 90],
                 )
-            header_table.setStyle(TableStyle([
+            header_table.setStyle(_table_style([
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('LEFTPADDING', (0, 0), (-1, -1), 0),
                 ('RIGHTPADDING', (0, 0), (-1, -1), 0),
@@ -4129,23 +4435,23 @@ class PDFService:
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
             ]))
             elements.append(header_table)
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 6))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, letterhead_gap_pt))
+            elements.append(_spacer(1, letterhead_gap_pt))
             if doc_number:
                 elements.append(Paragraph(
                     f'<b>Doc No: {doc_number}</b>',
-                    ParagraphStyle('DocNumNoH', parent=self.styles['Normal'],
+                    _paragraph_style('DocNumNoH', parent=self.styles['Normal'],
                         fontSize=9, fontName='Helvetica-Bold', alignment=2, textColor=colors.black)
                 ))
 
-        elements.append(Spacer(1, 8))
+        elements.append(_spacer(1, 8))
         ctype = consent_data.get('consent_type', '').replace('_', ' ').upper()
-        elements.append(Paragraph(f"{ctype} CONSENT FORM", ParagraphStyle('CT', parent=self.styles['Normal'],
+        elements.append(Paragraph(f"{ctype} CONSENT FORM", _paragraph_style('CT', parent=self.styles['Normal'],
             fontSize=13, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=6)))
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
-        elements.append(Spacer(1, 8))
+        elements.append(_hr_flowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(_spacer(1, 8))
 
         # Patient/admission meta — always shown for all consent types
         mrn = consent_data.get('mrn', '')
@@ -4196,9 +4502,9 @@ class PDFService:
             meta_rows.append([Paragraph("Address:", label_small), Paragraph(_consent_addr, body), '', ''])
             _consent_style.append(('SPAN', (1, _row_idx), (3, _row_idx)))
         meta_table = Table(meta_rows, colWidths=[page_width * 0.15, page_width * 0.35, page_width * 0.15, page_width * 0.35])
-        meta_table.setStyle(TableStyle(_consent_style))
+        meta_table.setStyle(_table_style(_consent_style))
         elements.append(meta_table)
-        elements.append(Spacer(1, 10))
+        elements.append(_spacer(1, 10))
 
         # Template content
         content = consent_data.get('template_content') or 'No template content.'
@@ -4206,12 +4512,12 @@ class PDFService:
         for para in content.split("\n"):
             if para.strip():
                 elements.append(Paragraph(para.strip(), body))
-        elements.append(Spacer(1, 6))
+        elements.append(_spacer(1, 6))
 
         if consent_data.get('risks_explained'):
             elements.append(Paragraph("RISKS EXPLAINED", heading))
             elements.append(Paragraph(consent_data['risks_explained'], body))
-            elements.append(Spacer(1, 6))
+            elements.append(_spacer(1, 6))
 
         # Signatures
         elements.append(Paragraph("SIGNATURES", heading))
@@ -4224,23 +4530,132 @@ class PDFService:
         if signed_by != "patient":
             elements.append(Paragraph(f"<b>Signed by:</b> {signed_by} — {consent_data.get('guardian_name', '')} ({consent_data.get('guardian_relationship', '')})", body))
         sig_table = Table(sig_lines, colWidths=[page_width / 2, page_width / 2])
-        sig_table.setStyle(TableStyle([
+        sig_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('TOPPADDING', (0, 0), (-1, -1), 10),
         ]))
         elements.append(sig_table)
-        elements.append(Spacer(1, 6))
+        elements.append(_spacer(1, 6))
         elements.append(Paragraph(f"Signed at: {_fmt_system_dt(consent_data.get('signed_at', ''), fmt='%d/%m/%Y', empty='')}", body))
 
         if consent_data.get('withdrawn_at'):
-            elements.append(Spacer(1, 10))
-            elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+            elements.append(_spacer(1, 10))
+            elements.append(_hr_flowable(width="100%", thickness=0.5, color=colors.black))
             elements.append(Paragraph("<b>CONSENT WITHDRAWN</b>", heading))
             elements.append(Paragraph(f"Withdrawn at: {consent_data['withdrawn_at']}", body))
             elements.append(Paragraph(f"Reason: {consent_data.get('withdrawal_reason', '')}", body))
 
-        elements.append(Spacer(1, 18))
+        elements.append(_spacer(1, 18))
         elements.append(Paragraph(f"Generated on {_generated_on('%d/%m/%Y')}", footer_style))
+        _finalize(doc, elements, hospital_info)
+        buffer.seek(0)
+        return buffer
+
+    def generate_art_consent_form_pdf(
+        self, form, hospital_info, include_header=True,
+        letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0,
+    ):
+        """Unsigned ART consent, prefilled for a wet-ink signature."""
+        buffer = BytesIO()
+        doc = _doc_template(
+            buffer, pagesize=A4, rightMargin=40, leftMargin=40,
+            topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt),
+        )
+        elements = []
+        page_width = _usable_width(80)
+
+        def esc(value):
+            text = "—" if value is None or str(value).strip() == "" else str(value)
+            return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        title_style = _paragraph_style(
+            'ArtConsentTitle', parent=self.styles['Normal'],
+            fontSize=13, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4,
+        )
+        body = _paragraph_style(
+            'ArtConsentBody', parent=self.styles['Normal'],
+            fontSize=10, fontName='Helvetica', textColor=colors.black, spaceAfter=6, leading=13,
+        )
+        label = _paragraph_style(
+            'ArtConsentLabel', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica-Bold', textColor=colors.black, leading=12,
+        )
+        value = _paragraph_style(
+            'ArtConsentValue', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica', textColor=colors.black, leading=12,
+        )
+        note = _paragraph_style(
+            'ArtConsentNote', parent=self.styles['Normal'],
+            fontSize=8, alignment=1, fontName='Helvetica-Oblique', textColor=colors.black, spaceAfter=8,
+        )
+
+        if include_header:
+            centre = [Paragraph(esc(hospital_info.get('name') or 'Clinic'), title_style)]
+            if hospital_info.get('address'):
+                centre.append(Paragraph(esc(hospital_info['address']), note))
+            contact = "  |  ".join(
+                part for part in (
+                    f"Phone: {hospital_info['phone']}" if hospital_info.get('phone') else "",
+                    f"Email: {hospital_info['email']}" if hospital_info.get('email') else "",
+                ) if part
+            )
+            if contact:
+                centre.append(Paragraph(esc(contact), note))
+            elements.append(Table([[centre]], colWidths=[page_width]))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
+        else:
+            elements.append(_spacer(1, letterhead_gap_pt))
+
+        elements.append(_spacer(1, 8))
+        elements.append(Paragraph(esc(form.get("title")), title_style))
+        elements.append(Paragraph(
+            "Filled in for signature. This is not a signed record until the signed paper is filed.",
+            note,
+        ))
+
+        rows = []
+        for field_label, field_value in form.get("fields") or []:
+            rows.append([Paragraph(esc(field_label), label), Paragraph(esc(field_value), value)])
+        if rows:
+            table = Table(rows, colWidths=[140, page_width - 140])
+            table.setStyle(_table_style([
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 2),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+                ('TOPPADDING', (0, 0), (-1, -1), 2),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+                ('LINEBELOW', (0, 0), (-1, -2), 0.25, colors.lightgrey),
+            ]))
+            elements.append(table)
+            elements.append(_spacer(1, 10))
+
+        for paragraph in form.get("paragraphs") or []:
+            elements.append(Paragraph(esc(paragraph), body))
+
+        if form.get("choices"):
+            elements.append(Paragraph("Mark one instruction:", label))
+            elements.append(_spacer(1, 4))
+            for choice in form["choices"]:
+                elements.append(Paragraph(f"[ &nbsp;&nbsp; ] &nbsp; {esc(choice)}", body))
+
+        elements.append(_spacer(1, 8))
+        elements.append(Paragraph("Signatures are written by hand. Do not treat a printed name as a signature.", note))
+        signer_cells = []
+        for signer in form.get("signers") or []:
+            signer_cells.append(Paragraph(
+                f"<b>{esc(signer.get('role'))}</b><br/>{esc(signer.get('name'))}<br/><br/>Signature ________________<br/><br/>Date ________________",
+                value,
+            ))
+        if len(signer_cells) % 2:
+            signer_cells.append(Paragraph("", value))
+        pair_rows = [signer_cells[i:i + 2] for i in range(0, len(signer_cells), 2)]
+        sig = Table(pair_rows, colWidths=[page_width / 2, page_width / 2])
+        sig.setStyle(_table_style([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 8),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+        ]))
+        elements.append(sig)
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
@@ -4250,31 +4665,31 @@ class PDFService:
     ):
         """Clinical case sheet printed at admission (Complaints & History)."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
+        doc = _doc_template(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
         elements = []
-        page_width = A4[0] - 80
+        page_width = _usable_width(80)
 
-        title_style = ParagraphStyle(
+        title_style = _paragraph_style(
             'CSTitle', parent=self.styles['Title'],
             fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4,
         )
-        sub_style = ParagraphStyle(
+        sub_style = _paragraph_style(
             'CSSub', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2,
         )
-        heading = ParagraphStyle(
+        heading = _paragraph_style(
             'CSHeading', parent=self.styles['Normal'],
             fontSize=11, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4, spaceBefore=8,
         )
-        body = ParagraphStyle(
+        body = _paragraph_style(
             'CSBody', parent=self.styles['Normal'],
             fontSize=10, fontName='Helvetica', textColor=colors.black, spaceAfter=4, leading=13,
         )
-        label_small = ParagraphStyle(
+        label_small = _paragraph_style(
             'CSLabel', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica-Bold', textColor=colors.black,
         )
-        footer_style = ParagraphStyle(
+        footer_style = _paragraph_style(
             'CSFooter', parent=self.styles['Normal'],
             fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.black,
         )
@@ -4313,27 +4728,27 @@ class PDFService:
                     header_table = Table([[centre_elems]], colWidths=[page_width])
             else:
                 header_table = Table([[centre_elems]], colWidths=[page_width])
-            header_table.setStyle(TableStyle([
+            header_table.setStyle(_table_style([
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('LEFTPADDING', (0, 0), (-1, -1), 0),
                 ('RIGHTPADDING', (0, 0), (-1, -1), 0),
             ]))
             elements.append(header_table)
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 6))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, letterhead_gap_pt))
+            elements.append(_spacer(1, letterhead_gap_pt))
 
-        elements.append(Spacer(1, 8))
+        elements.append(_spacer(1, 8))
         elements.append(Paragraph(
             "CASE SHEET",
-            ParagraphStyle(
+            _paragraph_style(
                 'CSMain', parent=self.styles['Normal'],
                 fontSize=13, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=6,
             ),
         ))
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
-        elements.append(Spacer(1, 8))
+        elements.append(_hr_flowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(_spacer(1, 8))
 
         meta_rows = [
             [
@@ -4373,12 +4788,12 @@ class PDFService:
             meta_rows,
             colWidths=[page_width * 0.15, page_width * 0.35, page_width * 0.15, page_width * 0.35],
         )
-        meta_table.setStyle(TableStyle([
+        meta_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
         ]))
         elements.append(meta_table)
-        elements.append(Spacer(1, 10))
+        elements.append(_spacer(1, 10))
 
         sections = [
             ('Chief Complaints', payload.get('chief_complaint')),
@@ -4399,18 +4814,18 @@ class PDFService:
             for line in text.split('\n'):
                 if line.strip():
                     elements.append(Paragraph(line.strip().replace('&', '&amp;').replace('<', '&lt;'), body))
-            elements.append(Spacer(1, 4))
+            elements.append(_spacer(1, 4))
 
         if not any_section:
             elements.append(Paragraph(
                 "No clinical case sheet details recorded at admission.",
-                ParagraphStyle(
+                _paragraph_style(
                     'CSEmpty', parent=body, textColor=colors.grey, fontName='Helvetica-Oblique',
                 ),
             ))
-            elements.append(Spacer(1, 8))
+            elements.append(_spacer(1, 8))
 
-        elements.append(Spacer(1, 12))
+        elements.append(_spacer(1, 12))
         elements.append(Paragraph("SIGNATURES", heading))
         sig_table = Table(
             [[
@@ -4429,13 +4844,13 @@ class PDFService:
             ]],
             colWidths=[page_width / 3, page_width / 3, page_width / 3],
         )
-        sig_table.setStyle(TableStyle([
+        sig_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('TOPPADDING', (0, 0), (-1, -1), 6),
         ]))
         elements.append(sig_table)
 
-        elements.append(Spacer(1, 18))
+        elements.append(_spacer(1, 18))
         elements.append(Paragraph(f"Generated on {_generated_on('%d/%m/%Y')}", footer_style))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
@@ -4444,40 +4859,40 @@ class PDFService:
     def generate_death_certificate_pdf(self, cert_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Death certificate / mortality record."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
+        doc = _doc_template(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
         elements = []
-        page_width = A4[0] - 80
+        page_width = _usable_width(80)
 
-        title_style = ParagraphStyle('Title', parent=self.styles['Title'],
+        title_style = _paragraph_style('Title', parent=self.styles['Title'],
             fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
-        sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
+        sub_style = _paragraph_style('Sub', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
-        heading = ParagraphStyle('Heading', parent=self.styles['Normal'],
+        heading = _paragraph_style('Heading', parent=self.styles['Normal'],
             fontSize=12, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
-        label = ParagraphStyle('Label', parent=self.styles['Normal'],
+        label = _paragraph_style('Label', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica-Bold', textColor=colors.black)
-        value = ParagraphStyle('Value', parent=self.styles['Normal'],
+        value = _paragraph_style('Value', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica', textColor=colors.black)
-        footer_style = ParagraphStyle('Footer', parent=self.styles['Normal'],
+        footer_style = _paragraph_style('Footer', parent=self.styles['Normal'],
             fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.black)
 
         if include_header:
             elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
             if hospital_info.get('address'):
                 elements.append(Paragraph(hospital_info['address'], sub_style))
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 6))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, letterhead_gap_pt))
+            elements.append(_spacer(1, letterhead_gap_pt))
 
-        elements.append(Spacer(1, 8))
-        elements.append(Paragraph("DEATH CERTIFICATE", ParagraphStyle('DC', parent=self.styles['Normal'],
+        elements.append(_spacer(1, 8))
+        elements.append(Paragraph("DEATH CERTIFICATE", _paragraph_style('DC', parent=self.styles['Normal'],
             fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=6)))
         if cert_data.get('death_certificate_number'):
             elements.append(Paragraph(f"Certificate No: {cert_data['death_certificate_number']}",
-                ParagraphStyle('CN', parent=self.styles['Normal'], fontSize=10, alignment=1, textColor=colors.black)))
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
-        elements.append(Spacer(1, 10))
+                _paragraph_style('CN', parent=self.styles['Normal'], fontSize=10, alignment=1, textColor=colors.black)))
+        elements.append(_hr_flowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(_spacer(1, 10))
 
         rows = [
             [Paragraph("Name of Deceased:", label), Paragraph(str(cert_data.get('patient_name', '')), value)],
@@ -4503,14 +4918,14 @@ class PDFService:
             rows.append([Paragraph("Address:", label), Paragraph(_cert_addr, value)])
 
         meta_table = Table(rows, colWidths=[page_width * 0.3, page_width * 0.7])
-        meta_table.setStyle(TableStyle([
+        meta_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
         ]))
         elements.append(meta_table)
 
         if cert_data.get('body_handed_over_to'):
-            elements.append(Spacer(1, 10))
+            elements.append(_spacer(1, 10))
             elements.append(Paragraph("BODY HANDOVER", heading))
             handover_rows = [
                 [Paragraph("Handed over to:", label), Paragraph(str(cert_data.get('body_handed_over_to', '')), value)],
@@ -4519,24 +4934,24 @@ class PDFService:
                 [Paragraph("ID Proof:", label), Paragraph(str(cert_data.get('body_handover_id_proof', '')), value)],
             ]
             h_table = Table(handover_rows, colWidths=[page_width * 0.3, page_width * 0.7])
-            h_table.setStyle(TableStyle([
+            h_table.setStyle(_table_style([
                 ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
             ]))
             elements.append(h_table)
 
         # Signatures
-        elements.append(Spacer(1, 20))
+        elements.append(_spacer(1, 20))
         sig_table = Table([[
             Paragraph("____________________<br/>Medical Officer / Treating Doctor", value),
             Paragraph("____________________<br/>Medical Superintendent", value),
         ]], colWidths=[page_width / 2, page_width / 2])
-        sig_table.setStyle(TableStyle([
+        sig_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('TOPPADDING', (0, 0), (-1, -1), 30),
         ]))
         elements.append(sig_table)
-        elements.append(Spacer(1, 14))
+        elements.append(_spacer(1, 14))
         elements.append(Paragraph(f"Generated on {_generated_on()}", footer_style))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
@@ -4547,40 +4962,40 @@ class PDFService:
         Indian context: invokes Section 88/92 IPC ('act done in good faith for
         the benefit of a person, with consent') in the absolves clause."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
+        doc = _doc_template(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
         elements = []
-        page_width = A4[0] - 80
+        page_width = _usable_width(80)
 
-        title_style = ParagraphStyle('Title', parent=self.styles['Title'],
+        title_style = _paragraph_style('Title', parent=self.styles['Title'],
             fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
-        sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
+        sub_style = _paragraph_style('Sub', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
-        heading = ParagraphStyle('Heading', parent=self.styles['Normal'],
+        heading = _paragraph_style('Heading', parent=self.styles['Normal'],
             fontSize=11, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4, spaceBefore=8)
-        label = ParagraphStyle('Label', parent=self.styles['Normal'],
+        label = _paragraph_style('Label', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica-Bold', textColor=colors.black)
-        value = ParagraphStyle('Value', parent=self.styles['Normal'],
+        value = _paragraph_style('Value', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica', textColor=colors.black)
-        body = ParagraphStyle('Body', parent=self.styles['Normal'],
+        body = _paragraph_style('Body', parent=self.styles['Normal'],
             fontSize=10, fontName='Helvetica', textColor=colors.black, spaceAfter=4, leading=14)
-        footer_style = ParagraphStyle('Footer', parent=self.styles['Normal'],
+        footer_style = _paragraph_style('Footer', parent=self.styles['Normal'],
             fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.black)
 
         if include_header:
             elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
             if hospital_info.get('address'):
                 elements.append(Paragraph(hospital_info['address'], sub_style))
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 6))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, letterhead_gap_pt))
+            elements.append(_spacer(1, letterhead_gap_pt))
 
-        elements.append(Spacer(1, 8))
+        elements.append(_spacer(1, 8))
         elements.append(Paragraph("DISCHARGE AGAINST MEDICAL ADVICE (DAMA)",
-            ParagraphStyle('DA', parent=self.styles['Normal'],
+            _paragraph_style('DA', parent=self.styles['Normal'],
                 fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=6)))
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
-        elements.append(Spacer(1, 10))
+        elements.append(_hr_flowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(_spacer(1, 10))
 
         meta_rows = [
             [Paragraph("Patient Name:", label), Paragraph(str(dama_data.get('patient_name', '')), value)],
@@ -4600,7 +5015,7 @@ class PDFService:
         if _dama_addr:
             meta_rows.append([Paragraph("Address:", label), Paragraph(_dama_addr, value)])
         meta_table = Table(meta_rows, colWidths=[page_width * 0.3, page_width * 0.7])
-        meta_table.setStyle(TableStyle([
+        meta_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
         ]))
@@ -4624,7 +5039,7 @@ class PDFService:
         elements.append(Paragraph(decl, body))
 
         # Signatures
-        elements.append(Spacer(1, 14))
+        elements.append(_spacer(1, 14))
         signed_label = "Patient Signature" if dama_data.get('signed_by') == 'patient' else "Guardian Signature"
         primary_sig_text = dama_data.get('primary_signature') or ''
         if dama_data.get('primary_signature_type') == 'typed':
@@ -4649,18 +5064,18 @@ class PDFService:
                     value),
             ]
         ], colWidths=[page_width / 2, page_width / 2])
-        sig_table.setStyle(TableStyle([
+        sig_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('TOPPADDING', (0, 0), (-1, -1), 30),
         ]))
         elements.append(sig_table)
 
         if dama_data.get('notes'):
-            elements.append(Spacer(1, 10))
+            elements.append(_spacer(1, 10))
             elements.append(Paragraph("ADDITIONAL NOTES", heading))
             elements.append(Paragraph(dama_data['notes'].replace('\n', '<br/>'), body))
 
-        elements.append(Spacer(1, 14))
+        elements.append(_spacer(1, 14))
         elements.append(Paragraph(
             f"Form signed on {_fmt_system_dt(dama_data.get('signed_at', ''), fmt='%d/%m/%Y %H:%M', empty='')} | Generated {_generated_on('%d/%m/%Y at %H:%M')}",
             footer_style))
@@ -4675,34 +5090,34 @@ class PDFService:
         subname + address + contact). Footer matches with Issued-by / Printed-by
         line plus a 'Generated on' timestamp."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4,
+        doc = _doc_template(buffer, pagesize=A4,
             rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt))
         elements = []
-        page_width = A4[0] - 60
+        page_width = _usable_width(60)
 
-        title_style = ParagraphStyle('GPTitle', parent=self.styles['Title'],
+        title_style = _paragraph_style('GPTitle', parent=self.styles['Title'],
             fontSize=16, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=2)
-        subtitle_style = ParagraphStyle('GPSubtitle', parent=self.styles['Normal'],
+        subtitle_style = _paragraph_style('GPSubtitle', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica',
             textColor=colors.black, spaceAfter=2)
-        receipt_title_style = ParagraphStyle('GPReceiptTitle', parent=self.styles['Normal'],
+        receipt_title_style = _paragraph_style('GPReceiptTitle', parent=self.styles['Normal'],
             fontSize=12, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=4)
-        label = ParagraphStyle('GPLbl', parent=self.styles['Normal'],
+        label = _paragraph_style('GPLbl', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica-Bold', textColor=colors.black)
-        value = ParagraphStyle('GPVal', parent=self.styles['Normal'],
+        value = _paragraph_style('GPVal', parent=self.styles['Normal'],
             fontSize=10, fontName='Helvetica', textColor=colors.black)
-        small = ParagraphStyle('GPSm', parent=self.styles['Normal'],
+        small = _paragraph_style('GPSm', parent=self.styles['Normal'],
             fontSize=8, fontName='Helvetica', textColor=colors.black)
-        warn = ParagraphStyle('GPWarn', parent=self.styles['Normal'],
+        warn = _paragraph_style('GPWarn', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica-Bold', textColor=colors.red)
-        footer_meta = ParagraphStyle('GPFootMeta', parent=self.styles['Normal'],
+        footer_meta = _paragraph_style('GPFootMeta', parent=self.styles['Normal'],
             fontSize=7, fontName='Helvetica-Oblique', alignment=1, textColor=colors.grey)
 
         def lv(lbl, val):
             return Paragraph(f"<b>{lbl}</b> :  {val}",
-                             ParagraphStyle('GPLV', parent=value, leading=11))
+                             _paragraph_style('GPLV', parent=value, leading=11))
 
         # ============================================================
         # HEADER — same layout as generate_bill_pdf / inpatient bill
@@ -4744,7 +5159,7 @@ class PDFService:
                         [[logo_img, header_text_elems]],
                         colWidths=[75, page_width - 75],
                     )
-                    header_table.setStyle(TableStyle([
+                    header_table.setStyle(_table_style([
                         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                         ('LEFTPADDING', (0, 0), (-1, -1), 0),
                         ('RIGHTPADDING', (0, 0), (-1, -1), 0),
@@ -4759,15 +5174,15 @@ class PDFService:
                 for el in header_text_elems:
                     elements.append(el)
 
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 6))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, letterhead_gap_pt))
+            elements.append(_spacer(1, letterhead_gap_pt))
 
-        elements.append(Spacer(1, 6))
+        elements.append(_spacer(1, 6))
         elements.append(Paragraph("GATE PASS / DISCHARGE EXIT SLIP", receipt_title_style))
-        elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
-        elements.append(Spacer(1, 8))
+        elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
+        elements.append(_spacer(1, 8))
 
         # Detail table
         rows = [
@@ -4788,7 +5203,7 @@ class PDFService:
             ])
         t = Table(rows, colWidths=[page_width * 0.18, page_width * 0.32,
                                    page_width * 0.18, page_width * 0.32])
-        t.setStyle(TableStyle([
+        t.setStyle(_table_style([
             ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('LEFTPADDING', (0, 0), (-1, -1), 6),
@@ -4797,7 +5212,7 @@ class PDFService:
             ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
         ]))
         elements.append(t)
-        elements.append(Spacer(1, 12))
+        elements.append(_spacer(1, 12))
 
         # Outstanding-balance line (use Rs. — the ₹ glyph is missing from the
         # default Helvetica font and renders as a tofu square).
@@ -4807,26 +5222,26 @@ class PDFService:
                 warn))
             if payload.get('override_reason'):
                 elements.append(Paragraph(f"Reason: {payload['override_reason']}", value))
-            elements.append(Spacer(1, 10))
+            elements.append(_spacer(1, 10))
         else:
             elements.append(Paragraph("Bill cleared — outstanding balance Rs. 0.00", value))
-            elements.append(Spacer(1, 10))
+            elements.append(_spacer(1, 10))
 
         if payload.get('notes'):
             elements.append(Paragraph(f"<b>Notes:</b> {payload['notes']}", value))
-            elements.append(Spacer(1, 10))
+            elements.append(_spacer(1, 10))
 
         elements.append(Paragraph(f"QR Token: {payload.get('qr_token', '-')}",
-            ParagraphStyle('GPQR', parent=self.styles['Normal'],
+            _paragraph_style('GPQR', parent=self.styles['Normal'],
                 fontSize=7, fontName='Courier', textColor=colors.grey, alignment=1)))
 
-        elements.append(Spacer(1, 36))
+        elements.append(_spacer(1, 36))
         sig_rows = [[
             Paragraph("Security Signature", label),
             Paragraph("Attendant Signature", label),
         ]]
         sig = Table(sig_rows, colWidths=[page_width * 0.5, page_width * 0.5])
-        sig.setStyle(TableStyle([
+        sig.setStyle(_table_style([
             ('LINEABOVE', (0, 0), (-1, 0), 0.5, colors.black),
             ('TOPPADDING', (0, 0), (-1, -1), 6),
         ]))
@@ -4836,23 +5251,23 @@ class PDFService:
         # FOOTER — Issued by / Printed by + generation timestamp,
         # matches the bill PDFs' bottom block.
         # ============================================================
-        elements.append(Spacer(1, 14))
-        elements.append(HRFlowable(width="100%", thickness=0.4, color=colors.grey))
-        elements.append(Spacer(1, 4))
+        elements.append(_spacer(1, 14))
+        elements.append(_hr_flowable(width="100%", thickness=0.4, color=colors.grey))
+        elements.append(_spacer(1, 4))
         issued_by = payload.get('issued_by_name', '-') or '-'
         footer_data = [[
             lv('Issued by', issued_by),
             lv('Printed by', issued_by),
         ]]
         footer_table = Table(footer_data, colWidths=[page_width / 2, page_width / 2])
-        footer_table.setStyle(TableStyle([
+        footer_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
             ('LEFTPADDING', (0, 0), (-1, -1), 6),
         ]))
         elements.append(footer_table)
-        elements.append(Spacer(1, 4))
+        elements.append(_spacer(1, 4))
         elements.append(Paragraph(
             f"Generated on {_generated_on()}",
             footer_meta,
@@ -4868,41 +5283,41 @@ class PDFService:
         buffer = BytesIO()
         # Landscape — many columns
         from reportlab.lib.pagesizes import landscape
-        doc = SimpleDocTemplate(buffer, pagesize=landscape(A4),
+        doc = _doc_template(buffer, pagesize=landscape(A4),
             rightMargin=20, leftMargin=20, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(24, footer_gap_pt))
         elements = []
         page_width = landscape(A4)[0] - 40
 
-        title_style = ParagraphStyle('Title', parent=self.styles['Title'],
+        title_style = _paragraph_style('Title', parent=self.styles['Title'],
             fontSize=13, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
-        sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
+        sub_style = _paragraph_style('Sub', parent=self.styles['Normal'],
             fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
-        cell = ParagraphStyle('Cell', parent=self.styles['Normal'],
+        cell = _paragraph_style('Cell', parent=self.styles['Normal'],
             fontSize=8, fontName='Helvetica', textColor=colors.black, leading=10)
-        cell_b = ParagraphStyle('CellB', parent=self.styles['Normal'],
+        cell_b = _paragraph_style('CellB', parent=self.styles['Normal'],
             fontSize=8, fontName='Helvetica-Bold', textColor=colors.black, leading=10)
 
         if include_header:
             elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
             if hospital_info.get('address'):
                 elements.append(Paragraph(hospital_info['address'], sub_style))
-            elements.append(Spacer(1, 4))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 4))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, 50))
+            elements.append(_spacer(1, 50))
 
-        elements.append(Spacer(1, 6))
+        elements.append(_spacer(1, 6))
         elements.append(Paragraph(
             f"DOCTOR PRODUCTIVITY — {payload.get('date_from', '')} to {payload.get('date_to', '')}",
-            ParagraphStyle('H', parent=self.styles['Normal'], fontSize=12, alignment=1,
+            _paragraph_style('H', parent=self.styles['Normal'], fontSize=12, alignment=1,
                 fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=2)))
         elements.append(Paragraph(f"{payload.get('doctor_count', 0)} doctor(s)", sub_style))
-        elements.append(Spacer(1, 6))
+        elements.append(_spacer(1, 6))
 
         rows = payload.get("rows", [])
         if not rows:
             elements.append(Paragraph("No activity in this date range.",
-                ParagraphStyle('N', parent=self.styles['Normal'], fontSize=10, alignment=1)))
+                _paragraph_style('N', parent=self.styles['Normal'], fontSize=10, alignment=1)))
         else:
             header = ["Doctor", "Adm", "Dis", "Death", "Re-30d",
                       "OT-Sur", "OT-An", "Visits", "Avg LOS",
@@ -4933,7 +5348,7 @@ class PDFService:
                 page_width * 0.10, page_width * 0.11, page_width * 0.11, page_width * 0.15,  # money
             ]
             t = Table(data_rows, colWidths=col_widths, repeatRows=1)
-            t.setStyle(TableStyle([
+            t.setStyle(_table_style([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e0e0e0')),
                 ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -4943,14 +5358,14 @@ class PDFService:
             ]))
             elements.append(t)
 
-        elements.append(Spacer(1, 14))
+        elements.append(_spacer(1, 14))
         elements.append(Paragraph(
             "Total (Rs.) = Visit fees + OT surgeon fees (for OTs led) + OT anaesthetist fees. Outpatient consultation fees not included.",
-            ParagraphStyle('NF', parent=self.styles['Normal'], fontSize=7, alignment=0,
+            _paragraph_style('NF', parent=self.styles['Normal'], fontSize=7, alignment=0,
                 fontName='Helvetica-Oblique', textColor=colors.HexColor('#555555'))))
         elements.append(Paragraph(
             f"Generated on {_generated_on('%d/%m/%Y at %H:%M')}",
-            ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
+            _paragraph_style('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
@@ -4958,49 +5373,49 @@ class PDFService:
     def generate_monthly_outcomes_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Monthly outcomes — mortality + readmission + LOS + occupancy."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
+        doc = _doc_template(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
         elements = []
-        page_width = A4[0] - 60
+        page_width = _usable_width(60)
 
-        title_style = ParagraphStyle('Title', parent=self.styles['Title'],
+        title_style = _paragraph_style('Title', parent=self.styles['Title'],
             fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
-        sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
+        sub_style = _paragraph_style('Sub', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
-        section = ParagraphStyle('Section', parent=self.styles['Normal'],
+        section = _paragraph_style('Section', parent=self.styles['Normal'],
             fontSize=11, fontName='Helvetica-Bold', textColor=colors.black, spaceBefore=10, spaceAfter=4)
-        cell = ParagraphStyle('Cell', parent=self.styles['Normal'],
+        cell = _paragraph_style('Cell', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica', textColor=colors.black, leading=11)
-        cell_b = ParagraphStyle('CellB', parent=self.styles['Normal'],
+        cell_b = _paragraph_style('CellB', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica-Bold', textColor=colors.black, leading=11)
-        big = ParagraphStyle('Big', parent=self.styles['Normal'],
+        big = _paragraph_style('Big', parent=self.styles['Normal'],
             fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black)
-        bigsmall = ParagraphStyle('BigSmall', parent=self.styles['Normal'],
+        bigsmall = _paragraph_style('BigSmall', parent=self.styles['Normal'],
             fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.black)
 
         if include_header:
             elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
             if hospital_info.get('address'):
                 elements.append(Paragraph(hospital_info['address'], sub_style))
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 6))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, 60))
+            elements.append(_spacer(1, 60))
 
-        elements.append(Spacer(1, 6))
+        elements.append(_spacer(1, 6))
         elements.append(Paragraph(f"MONTHLY OUTCOMES — {payload.get('month', '')}",
-            ParagraphStyle('H', parent=self.styles['Normal'], fontSize=14, alignment=1,
+            _paragraph_style('H', parent=self.styles['Normal'], fontSize=14, alignment=1,
                 fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)))
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(_hr_flowable(width="100%", thickness=0.5, color=colors.black))
 
         # Totals tiles
         t = payload.get("totals", {})
         def _tile(v, l):
             tbl = Table([[Paragraph(str(v), big)], [Paragraph(l, bigsmall)]],
                         colWidths=[page_width / 5 - 4])
-            tbl.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'MIDDLE')]))
+            tbl.setStyle(_table_style([('VALIGN', (0, 0), (-1, -1), 'MIDDLE')]))
             return tbl
 
-        elements.append(Spacer(1, 8))
+        elements.append(_spacer(1, 8))
         tiles_row = Table([[
             _tile(t.get("admissions", 0), "Admissions"),
             _tile(t.get("discharges", 0), "Discharges"),
@@ -5008,18 +5423,18 @@ class PDFService:
             _tile(f'{t.get("mortality_rate_pct", 0)}%', "Mortality"),
             _tile(f'{t.get("readmission_rate_pct", 0)}%', "Readmit"),
         ]], colWidths=[page_width / 5] * 5)
-        tiles_row.setStyle(TableStyle([
+        tiles_row.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#fafafa')),
             ('BOX', (0, 0), (-1, -1), 0.4, colors.grey),
             ('GRID', (0, 0), (-1, -1), 0.3, colors.lightgrey),
         ]))
         elements.append(tiles_row)
-        elements.append(Spacer(1, 4))
+        elements.append(_spacer(1, 4))
         elements.append(Paragraph(
             f"Average daily occupancy: {t.get('average_daily_occupancy', 0)} beds "
             f"({t.get('average_occupancy_pct', 0)}%)",
-            ParagraphStyle('OL', parent=self.styles['Normal'], fontSize=10, alignment=1,
+            _paragraph_style('OL', parent=self.styles['Normal'], fontSize=10, alignment=1,
                 fontName='Helvetica-Bold', textColor=colors.HexColor('#444444'))))
 
         def _kv_table(title, mapping, key_label="Item"):
@@ -5031,7 +5446,7 @@ class PDFService:
             for k, v in mapping.items():
                 rows.append([Paragraph(str(k), cell), Paragraph(str(v), cell)])
             t = Table(rows, colWidths=[page_width * 0.7, page_width * 0.3], repeatRows=1)
-            t.setStyle(TableStyle([
+            t.setStyle(_table_style([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e0e0e0')),
                 ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -5070,7 +5485,7 @@ class PDFService:
                          Paragraph(str(s.get("mean", '—')), cell), Paragraph(str(s.get("median", '—')), cell),
                          Paragraph(str(s.get("min", '—')), cell), Paragraph(str(s.get("max", '—')), cell)])
         los_table = Table(rows, colWidths=[page_width * 0.34] + [page_width * 0.132] * 5, repeatRows=1)
-        los_table.setStyle(TableStyle([
+        los_table.setStyle(_table_style([
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e0e0e0')),
             ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -5079,10 +5494,10 @@ class PDFService:
         ]))
         elements.append(los_table)
 
-        elements.append(Spacer(1, 14))
+        elements.append(_spacer(1, 14))
         elements.append(Paragraph(
             f"Generated on {_generated_on('%d/%m/%Y at %H:%M')}",
-            ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
+            _paragraph_style('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
@@ -5090,38 +5505,38 @@ class PDFService:
     def generate_handover_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Nurse-to-nurse shift handover sheet."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
+        doc = _doc_template(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
         elements = []
-        page_width = A4[0] - 80
+        page_width = _usable_width(80)
 
-        title_style = ParagraphStyle('Title', parent=self.styles['Title'],
+        title_style = _paragraph_style('Title', parent=self.styles['Title'],
             fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
-        sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
+        sub_style = _paragraph_style('Sub', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
-        section = ParagraphStyle('Section', parent=self.styles['Normal'],
+        section = _paragraph_style('Section', parent=self.styles['Normal'],
             fontSize=11, fontName='Helvetica-Bold', textColor=colors.black, spaceBefore=8, spaceAfter=3)
-        label = ParagraphStyle('Label', parent=self.styles['Normal'],
+        label = _paragraph_style('Label', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica-Bold', textColor=colors.black)
-        value = ParagraphStyle('Value', parent=self.styles['Normal'],
+        value = _paragraph_style('Value', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica', textColor=colors.black)
-        body = ParagraphStyle('Body', parent=self.styles['Normal'],
+        body = _paragraph_style('Body', parent=self.styles['Normal'],
             fontSize=10, fontName='Helvetica', textColor=colors.black, spaceAfter=4, leading=13)
 
         if include_header:
             elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
             if hospital_info.get('address'):
                 elements.append(Paragraph(hospital_info['address'], sub_style))
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 6))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, 80))
+            elements.append(_spacer(1, 80))
 
-        elements.append(Spacer(1, 8))
+        elements.append(_spacer(1, 8))
         elements.append(Paragraph("NURSE SHIFT HANDOVER",
-            ParagraphStyle('H', parent=self.styles['Normal'], fontSize=14, alignment=1,
+            _paragraph_style('H', parent=self.styles['Normal'], fontSize=14, alignment=1,
                 fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)))
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
-        elements.append(Spacer(1, 6))
+        elements.append(_hr_flowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(_spacer(1, 6))
 
         meta_rows = [
             [Paragraph("Patient:", label), Paragraph(str(payload.get('patient_name', '')), value)],
@@ -5139,7 +5554,7 @@ class PDFService:
         if _ho_aadhaar:
             meta_rows.insert(2, [Paragraph("Aadhaar:", label), Paragraph(_ho_aadhaar, value)])
         meta_table = Table(meta_rows, colWidths=[page_width * 0.30, page_width * 0.70])
-        meta_table.setStyle(TableStyle([
+        meta_table.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
         ]))
@@ -5159,19 +5574,19 @@ class PDFService:
             elements.append(Paragraph(sec_title, section))
             elements.append(Paragraph(txt.replace('\n', '<br/>'), body))
 
-        elements.append(Spacer(1, 20))
+        elements.append(_spacer(1, 20))
         sig_table = Table([[
             Paragraph(f"____________________<br/>Outgoing Nurse: {payload.get('from_nurse', '')}", value),
             Paragraph(f"____________________<br/>Incoming Nurse: {payload.get('to_nurse', '') or '___________________'}", value),
         ]], colWidths=[page_width / 2, page_width / 2])
-        sig_table.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        sig_table.setStyle(_table_style([('VALIGN', (0, 0), (-1, -1), 'TOP'),
                                        ('TOPPADDING', (0, 0), (-1, -1), 30)]))
         elements.append(sig_table)
 
-        elements.append(Spacer(1, 14))
+        elements.append(_spacer(1, 14))
         elements.append(Paragraph(
             f"Generated on {_generated_on('%d/%m/%Y at %H:%M')}",
-            ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
+            _paragraph_style('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
@@ -5179,41 +5594,41 @@ class PDFService:
     def generate_census_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Daily census report — totals + per-ward + per-room-type breakdown."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
+        doc = _doc_template(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
         elements = []
-        page_width = A4[0] - 60
+        page_width = _usable_width(60)
 
-        title_style = ParagraphStyle('Title', parent=self.styles['Title'],
+        title_style = _paragraph_style('Title', parent=self.styles['Title'],
             fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
-        sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
+        sub_style = _paragraph_style('Sub', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
-        section = ParagraphStyle('Section', parent=self.styles['Normal'],
+        section = _paragraph_style('Section', parent=self.styles['Normal'],
             fontSize=11, fontName='Helvetica-Bold', textColor=colors.black, spaceBefore=10, spaceAfter=4)
-        cell = ParagraphStyle('Cell', parent=self.styles['Normal'],
+        cell = _paragraph_style('Cell', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica', textColor=colors.black, leading=11)
-        cell_b = ParagraphStyle('CellB', parent=self.styles['Normal'],
+        cell_b = _paragraph_style('CellB', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica-Bold', textColor=colors.black, leading=11)
-        big = ParagraphStyle('Big', parent=self.styles['Normal'],
+        big = _paragraph_style('Big', parent=self.styles['Normal'],
             fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black)
-        bigsmall = ParagraphStyle('BigSmall', parent=self.styles['Normal'],
+        bigsmall = _paragraph_style('BigSmall', parent=self.styles['Normal'],
             fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.black)
 
         if include_header:
             elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
             if hospital_info.get('address'):
                 elements.append(Paragraph(hospital_info['address'], sub_style))
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 6))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, 60))
+            elements.append(_spacer(1, 60))
 
-        elements.append(Spacer(1, 6))
+        elements.append(_spacer(1, 6))
         as_of = payload.get("as_of", "")
         as_of_h = _fmt_system_dt(as_of, fmt="%d/%m/%Y %H:%M", empty=as_of or "")
         elements.append(Paragraph(f"DAILY CENSUS REPORT — {as_of_h}",
-            ParagraphStyle('H', parent=self.styles['Normal'], fontSize=13, alignment=1,
+            _paragraph_style('H', parent=self.styles['Normal'], fontSize=13, alignment=1,
                 fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)))
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(_hr_flowable(width="100%", thickness=0.5, color=colors.black))
 
         # Totals strip — five tiles
         t = payload.get("totals", {})
@@ -5224,10 +5639,10 @@ class PDFService:
                     tile(t.get("free", 0), "Free"),
                     tile(t.get("cleaning", 0), "Cleaning"),
                     tile(f'{t.get("occupancy_pct", 0)}%', "Occupancy")):
-            tbl.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            tbl.setStyle(_table_style([('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f5f5f5')),
                 ('BOX', (0, 0), (-1, -1), 0.4, colors.grey)]))
-        elements.append(Spacer(1, 8))
+        elements.append(_spacer(1, 8))
         tiles_row = Table([[
             tile(t.get("total_beds", 0), "Total beds"),
             tile(t.get("occupied", 0), "Occupied"),
@@ -5235,7 +5650,7 @@ class PDFService:
             tile(t.get("cleaning", 0), "Cleaning"),
             tile(f'{t.get("occupancy_pct", 0)}%', "Occupancy"),
         ]], colWidths=[page_width / 5] * 5)
-        tiles_row.setStyle(TableStyle([
+        tiles_row.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#fafafa')),
             ('BOX', (0, 0), (-1, -1), 0.4, colors.grey),
@@ -5244,9 +5659,9 @@ class PDFService:
         elements.append(tiles_row)
 
         if t.get("on_leave", 0):
-            elements.append(Spacer(1, 4))
+            elements.append(_spacer(1, 4))
             elements.append(Paragraph(f"On Leave (LOA): {t['on_leave']}",
-                ParagraphStyle('OL', parent=self.styles['Normal'], fontSize=10, alignment=1,
+                _paragraph_style('OL', parent=self.styles['Normal'], fontSize=10, alignment=1,
                     fontName='Helvetica-Bold', textColor=colors.HexColor('#cc7700'))))
 
         # Per-department table
@@ -5264,7 +5679,7 @@ class PDFService:
                 Paragraph(str(d.get("on_leave", 0)), cell),
             ])
         dept_table = Table(rows, colWidths=[page_width * 0.30] + [page_width * 0.117] * 6, repeatRows=1)
-        dept_table.setStyle(TableStyle([
+        dept_table.setStyle(_table_style([
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e0e0e0')),
             ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -5286,7 +5701,7 @@ class PDFService:
                 Paragraph(str(ty["cleaning"]), cell),
             ])
         type_table = Table(rows, colWidths=[page_width * 0.4] + [page_width * 0.15] * 4, repeatRows=1)
-        type_table.setStyle(TableStyle([
+        type_table.setStyle(_table_style([
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e0e0e0')),
             ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -5295,10 +5710,10 @@ class PDFService:
         ]))
         elements.append(type_table)
 
-        elements.append(Spacer(1, 14))
+        elements.append(_spacer(1, 14))
         elements.append(Paragraph(
             f"Generated on {_generated_on('%d/%m/%Y at %H:%M')}",
-            ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
+            _paragraph_style('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
@@ -5308,34 +5723,34 @@ class PDFService:
         intimation copy and hospital MLC register. India: required for RTA,
         assault, poisoning, burns, sexual assault, attempted suicide cases."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
+        doc = _doc_template(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
         elements = []
-        page_width = A4[0] - 80
+        page_width = _usable_width(80)
 
-        title = ParagraphStyle('Title', parent=self.styles['Title'],
+        title = _paragraph_style('Title', parent=self.styles['Title'],
             fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
-        sub = ParagraphStyle('Sub', parent=self.styles['Normal'],
+        sub = _paragraph_style('Sub', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica', spaceAfter=2)
-        heading = ParagraphStyle('H', parent=self.styles['Normal'],
+        heading = _paragraph_style('H', parent=self.styles['Normal'],
             fontSize=11, fontName='Helvetica-Bold', spaceAfter=4, spaceBefore=8)
-        label = ParagraphStyle('L', parent=self.styles['Normal'], fontSize=9, fontName='Helvetica-Bold')
-        value = ParagraphStyle('V', parent=self.styles['Normal'], fontSize=9, fontName='Helvetica')
+        label = _paragraph_style('L', parent=self.styles['Normal'], fontSize=9, fontName='Helvetica-Bold')
+        value = _paragraph_style('V', parent=self.styles['Normal'], fontSize=9, fontName='Helvetica')
 
         if include_header:
             elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title))
             if hospital_info.get('address'):
                 elements.append(Paragraph(hospital_info['address'], sub))
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 6))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, letterhead_gap_pt))
+            elements.append(_spacer(1, letterhead_gap_pt))
 
-        elements.append(Spacer(1, 8))
+        elements.append(_spacer(1, 8))
         elements.append(Paragraph("MEDICO-LEGAL CASE (MLC) REGISTER ENTRY",
-            ParagraphStyle('M', parent=self.styles['Normal'],
+            _paragraph_style('M', parent=self.styles['Normal'],
                 fontSize=14, alignment=1, fontName='Helvetica-Bold', spaceAfter=6)))
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
-        elements.append(Spacer(1, 10))
+        elements.append(_hr_flowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(_spacer(1, 10))
 
         mlc_type_labels = {
             'rta': 'Road Traffic Accident', 'assault': 'Assault',
@@ -5353,7 +5768,7 @@ class PDFService:
              Paragraph("Informed At:", label), Paragraph(_fmt_system_dt(mlc_data.get('mlc_informed_at') or '', fmt="%d/%m/%Y %H:%M", empty="—"), value)],
         ]
         t = Table(mlc_meta, colWidths=[page_width*0.18, page_width*0.32, page_width*0.18, page_width*0.32])
-        t.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
+        t.setStyle(_table_style([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
         elements.append(t)
 
         elements.append(Paragraph("PATIENT DETAILS", heading))
@@ -5372,11 +5787,11 @@ class PDFService:
                 Paragraph("", label), Paragraph("", value),
             ])
         t = Table(pat_meta, colWidths=[page_width*0.18, page_width*0.32, page_width*0.18, page_width*0.32])
-        t.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
+        t.setStyle(_table_style([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
         elements.append(t)
 
         elements.append(Paragraph("CLINICAL FINDINGS ON ARRIVAL", heading))
-        body = ParagraphStyle('B', parent=self.styles['Normal'],
+        body = _paragraph_style('B', parent=self.styles['Normal'],
             fontSize=10, fontName='Helvetica', spaceAfter=4, leading=14)
         elements.append(Paragraph((mlc_data.get('chief_complaint') or '—').replace('\n', '<br/>'), body))
         if mlc_data.get('ambulance_details'):
@@ -5386,19 +5801,19 @@ class PDFService:
         elements.append(Paragraph(str(mlc_data.get('doctor_name', '')), body))
 
         # Signatures
-        elements.append(Spacer(1, 30))
+        elements.append(_spacer(1, 30))
         sig = Table([
             [Paragraph("Doctor Signature & Seal", label), Paragraph("Police Officer Signature", label)],
             [Paragraph("Name: ____________________", value), Paragraph("Name: ____________________", value)],
             [Paragraph("Date / Time: _____________", value), Paragraph("Designation: _____________", value)],
         ], colWidths=[page_width*0.5, page_width*0.5])
-        sig.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 12)]))
+        sig.setStyle(_table_style([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 12)]))
         elements.append(sig)
 
-        elements.append(Spacer(1, 14))
+        elements.append(_spacer(1, 14))
         elements.append(Paragraph(
             f"Generated on {_generated_on('%d/%m/%Y at %H:%M')}",
-            ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
+            _paragraph_style('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
@@ -5408,35 +5823,35 @@ class PDFService:
         """B6 — Body release / mortuary handover form. Signed receipt for the
         family member receiving the body, witnessed by another adult."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
+        doc = _doc_template(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
         elements = []
-        page_width = A4[0] - 80
+        page_width = _usable_width(80)
 
-        title = ParagraphStyle('Title', parent=self.styles['Title'],
+        title = _paragraph_style('Title', parent=self.styles['Title'],
             fontSize=14, alignment=1, fontName='Helvetica-Bold', spaceAfter=4)
-        sub = ParagraphStyle('Sub', parent=self.styles['Normal'], fontSize=9, alignment=1, spaceAfter=2)
-        heading = ParagraphStyle('H', parent=self.styles['Normal'],
+        sub = _paragraph_style('Sub', parent=self.styles['Normal'], fontSize=9, alignment=1, spaceAfter=2)
+        heading = _paragraph_style('H', parent=self.styles['Normal'],
             fontSize=11, fontName='Helvetica-Bold', spaceAfter=4, spaceBefore=8)
-        label = ParagraphStyle('L', parent=self.styles['Normal'], fontSize=9, fontName='Helvetica-Bold')
-        value = ParagraphStyle('V', parent=self.styles['Normal'], fontSize=9, fontName='Helvetica')
-        body = ParagraphStyle('B', parent=self.styles['Normal'],
+        label = _paragraph_style('L', parent=self.styles['Normal'], fontSize=9, fontName='Helvetica-Bold')
+        value = _paragraph_style('V', parent=self.styles['Normal'], fontSize=9, fontName='Helvetica')
+        body = _paragraph_style('B', parent=self.styles['Normal'],
             fontSize=10, fontName='Helvetica', spaceAfter=4, leading=14)
 
         if include_header:
             elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title))
             if hospital_info.get('address'):
                 elements.append(Paragraph(hospital_info['address'], sub))
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 6))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, letterhead_gap_pt))
+            elements.append(_spacer(1, letterhead_gap_pt))
 
-        elements.append(Spacer(1, 8))
+        elements.append(_spacer(1, 8))
         elements.append(Paragraph("BODY RELEASE / HANDOVER FORM",
-            ParagraphStyle('R', parent=self.styles['Normal'],
+            _paragraph_style('R', parent=self.styles['Normal'],
                 fontSize=14, alignment=1, fontName='Helvetica-Bold', spaceAfter=6)))
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
-        elements.append(Spacer(1, 10))
+        elements.append(_hr_flowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(_spacer(1, 10))
 
         meta = [
             [Paragraph("Patient Name:", label), Paragraph(str(rel.get('patient_name', '')), value),
@@ -5455,7 +5870,7 @@ class PDFService:
                 Paragraph("", label), Paragraph("", value),
             ])
         t = Table(meta, colWidths=[page_width*0.18, page_width*0.32, page_width*0.18, page_width*0.32])
-        t.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
+        t.setStyle(_table_style([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
         elements.append(t)
 
         elements.append(Paragraph("MORTUARY / EMBALMING / POST-MORTEM", heading))
@@ -5474,7 +5889,7 @@ class PDFService:
              Paragraph("NOC at:", label), Paragraph(_fmt_system_dt(rel.get('police_noc_received_at') or '', fmt="%d/%m/%Y %H:%M", empty="—"), value)],
         ]
         tm = Table(m, colWidths=[page_width*0.18, page_width*0.32, page_width*0.18, page_width*0.32])
-        tm.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
+        tm.setStyle(_table_style([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
         elements.append(tm)
 
         elements.append(Paragraph("RELEASED TO", heading))
@@ -5488,7 +5903,7 @@ class PDFService:
              Paragraph("Released at:", label), Paragraph(_fmt_system_dt(rel.get('body_released_at') or '', fmt="%d/%m/%Y %H:%M", empty="—"), value)],
         ]
         tr = Table(r, colWidths=[page_width*0.18, page_width*0.32, page_width*0.18, page_width*0.32])
-        tr.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
+        tr.setStyle(_table_style([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
         elements.append(tr)
 
         if rel.get('transport_details'):
@@ -5503,19 +5918,19 @@ class PDFService:
             "claims regarding custody of the body.", body))
 
         # Signature blocks
-        elements.append(Spacer(1, 24))
+        elements.append(_spacer(1, 24))
         sig = Table([
             [Paragraph("Receiver Signature", label), Paragraph("Witness Signature", label), Paragraph("Hospital Authority", label)],
             [Paragraph("Name: ___________________", value), Paragraph("Name: ___________________", value), Paragraph("Name: ___________________", value)],
             [Paragraph("Date / Time: __________", value), Paragraph("Phone: __________________", value), Paragraph("Designation: __________", value)],
         ], colWidths=[page_width*0.34, page_width*0.33, page_width*0.33])
-        sig.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 12)]))
+        sig.setStyle(_table_style([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 12)]))
         elements.append(sig)
 
-        elements.append(Spacer(1, 12))
+        elements.append(_spacer(1, 12))
         elements.append(Paragraph(
             f"Generated on {_generated_on('%d/%m/%Y at %H:%M')}",
-            ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
+            _paragraph_style('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
@@ -5530,13 +5945,13 @@ class PDFService:
         """Header for pharmacy PDFs. Mirrors generate_bill_pdf — logo on the
         left, hospital name/address/contact stacked to the right, divider, then
         the receipt title."""
-        title_style = ParagraphStyle('PhTitle', parent=self.styles['Title'],
+        title_style = _paragraph_style('PhTitle', parent=self.styles['Title'],
             fontSize=15, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=2)
-        sub_style = ParagraphStyle('PhSub', parent=self.styles['Normal'],
+        sub_style = _paragraph_style('PhSub', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica',
             textColor=colors.black, spaceAfter=2)
-        receipt_title = ParagraphStyle('PhReceipt', parent=self.styles['Normal'],
+        receipt_title = _paragraph_style('PhReceipt', parent=self.styles['Normal'],
             fontSize=12, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=4)
 
@@ -5574,7 +5989,7 @@ class PDFService:
                     logo_img.hAlign = 'CENTER'
                     header_table = Table([[logo_img, header_text_elems]],
                                          colWidths=[75, page_width - 75])
-                    header_table.setStyle(TableStyle([
+                    header_table.setStyle(_table_style([
                         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                         ('LEFTPADDING', (0, 0), (-1, -1), 0),
                         ('RIGHTPADDING', (0, 0), (-1, -1), 0),
@@ -5589,15 +6004,15 @@ class PDFService:
                 for el in header_text_elems:
                     elements.append(el)
 
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 6))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, letterhead_gap_pt))  # leave room for pre-printed letterhead
+            elements.append(_spacer(1, letterhead_gap_pt))  # leave room for pre-printed letterhead
 
-        elements.append(Spacer(1, 4))
+        elements.append(_spacer(1, 4))
         elements.append(Paragraph(title, receipt_title))
-        elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
-        elements.append(Spacer(1, 6))
+        elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
+        elements.append(_spacer(1, 6))
 
     def generate_pharmacy_sale_invoice_pdf(self, sale_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Retail-style cash/credit pharmacy bill (reference layout).
@@ -5613,7 +6028,7 @@ class PDFService:
         """
         buffer = BytesIO()
         page = landscape(A5)
-        doc = SimpleDocTemplate(buffer, pagesize=page,
+        doc = _doc_template(buffer, pagesize=page,
             rightMargin=18, leftMargin=18, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(16, footer_gap_pt))
         elements = []
         page_width = page[0] - 36
@@ -5621,17 +6036,17 @@ class PDFService:
         is_voided = (sale_data.get('status') == 'voided')
         watermark = "VOIDED" if is_voided else None
 
-        cell = ParagraphStyle('PhBillC', parent=self.styles['Normal'], fontSize=6.5,
+        cell = _paragraph_style('PhBillC', parent=self.styles['Normal'], fontSize=6.5,
             fontName='Helvetica', textColor=colors.black, leading=7.5)
-        cell_sm = ParagraphStyle('PhBillSm', parent=cell, fontSize=6, leading=7)
-        header_p = ParagraphStyle('PhBillH', parent=cell_sm, fontName='Helvetica-Bold')
-        center_title = ParagraphStyle('PhBillTitle', parent=self.styles['Normal'],
+        cell_sm = _paragraph_style('PhBillSm', parent=cell, fontSize=6, leading=7)
+        header_p = _paragraph_style('PhBillH', parent=cell_sm, fontName='Helvetica-Bold')
+        center_title = _paragraph_style('PhBillTitle', parent=self.styles['Normal'],
             fontSize=11, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=1)
-        center_sub = ParagraphStyle('PhBillSub', parent=self.styles['Normal'],
+        center_sub = _paragraph_style('PhBillSub', parent=self.styles['Normal'],
             fontSize=7, alignment=1, fontName='Helvetica',
             textColor=colors.black, spaceAfter=0)
-        center_bill = ParagraphStyle('PhBillType', parent=self.styles['Normal'],
+        center_bill = _paragraph_style('PhBillType', parent=self.styles['Normal'],
             fontSize=8, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=1)
 
@@ -5651,21 +6066,21 @@ class PDFService:
             phone = hospital_info.get('phone')
             if phone:
                 elements.append(Paragraph(f"Phone No : {esc(phone)}", center_sub))
-            elements.append(Spacer(1, 1))
+            elements.append(_spacer(1, 1))
             elements.append(Paragraph("<u>CASH/CREDIT BILL</u>", center_bill))
             gstin = hospital_info.get('gstin') or ''
             elements.append(Paragraph(f"GSTINNO : {esc(gstin)}", center_sub))
-            elements.append(Spacer(1, 2))
-            elements.append(HRFlowable(width="100%", thickness=0.75, color=colors.black))
+            elements.append(_spacer(1, 2))
+            elements.append(_hr_flowable(width="100%", thickness=0.75, color=colors.black))
         else:
-            elements.append(Spacer(1, letterhead_gap_pt))
+            elements.append(_spacer(1, letterhead_gap_pt))
             elements.append(Paragraph("<u>CASH/CREDIT BILL</u>", center_bill))
             gstin = hospital_info.get('gstin') or ''
             if gstin:
                 elements.append(Paragraph(f"GSTINNO : {esc(gstin)}", center_sub))
-            elements.append(HRFlowable(width="100%", thickness=0.75, color=colors.black))
+            elements.append(_hr_flowable(width="100%", thickness=0.75, color=colors.black))
 
-        elements.append(Spacer(1, 2))
+        elements.append(_spacer(1, 2))
 
         # ── Meta: Patient / UHID / Bill No ────────────────────────────────
         sd_str = _fmt_bill_date(sale_data.get('sale_date'), empty="")
@@ -5688,7 +6103,7 @@ class PDFService:
              lv("Category", sale_data.get('category') or (sale_data.get('payment_type') or 'CASH').upper())],
         ]
         meta = Table(meta_rows, colWidths=[left_w, mid_w, right_w])
-        meta.setStyle(TableStyle([
+        meta.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('LEFTPADDING', (0, 0), (-1, -1), 1),
             ('RIGHTPADDING', (0, 0), (-1, -1), 1),
@@ -5696,9 +6111,9 @@ class PDFService:
             ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
         ]))
         elements.append(meta)
-        elements.append(Spacer(1, 2))
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
-        elements.append(Spacer(1, 2))
+        elements.append(_spacer(1, 2))
+        elements.append(_hr_flowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(_spacer(1, 2))
 
         # ── Items: 12 columns matching reference ─────────────────────────
         # SNo | Medicine Name | Manufacturer | Sch | Batchno | Exp.Date |
@@ -5763,7 +6178,7 @@ class PDFService:
             ])
 
         items_tbl = Table(rows, colWidths=col_ws, repeatRows=1)
-        items_tbl.setStyle(TableStyle([
+        items_tbl.setStyle(_table_style([
             ('LINEABOVE', (0, 0), (-1, 0), 0.5, colors.black),
             ('LINEBELOW', (0, 0), (-1, 0), 0.5, colors.black),
             ('LINEBELOW', (0, -1), (-1, -1), 0.5, colors.black),
@@ -5777,7 +6192,7 @@ class PDFService:
             ('BOTTOMPADDING', (0, 0), (-1, -1), 0.5),
         ]))
         elements.append(items_tbl)
-        elements.append(Spacer(1, 3))
+        elements.append(_spacer(1, 3))
 
         # ── Totals: SGST/CGST left; Total/Net/Paid right ──────────────────
         sgst_tax = float(sale_data.get('sgst_tax') or 0)
@@ -5794,7 +6209,7 @@ class PDFService:
         left_tot = [
             Paragraph(f"<b>SGST TAX :</b> {sgst_tax:.2f}", cell),
             Paragraph(f"<b>CGST TAX :</b> {cgst_tax:.2f}", cell),
-            Spacer(1, 2),
+            _spacer(1, 2),
             Paragraph(f"<b>Prepared By :</b> {esc(prepared)}", cell),
             Paragraph(f"<b>Printed By :</b> {esc(printed)}", cell),
         ]
@@ -5811,7 +6226,7 @@ class PDFService:
             [[left_tot, right_lines]],
             colWidths=[page_width * 0.55, page_width * 0.45],
         )
-        tot_tbl.setStyle(TableStyle([
+        tot_tbl.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
             ('LEFTPADDING', (0, 0), (-1, -1), 1),
@@ -5822,18 +6237,18 @@ class PDFService:
         elements.append(tot_tbl)
 
         if is_voided:
-            elements.append(Spacer(1, 3))
+            elements.append(_spacer(1, 3))
             elements.append(Paragraph(
                 f"<i>VOIDED — {esc(sale_data.get('void_reason') or 'no reason recorded')}</i>",
-                ParagraphStyle('PhVoid', parent=cell, fontSize=8, textColor=colors.red),
+                _paragraph_style('PhVoid', parent=cell, fontSize=8, textColor=colors.red),
             ))
 
-        elements.append(Spacer(1, 3))
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
-        elements.append(Spacer(1, 2))
+        elements.append(_spacer(1, 3))
+        elements.append(_hr_flowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(_spacer(1, 2))
 
         # ── Footer: Terms | *bill* | Signature ────────────────────────────
-        terms_style = ParagraphStyle('PhTerms', parent=cell, fontSize=6, leading=7)
+        terms_style = _paragraph_style('PhTerms', parent=cell, fontSize=6, leading=7)
         terms = Paragraph(
             "<b>Terms and Conditions:</b><br/>"
             "* Goods once sold will be Exchanged with in one week only.<br/>"
@@ -5843,17 +6258,17 @@ class PDFService:
         )
         bill_star = Paragraph(
             f"*{esc(sale_data.get('sale_number') or '')}*",
-            ParagraphStyle('PhBillStar', parent=cell, alignment=1, fontSize=7),
+            _paragraph_style('PhBillStar', parent=cell, alignment=1, fontSize=7),
         )
         sig = Paragraph(
             "<br/>Signature",
-            ParagraphStyle('PhSig', parent=cell, alignment=2, fontSize=7),
+            _paragraph_style('PhSig', parent=cell, alignment=2, fontSize=7),
         )
         foot = Table(
             [[terms, bill_star, sig]],
             colWidths=[page_width * 0.52, page_width * 0.24, page_width * 0.24],
         )
-        foot.setStyle(TableStyle([
+        foot.setStyle(_table_style([
             ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
             ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
             ('LEFTPADDING', (0, 0), (-1, -1), 2),
@@ -5883,7 +6298,7 @@ class PDFService:
         """
         buffer = BytesIO()
         page = landscape(A5)
-        doc = SimpleDocTemplate(buffer, pagesize=page,
+        doc = _doc_template(buffer, pagesize=page,
             rightMargin=18, leftMargin=18, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(16, footer_gap_pt))
         elements = []
         page_width = page[0] - 36
@@ -5895,17 +6310,17 @@ class PDFService:
         elif status in ('revoked', 'revoked_partial'):
             watermark = "REVOKED"
 
-        cell = ParagraphStyle('PhPurchC', parent=self.styles['Normal'], fontSize=6.5,
+        cell = _paragraph_style('PhPurchC', parent=self.styles['Normal'], fontSize=6.5,
             fontName='Helvetica', textColor=colors.black, leading=7.5)
-        cell_sm = ParagraphStyle('PhPurchSm', parent=cell, fontSize=6, leading=7)
-        header_p = ParagraphStyle('PhPurchH', parent=cell_sm, fontName='Helvetica-Bold')
-        center_title = ParagraphStyle('PhPurchTitle', parent=self.styles['Normal'],
+        cell_sm = _paragraph_style('PhPurchSm', parent=cell, fontSize=6, leading=7)
+        header_p = _paragraph_style('PhPurchH', parent=cell_sm, fontName='Helvetica-Bold')
+        center_title = _paragraph_style('PhPurchTitle', parent=self.styles['Normal'],
             fontSize=11, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=1)
-        center_sub = ParagraphStyle('PhPurchSub', parent=self.styles['Normal'],
+        center_sub = _paragraph_style('PhPurchSub', parent=self.styles['Normal'],
             fontSize=7, alignment=1, fontName='Helvetica',
             textColor=colors.black, spaceAfter=0)
-        center_bill = ParagraphStyle('PhPurchType', parent=self.styles['Normal'],
+        center_bill = _paragraph_style('PhPurchType', parent=self.styles['Normal'],
             fontSize=8, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=1)
 
@@ -5925,21 +6340,21 @@ class PDFService:
             phone = hospital_info.get('phone')
             if phone:
                 elements.append(Paragraph(f"Phone No : {esc(phone)}", center_sub))
-            elements.append(Spacer(1, 1))
+            elements.append(_spacer(1, 1))
             elements.append(Paragraph("<u>PURCHASE / GOODS RECEIPT</u>", center_bill))
             gstin = hospital_info.get('gstin') or ''
             elements.append(Paragraph(f"GSTINNO : {esc(gstin)}", center_sub))
-            elements.append(Spacer(1, 2))
-            elements.append(HRFlowable(width="100%", thickness=0.75, color=colors.black))
+            elements.append(_spacer(1, 2))
+            elements.append(_hr_flowable(width="100%", thickness=0.75, color=colors.black))
         else:
-            elements.append(Spacer(1, letterhead_gap_pt))
+            elements.append(_spacer(1, letterhead_gap_pt))
             elements.append(Paragraph("<u>PURCHASE / GOODS RECEIPT</u>", center_bill))
             gstin = hospital_info.get('gstin') or ''
             if gstin:
                 elements.append(Paragraph(f"GSTINNO : {esc(gstin)}", center_sub))
-            elements.append(HRFlowable(width="100%", thickness=0.75, color=colors.black))
+            elements.append(_hr_flowable(width="100%", thickness=0.75, color=colors.black))
 
-        elements.append(Spacer(1, 2))
+        elements.append(_spacer(1, 2))
 
         # ── Meta: Supplier / invoice / purchase # ───────────────────────────
         entry_str = _fmt_bill_date(purchase_data.get('entry_date'), empty="")
@@ -5963,7 +6378,7 @@ class PDFService:
              lv("Category", (purchase_data.get('payment_type') or 'CASH').upper())],
         ]
         meta = Table(meta_rows, colWidths=[left_w, mid_w, right_w])
-        meta.setStyle(TableStyle([
+        meta.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('LEFTPADDING', (0, 0), (-1, -1), 1),
             ('RIGHTPADDING', (0, 0), (-1, -1), 1),
@@ -5971,9 +6386,9 @@ class PDFService:
             ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
         ]))
         elements.append(meta)
-        elements.append(Spacer(1, 2))
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
-        elements.append(Spacer(1, 2))
+        elements.append(_spacer(1, 2))
+        elements.append(_hr_flowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(_spacer(1, 2))
 
         # ── Items: 12 columns matching sale invoice ─────────────────────────
         col_ws = [22, 108, 58, 22, 48, 42, 38, 32, 32, 32, 42, 50]
@@ -6035,7 +6450,7 @@ class PDFService:
             ])
 
         items_tbl = Table(rows, colWidths=col_ws, repeatRows=1)
-        items_tbl.setStyle(TableStyle([
+        items_tbl.setStyle(_table_style([
             ('LINEABOVE', (0, 0), (-1, 0), 0.5, colors.black),
             ('LINEBELOW', (0, 0), (-1, 0), 0.5, colors.black),
             ('LINEBELOW', (0, -1), (-1, -1), 0.5, colors.black),
@@ -6049,7 +6464,7 @@ class PDFService:
             ('BOTTOMPADDING', (0, 0), (-1, -1), 0.5),
         ]))
         elements.append(items_tbl)
-        elements.append(Spacer(1, 3))
+        elements.append(_spacer(1, 3))
 
         # ── Totals: SGST/CGST left; discounts + grand total right ─────────
         sgst_tax = float(purchase_data.get('sgst_tax') or 0)
@@ -6067,7 +6482,7 @@ class PDFService:
         left_tot = [
             Paragraph(f"<b>SGST TAX :</b> {sgst_tax:.2f}", cell),
             Paragraph(f"<b>CGST TAX :</b> {cgst_tax:.2f}", cell),
-            Spacer(1, 2),
+            _spacer(1, 2),
             Paragraph(f"<b>Prepared By :</b> {esc(prepared)}", cell),
             Paragraph(f"<b>Printed By :</b> {esc(printed)}", cell),
         ]
@@ -6089,7 +6504,7 @@ class PDFService:
             [[left_tot, right_lines]],
             colWidths=[page_width * 0.55, page_width * 0.45],
         )
-        tot_tbl.setStyle(TableStyle([
+        tot_tbl.setStyle(_table_style([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
             ('LEFTPADDING', (0, 0), (-1, -1), 1),
@@ -6100,25 +6515,25 @@ class PDFService:
         elements.append(tot_tbl)
 
         if status in ('revoked', 'revoked_partial'):
-            elements.append(Spacer(1, 3))
+            elements.append(_spacer(1, 3))
             elements.append(Paragraph(
                 f"<i>REVOKED — {esc(purchase_data.get('revoke_reason') or 'no reason recorded')}</i>",
-                ParagraphStyle('PhPurchRev', parent=cell, fontSize=8, textColor=colors.red),
+                _paragraph_style('PhPurchRev', parent=cell, fontSize=8, textColor=colors.red),
             ))
 
         if purchase_data.get('notes'):
-            elements.append(Spacer(1, 2))
+            elements.append(_spacer(1, 2))
             elements.append(Paragraph(
                 f"<b>Notes :</b> {esc(purchase_data.get('notes'))}",
-                ParagraphStyle('PhPurchNotes', parent=cell, fontSize=6.5),
+                _paragraph_style('PhPurchNotes', parent=cell, fontSize=6.5),
             ))
 
-        elements.append(Spacer(1, 3))
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
-        elements.append(Spacer(1, 2))
+        elements.append(_spacer(1, 3))
+        elements.append(_hr_flowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(_spacer(1, 2))
 
         # ── Footer: Terms | *purchase#* | Signature ───────────────────────
-        terms_style = ParagraphStyle('PhPurchTerms', parent=cell, fontSize=6, leading=7)
+        terms_style = _paragraph_style('PhPurchTerms', parent=cell, fontSize=6, leading=7)
         terms = Paragraph(
             "<b>Terms and Conditions:</b><br/>"
             "* Goods received in good condition and as per invoice.<br/>"
@@ -6128,17 +6543,17 @@ class PDFService:
         )
         purch_star = Paragraph(
             f"*{esc(purchase_data.get('purchase_number') or '')}*",
-            ParagraphStyle('PhPurchStar', parent=cell, alignment=1, fontSize=7),
+            _paragraph_style('PhPurchStar', parent=cell, alignment=1, fontSize=7),
         )
         sig = Paragraph(
             "<br/>Signature",
-            ParagraphStyle('PhPurchSig', parent=cell, alignment=2, fontSize=7),
+            _paragraph_style('PhPurchSig', parent=cell, alignment=2, fontSize=7),
         )
         foot = Table(
             [[terms, purch_star, sig]],
             colWidths=[page_width * 0.52, page_width * 0.24, page_width * 0.24],
         )
-        foot.setStyle(TableStyle([
+        foot.setStyle(_table_style([
             ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
             ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
             ('LEFTPADDING', (0, 0), (-1, -1), 2),
@@ -6155,15 +6570,15 @@ class PDFService:
     def generate_pharmacy_transfer_pdf(self, transfer_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Stock transfer receipt for master → satellite moves."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4,
+        doc = _doc_template(buffer, pagesize=A4,
             rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt))
         elements = []
-        page_width = A4[0] - 60
+        page_width = _usable_width(60)
 
         self._pharmacy_header(elements, hospital_info, include_header,
                               "STOCK TRANSFER", page_width, letterhead_gap_pt)
 
-        cell = ParagraphStyle('C', parent=self.styles['Normal'], fontSize=8,
+        cell = _paragraph_style('C', parent=self.styles['Normal'], fontSize=8,
             fontName='Helvetica', textColor=colors.black, leading=11)
         def lv(label, value):
             return Paragraph(f"<b>{label}:</b> {value}", cell)
@@ -6177,7 +6592,7 @@ class PDFService:
              lv("Items", str(transfer_data.get('item_count') or 0))],
         ]
         meta = Table(meta_rows, colWidths=[page_width / 3] * 3)
-        meta.setStyle(TableStyle([
+        meta.setStyle(_table_style([
             ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
             ('INNERGRID', (0, 0), (-1, -1), 0.25, colors.grey),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -6187,9 +6602,9 @@ class PDFService:
             ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
         ]))
         elements.append(meta)
-        elements.append(Spacer(1, 6))
+        elements.append(_spacer(1, 6))
 
-        header_p = ParagraphStyle('H', parent=cell, fontName='Helvetica-Bold')
+        header_p = _paragraph_style('H', parent=cell, fontName='Helvetica-Bold')
         rows = [[Paragraph("#", header_p), Paragraph("Medicine", header_p),
                  Paragraph("Batch", header_p), Paragraph("Qty", header_p)]]
         for i, it in enumerate(transfer_data.get('items') or [], start=1):
@@ -6200,7 +6615,7 @@ class PDFService:
                 Paragraph(str(it.get('quantity') or ''), cell),
             ])
         tbl = Table(rows, colWidths=[page_width * 0.06, page_width * 0.44, page_width * 0.25, page_width * 0.25])
-        tbl.setStyle(TableStyle([
+        tbl.setStyle(_table_style([
             ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
             ('INNERGRID', (0, 0), (-1, -1), 0.25, colors.grey),
             ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
@@ -6209,9 +6624,9 @@ class PDFService:
         elements.append(tbl)
 
         if transfer_data.get('notes'):
-            elements.append(Spacer(1, 10))
+            elements.append(_spacer(1, 10))
             elements.append(Paragraph(f"<b>Notes:</b> {transfer_data['notes']}",
-                ParagraphStyle('N', parent=cell, fontSize=8, leading=11)))
+                _paragraph_style('N', parent=cell, fontSize=8, leading=11)))
 
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
@@ -6225,15 +6640,15 @@ class PDFService:
         dispensed_by, notes
         """
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4,
+        doc = _doc_template(buffer, pagesize=A4,
             rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt))
         elements = []
-        page_width = A4[0] - 60
+        page_width = _usable_width(60)
 
         self._pharmacy_header(elements, hospital_info, include_header,
                               "DISPENSE SLIP", page_width, letterhead_gap_pt)
 
-        cell = ParagraphStyle('C', parent=self.styles['Normal'], fontSize=8,
+        cell = _paragraph_style('C', parent=self.styles['Normal'], fontSize=8,
             fontName='Helvetica', textColor=colors.black, leading=11)
         def lv(label, value):
             return Paragraph(f"<b>{label}:</b> {value}", cell)
@@ -6262,11 +6677,11 @@ class PDFService:
             meta_rows.append([lv("Address", _disp_addr), ''])
             _meta_style.append(('SPAN', (0, _row_idx), (1, _row_idx)))
         meta = Table(meta_rows, colWidths=[page_width / 2] * 2)
-        meta.setStyle(TableStyle(_meta_style))
+        meta.setStyle(_table_style(_meta_style))
         elements.append(meta)
-        elements.append(Spacer(1, 6))
+        elements.append(_spacer(1, 6))
 
-        header_p = ParagraphStyle('H', parent=cell, fontName='Helvetica-Bold')
+        header_p = _paragraph_style('H', parent=cell, fontName='Helvetica-Bold')
         rows = [[
             Paragraph("#", header_p), Paragraph("Medicine", header_p),
             Paragraph("Batch", header_p), Paragraph("Quantity", header_p),
@@ -6279,7 +6694,7 @@ class PDFService:
                 Paragraph(f"{ln.get('quantity', 0)}", cell),
             ])
         tbl = Table(rows, colWidths=[20, page_width - 200, 80, 80])
-        tbl.setStyle(TableStyle([
+        tbl.setStyle(_table_style([
             ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
             ('INNERGRID', (0, 0), (-1, -1), 0.25, colors.grey),
             ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
@@ -6289,9 +6704,9 @@ class PDFService:
         elements.append(tbl)
 
         if dispense_data.get('notes'):
-            elements.append(Spacer(1, 8))
+            elements.append(_spacer(1, 8))
             elements.append(Paragraph(f"<b>Notes:</b> {dispense_data['notes']}",
-                ParagraphStyle('N', parent=cell, fontSize=8, leading=11)))
+                _paragraph_style('N', parent=cell, fontSize=8, leading=11)))
 
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
@@ -6306,24 +6721,24 @@ class PDFService:
         `period` is a {from, to} dict (strings).
         """
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4,
+        doc = _doc_template(buffer, pagesize=A4,
             rightMargin=20, leftMargin=20, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt))
         elements = []
-        page_width = A4[0] - 40
+        page_width = _usable_width(40)
 
         self._pharmacy_header(elements, hospital_info, include_header,
                               "NARCOTIC / SCHEDULE-H REGISTER", page_width, letterhead_gap_pt)
 
-        cell = ParagraphStyle('C', parent=self.styles['Normal'], fontSize=7,
+        cell = _paragraph_style('C', parent=self.styles['Normal'], fontSize=7,
             fontName='Helvetica', textColor=colors.black, leading=10)
         if period:
             elements.append(Paragraph(
                 f"<b>Period:</b> {period.get('from') or '—'} to {period.get('to') or '—'} "
                 f"&nbsp;&nbsp;&nbsp;<b>Entries:</b> {len(rows)}",
-                ParagraphStyle('P', parent=cell, fontSize=9)))
-            elements.append(Spacer(1, 6))
+                _paragraph_style('P', parent=cell, fontSize=9)))
+            elements.append(_spacer(1, 6))
 
-        header_p = ParagraphStyle('H', parent=cell, fontName='Helvetica-Bold')
+        header_p = _paragraph_style('H', parent=cell, fontName='Helvetica-Bold')
         out = [[
             Paragraph("Date", header_p), Paragraph("Sale #", header_p),
             Paragraph("Medicine", header_p), Paragraph("Schedule", header_p),
@@ -6348,7 +6763,7 @@ class PDFService:
             65, 70, page_width * 0.18, 55, 28, 55,
             page_width * 0.15, 60, page_width * 0.13,
         ], repeatRows=1)
-        tbl.setStyle(TableStyle([
+        tbl.setStyle(_table_style([
             ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
             ('INNERGRID', (0, 0), (-1, -1), 0.25, colors.grey),
             ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
@@ -6387,7 +6802,7 @@ class PDFService:
         """
         from reportlab.lib.pagesizes import landscape, A4 as _A4
         buffer = BytesIO()
-        doc = SimpleDocTemplate(
+        doc = _doc_template(
             buffer, pagesize=landscape(_A4),
             rightMargin=20, leftMargin=20, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt),
         )
@@ -6397,11 +6812,11 @@ class PDFService:
         self._pharmacy_header(elements, hospital_info, include_header, title, page_width,
                               letterhead_gap_pt)
 
-        cell = ParagraphStyle('GenCell', parent=self.styles['Normal'], fontSize=7,
+        cell = _paragraph_style('GenCell', parent=self.styles['Normal'], fontSize=7,
                               fontName='Helvetica', textColor=colors.black, leading=10)
-        sub = ParagraphStyle('GenSub', parent=cell, fontSize=9)
-        header_p = ParagraphStyle('GenHdr', parent=cell, fontName='Helvetica-Bold')
-        section_p = ParagraphStyle(
+        sub = _paragraph_style('GenSub', parent=cell, fontSize=9)
+        header_p = _paragraph_style('GenHdr', parent=cell, fontName='Helvetica-Bold')
+        section_p = _paragraph_style(
             'GenSec', parent=self.styles['Normal'], fontSize=9,
             fontName='Helvetica-Bold', spaceBefore=8, spaceAfter=4,
         )
@@ -6418,7 +6833,7 @@ class PDFService:
         for k, v in (meta or {}).items():
             sub_bits.append(f"<b>{k}:</b> {v}")
         elements.append(Paragraph("&nbsp;&nbsp;&nbsp;".join(sub_bits), sub))
-        elements.append(Spacer(1, 6))
+        elements.append(_spacer(1, 6))
 
         def _append_table(spec):
             cols = spec.get("columns") or []
@@ -6461,7 +6876,7 @@ class PDFService:
                 a = (c.get('align') or 'LEFT').upper()
                 if a in ('RIGHT', 'CENTER'):
                     style.append(('ALIGN', (col_idx, 1), (col_idx, -1), a))
-            tbl.setStyle(TableStyle(style))
+            tbl.setStyle(_table_style(style))
             elements.append(tbl)
 
         for spec in table_specs:
@@ -6477,12 +6892,12 @@ class PDFService:
     ):
         """Walk-in canteen POS receipt."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(
+        doc = _doc_template(
             buffer, pagesize=A4,
             rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt),
         )
         elements = []
-        page_width = A4[0] - 60
+        page_width = _usable_width(60)
         is_voided = (sale_data.get("status") == "voided")
 
         self._pharmacy_header(
@@ -6490,7 +6905,7 @@ class PDFService:
             "CANTEEN SALE RECEIPT", page_width, letterhead_gap_pt,
         )
 
-        cell = ParagraphStyle(
+        cell = _paragraph_style(
             "C", parent=self.styles["Normal"], fontSize=8,
             fontName="Helvetica", textColor=colors.black, leading=11,
         )
@@ -6515,7 +6930,7 @@ class PDFService:
             ],
             colWidths=[page_width / 3] * 3,
         )
-        meta.setStyle(TableStyle([
+        meta.setStyle(_table_style([
             ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
             ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
@@ -6525,9 +6940,9 @@ class PDFService:
             ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ]))
         elements.append(meta)
-        elements.append(Spacer(1, 8))
+        elements.append(_spacer(1, 8))
 
-        header_p = ParagraphStyle("H", parent=cell, fontName="Helvetica-Bold")
+        header_p = _paragraph_style("H", parent=cell, fontName="Helvetica-Bold")
         rows = [[
             Paragraph("#", header_p),
             Paragraph("Item", header_p),
@@ -6544,7 +6959,7 @@ class PDFService:
                 Paragraph(f"{float(it.get('line_total') or 0):.2f}", cell),
             ])
         tbl = Table(rows, colWidths=[30, page_width - 210, 50, 65, 65])
-        tbl.setStyle(TableStyle([
+        tbl.setStyle(_table_style([
             ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
             ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
             ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
@@ -6556,7 +6971,7 @@ class PDFService:
             ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ]))
         elements.append(tbl)
-        elements.append(Spacer(1, 8))
+        elements.append(_spacer(1, 8))
 
         totals = Table(
             [
@@ -6566,7 +6981,7 @@ class PDFService:
             ],
             colWidths=[page_width - 100, 100],
         )
-        totals.setStyle(TableStyle([
+        totals.setStyle(_table_style([
             ("ALIGN", (1, 0), (1, -1), "RIGHT"),
             ("TOPPADDING", (0, 0), (-1, -1), 2),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
@@ -6574,11 +6989,11 @@ class PDFService:
         elements.append(totals)
 
         if sale_data.get("notes"):
-            elements.append(Spacer(1, 6))
+            elements.append(_spacer(1, 6))
             elements.append(Paragraph(f"<b>Notes:</b> {sale_data['notes']}", cell))
         if is_voided:
-            elements.append(Spacer(1, 8))
-            void_style = ParagraphStyle(
+            elements.append(_spacer(1, 8))
+            void_style = _paragraph_style(
                 "Void", parent=self.styles["Normal"], fontSize=14,
                 alignment=1, fontName="Helvetica-Bold", textColor=colors.red,
             )
@@ -6604,19 +7019,19 @@ class PDFService:
         {bill_number, bill_date, patient_name, amount}.
         """
         buffer = BytesIO()
-        doc = SimpleDocTemplate(
+        doc = _doc_template(
             buffer, pagesize=A4,
             rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt),
         )
         elements = []
-        page_width = A4[0] - 60
+        page_width = _usable_width(60)
 
         title = f"SETTLEMENT STATEMENT — {str(statement.get('unit_label') or '').upper()}"
         self._pharmacy_header(
             elements, hospital_info, include_header, title, page_width, letterhead_gap_pt,
         )
 
-        cell = ParagraphStyle(
+        cell = _paragraph_style(
             "SettleCell", parent=self.styles["Normal"], fontSize=9,
             fontName="Helvetica", textColor=colors.black, leading=12,
         )
@@ -6640,7 +7055,7 @@ class PDFService:
             ],
             colWidths=[col_w, col_w],
         )
-        meta.setStyle(TableStyle([
+        meta.setStyle(_table_style([
             ("BOX", (0, 0), (-1, -1), 1, colors.black),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("LEFTPADDING", (0, 0), (-1, -1), 8),
@@ -6649,7 +7064,7 @@ class PDFService:
             ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ]))
         elements.append(meta)
-        elements.append(Spacer(1, 10))
+        elements.append(_spacer(1, 10))
 
         gross = float(statement.get("gross_amount") or 0)
         pct = float(statement.get("payout_percentage") or 0)
@@ -6670,7 +7085,7 @@ class PDFService:
             ],
             colWidths=[page_width - 130, 130],
         )
-        summary.setStyle(TableStyle([
+        summary.setStyle(_table_style([
             ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
             ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
             ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
@@ -6686,11 +7101,11 @@ class PDFService:
 
         bills = statement.get("bills") or []
         if bills:
-            elements.append(Spacer(1, 12))
+            elements.append(_spacer(1, 12))
             elements.append(Paragraph("<b>Contributing inpatient bills</b>", cell))
-            elements.append(Spacer(1, 4))
-            small = ParagraphStyle("SettleSmall", parent=cell, fontSize=8, leading=10)
-            hdr = ParagraphStyle("SettleHdr", parent=small, fontName="Helvetica-Bold")
+            elements.append(_spacer(1, 4))
+            small = _paragraph_style("SettleSmall", parent=cell, fontSize=8, leading=10)
+            hdr = _paragraph_style("SettleHdr", parent=small, fontName="Helvetica-Bold")
             rows = [[
                 Paragraph("Bill #", hdr), Paragraph("Date", hdr),
                 Paragraph("Patient", hdr), Paragraph("Amount (₹)", hdr),
@@ -6703,7 +7118,7 @@ class PDFService:
                     Paragraph(f"{float(b.get('amount') or 0):,.2f}", small),
                 ])
             btbl = Table(rows, colWidths=[110, 90, page_width - 300, 100], repeatRows=1)
-            btbl.setStyle(TableStyle([
+            btbl.setStyle(_table_style([
                 ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
                 ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
                 ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
@@ -6714,24 +7129,24 @@ class PDFService:
             elements.append(btbl)
 
         if statement.get("notes"):
-            elements.append(Spacer(1, 10))
+            elements.append(_spacer(1, 10))
             elements.append(Paragraph(f"<b>Notes:</b> {statement['notes']}", cell))
 
         if str(statement.get("status")) == "cancelled":
-            elements.append(Spacer(1, 10))
-            void_style = ParagraphStyle(
+            elements.append(_spacer(1, 10))
+            void_style = _paragraph_style(
                 "SettleVoid", parent=self.styles["Normal"], fontSize=14,
                 alignment=1, fontName="Helvetica-Bold", textColor=colors.red,
             )
             elements.append(Paragraph("*** CANCELLED ***", void_style))
 
-        elements.append(Spacer(1, 30))
+        elements.append(_spacer(1, 30))
         sign = Table(
             [[Paragraph("Received by (Business Unit)", cell),
               Paragraph("Authorised by (Hospital)", cell)]],
             colWidths=[col_w, col_w],
         )
-        sign.setStyle(TableStyle([
+        sign.setStyle(_table_style([
             ("LINEABOVE", (0, 0), (0, 0), 0.5, colors.black),
             ("LINEABOVE", (1, 0), (1, 0), 0.5, colors.black),
             ("TOPPADDING", (0, 0), (-1, -1), 4),
@@ -6757,16 +7172,16 @@ class PDFService:
           grand_total, reason/notes
         """
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4,
+        doc = _doc_template(buffer, pagesize=A4,
             rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt))
         elements = []
-        page_width = A4[0] - 60
+        page_width = _usable_width(60)
         title = doc_data.get("document_title") or "PHARMACY DOCUMENT"
         self._pharmacy_header(elements, hospital_info, include_header, title, page_width, letterhead_gap_pt)
 
-        cell = ParagraphStyle('PhDocC', parent=self.styles['Normal'], fontSize=8,
+        cell = _paragraph_style('PhDocC', parent=self.styles['Normal'], fontSize=8,
             fontName='Helvetica', textColor=colors.black, leading=11)
-        header_p = ParagraphStyle('PhDocH', parent=cell, fontName='Helvetica-Bold')
+        header_p = _paragraph_style('PhDocH', parent=cell, fontName='Helvetica-Bold')
 
         def esc(v):
             return _escape_pdf_inline(v if v is not None else '')
@@ -6813,13 +7228,13 @@ class PDFService:
                 lv("CN amount", f"{float(doc_data.get('supplier_credit_note_amount') or 0):.2f}"),
             ])
         t = Table(meta, colWidths=[page_width / 3.0] * 3)
-        t.setStyle(TableStyle([
+        t.setStyle(_table_style([
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ("TOPPADDING", (0, 0), (-1, -1), 2),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
         ]))
         elements.append(t)
-        elements.append(Spacer(1, 8))
+        elements.append(_spacer(1, 8))
 
         items = doc_data.get("items") or []
         # items may be pydantic dump dicts or nested
@@ -6849,7 +7264,7 @@ class PDFService:
             rows.append([Paragraph("—", cell), Paragraph("No line items", cell),
                          "", "", "", ""])
         it_table = Table(rows, colWidths=[28, page_width - 220, 70, 40, 50, 50])
-        it_table.setStyle(TableStyle([
+        it_table.setStyle(_table_style([
             ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.92, 0.92, 0.92)),
             ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -6858,12 +7273,12 @@ class PDFService:
             ("ALIGN", (3, 1), (-1, -1), "RIGHT"),
         ]))
         elements.append(it_table)
-        elements.append(Spacer(1, 8))
+        elements.append(_spacer(1, 8))
         total = float(doc_data.get("grand_total") or doc_data.get("amount") or 0)
         elements.append(Paragraph(f"<b>Grand Total: {total:.2f}</b>", cell))
         reason = doc_data.get("reason") or doc_data.get("notes")
         if reason:
-            elements.append(Spacer(1, 4))
+            elements.append(_spacer(1, 4))
             elements.append(Paragraph(f"<b>Notes:</b> {esc(reason)}", cell))
 
         _finalize(doc, elements, hospital_info)
@@ -6875,37 +7290,37 @@ class PDFService:
     ):
         """Printable list of active appointments for a doctor (single day or range)."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(
+        doc = _doc_template(
             buffer, pagesize=A4,
             rightMargin=28, leftMargin=28, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt),
         )
         elements = []
-        page_width = A4[0] - 56
+        page_width = _usable_width(56)
 
-        title_style = ParagraphStyle(
+        title_style = _paragraph_style(
             'Title', parent=self.styles['Title'],
             fontSize=14, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=4,
         )
-        sub_style = ParagraphStyle(
+        sub_style = _paragraph_style(
             'Sub', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica',
             textColor=colors.black, spaceAfter=2,
         )
-        section = ParagraphStyle(
+        section = _paragraph_style(
             'Section', parent=self.styles['Normal'],
             fontSize=10, fontName='Helvetica-Bold',
             textColor=colors.black, spaceBefore=10, spaceAfter=4,
         )
-        cell = ParagraphStyle(
+        cell = _paragraph_style(
             'Cell', parent=self.styles['Normal'],
             fontSize=8, fontName='Helvetica', textColor=colors.black, leading=10,
         )
-        cell_b = ParagraphStyle(
+        cell_b = _paragraph_style(
             'CellB', parent=self.styles['Normal'],
             fontSize=8, fontName='Helvetica-Bold', textColor=colors.black, leading=10,
         )
-        note = ParagraphStyle(
+        note = _paragraph_style(
             'Note', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica', textColor=colors.HexColor('#555555'),
             alignment=1, spaceAfter=4,
@@ -6983,7 +7398,7 @@ class PDFService:
                 ],
                 repeatRows=1,
             )
-            table.setStyle(TableStyle([
+            table.setStyle(_table_style([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e0e0e0')),
                 ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -6997,21 +7412,21 @@ class PDFService:
             elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
             if hospital_info.get('address'):
                 elements.append(Paragraph(hospital_info['address'], sub_style))
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(_spacer(1, 6))
+            elements.append(_hr_flowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, letterhead_gap_pt or 60))
+            elements.append(_spacer(1, letterhead_gap_pt or 60))
 
-        elements.append(Spacer(1, 6))
+        elements.append(_spacer(1, 6))
         elements.append(Paragraph(
             "DOCTOR APPOINTMENTS",
-            ParagraphStyle(
+            _paragraph_style(
                 'H', parent=self.styles['Normal'], fontSize=13, alignment=1,
                 fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4,
             ),
         ))
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
-        elements.append(Spacer(1, 8))
+        elements.append(_hr_flowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(_spacer(1, 8))
 
         doctor_name = payload.get("doctor_name") or "Doctor"
         specialization = payload.get("specialization") or ""
@@ -7035,7 +7450,7 @@ class PDFService:
 
         appointments = payload.get("appointments") or []
         if not appointments:
-            elements.append(Spacer(1, 12))
+            elements.append(_spacer(1, 12))
             empty_msg = (
                 "No active appointments for this doctor in the selected period."
                 if date_from != date_to
@@ -7043,7 +7458,7 @@ class PDFService:
             )
             elements.append(Paragraph(
                 empty_msg,
-                ParagraphStyle('N', parent=self.styles['Normal'], fontSize=10, alignment=1),
+                _paragraph_style('N', parent=self.styles['Normal'], fontSize=10, alignment=1),
             ))
         elif date_from and date_to and date_from != date_to:
             by_day = {}
@@ -7056,10 +7471,10 @@ class PDFService:
         else:
             elements.append(_apt_table(appointments))
 
-        elements.append(Spacer(1, 14))
+        elements.append(_spacer(1, 14))
         elements.append(Paragraph(
             f"Generated on {_generated_on('%d/%m/%Y at %H:%M')}",
-            ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1),
+            _paragraph_style('F', parent=self.styles['Normal'], fontSize=8, alignment=1),
         ))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
@@ -7070,12 +7485,12 @@ class PDFService:
                             letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Form GSTR-3B working paper (Rule 61(5) layout)."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(
+        doc = _doc_template(
             buffer, pagesize=A4,
             rightMargin=28, leftMargin=28, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(28, footer_gap_pt),
         )
         elements = []
-        page_width = A4[0] - 56
+        page_width = _usable_width(56)
         hi = hospital_info or {}
         hmeta = (data or {}).get("hospital") or {}
 
@@ -7085,16 +7500,16 @@ class PDFService:
             page_width, letterhead_gap_pt,
         )
 
-        cell = ParagraphStyle(
+        cell = _paragraph_style(
             "G3bCell", parent=self.styles["Normal"], fontSize=7,
             fontName="Helvetica", textColor=colors.black, leading=9,
         )
-        header_p = ParagraphStyle("G3bHdr", parent=cell, fontName="Helvetica-Bold")
-        note = ParagraphStyle(
+        header_p = _paragraph_style("G3bHdr", parent=cell, fontName="Helvetica-Bold")
+        note = _paragraph_style(
             "G3bNote", parent=self.styles["Normal"], fontSize=7,
             fontName="Helvetica-Oblique", textColor=colors.HexColor("#555555"), leading=9,
         )
-        section = ParagraphStyle(
+        section = _paragraph_style(
             "G3bSec", parent=self.styles["Normal"], fontSize=8,
             fontName="Helvetica-Bold", spaceBefore=8, spaceAfter=3,
         )
@@ -7126,7 +7541,7 @@ class PDFService:
             ],
             colWidths=[page_width * 0.68, page_width * 0.32],
         )
-        meta.setStyle(TableStyle([
+        meta.setStyle(_table_style([
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ("LEFTPADDING", (0, 0), (-1, -1), 0),
             ("RIGHTPADDING", (0, 0), (-1, -1), 4),
@@ -7162,7 +7577,7 @@ class PDFService:
             ])
         w = page_width
         tbl = Table(body, colWidths=[w * 0.40, w * 0.12, w * 0.12, w * 0.12, w * 0.12, w * 0.12])
-        tbl.setStyle(TableStyle([
+        tbl.setStyle(_table_style([
             ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
             ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
             ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
@@ -7194,7 +7609,7 @@ class PDFService:
         else:
             body32.append([P("—"), P("0.00"), P("0.00")])
         tbl32 = Table(body32, colWidths=[w * 0.50, w * 0.25, w * 0.25])
-        tbl32.setStyle(TableStyle([
+        tbl32.setStyle(_table_style([
             ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
             ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
             ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
@@ -7227,7 +7642,7 @@ class PDFService:
                 P(money(r.get("sgst"))), P(money(r.get("cess"))),
             ])
         tbl4 = Table(body4, colWidths=[w * 0.48, w * 0.13, w * 0.13, w * 0.13, w * 0.13])
-        tbl4.setStyle(TableStyle([
+        tbl4.setStyle(_table_style([
             ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
             ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
             ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
@@ -7253,7 +7668,7 @@ class PDFService:
             [P("Non GST supply"), P(money(non.get("inter"))), P(money(non.get("intra")))],
         ]
         tbl5 = Table(body5, colWidths=[w * 0.50, w * 0.25, w * 0.25])
-        tbl5.setStyle(TableStyle([
+        tbl5.setStyle(_table_style([
             ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
             ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
             ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
@@ -7279,7 +7694,7 @@ class PDFService:
                 P(label), P(money(r.get("payable"))), P(money(r.get("itc"))), P(money(r.get("cash"))),
             ])
         tbl61 = Table(body61, colWidths=[w * 0.34, w * 0.22, w * 0.22, w * 0.22])
-        tbl61.setStyle(TableStyle([
+        tbl61.setStyle(_table_style([
             ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
             ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
             ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
@@ -7296,7 +7711,7 @@ class PDFService:
             [P("TCS"), P("0.00"), P("0.00"), P("0.00")],
         ]
         tbl62 = Table(body62, colWidths=[w * 0.34, w * 0.22, w * 0.22, w * 0.22])
-        tbl62.setStyle(TableStyle([
+        tbl62.setStyle(_table_style([
             ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
             ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
             ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
@@ -7307,7 +7722,7 @@ class PDFService:
         elements.append(tbl62)
 
         chk = (data or {}).get("check") or {}
-        elements.append(Spacer(1, 8))
+        elements.append(_spacer(1, 8))
         elements.append(Paragraph(
             "GSTR-1 vs 3B: taxable "
             + ("match" if chk.get("gstr1_3b_taxable_match") else "review")

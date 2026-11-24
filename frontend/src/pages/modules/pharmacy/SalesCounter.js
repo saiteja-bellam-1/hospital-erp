@@ -81,6 +81,21 @@ function clearCartStorage() {
   sessionStorage.removeItem(CART_KEY);
 }
 
+function admissionMatchesTerm(patient, term) {
+  const q = String(term || '').trim().toLowerCase();
+  if (!q) return false;
+  const number = String(patient?.admission_number || '').toLowerCase();
+  const id = patient?.admission_id != null ? String(patient.admission_id) : '';
+  return (number && number.includes(q)) || (id && id === q);
+}
+
+function admissionExactMatch(patient, term) {
+  const q = String(term || '').trim().toLowerCase();
+  const number = String(patient?.admission_number || '').toLowerCase();
+  const id = patient?.admission_id != null ? String(patient.admission_id) : '';
+  return (number && number === q) || (id && id === q);
+}
+
 function patientFromRx(rx) {
   const name = (rx?.patient_name || '').trim();
   const parts = name.split(/\s+/).filter(Boolean);
@@ -109,6 +124,14 @@ export default function SalesCounter() {
   });
   const [billingMode, setBillingMode] = useState('cash_at_pharmacy');
   const [patientAdmissionNumber, setPatientAdmissionNumber] = useState('');
+  const [admissionDraft, setAdmissionDraft] = useState('');
+  const [admissionMatches, setAdmissionMatches] = useState([]);
+  const [admissionSearching, setAdmissionSearching] = useState(false);
+  const [admissionMiss, setAdmissionMiss] = useState(false);
+  const admissionFocusedRef = useRef(false);
+  const admissionLockRef = useRef(false);
+  const admissionSearchSeq = useRef(0);
+  const admissionTimer = useRef(null);
   const [taxMode, setTaxMode] = useState('inclusive');
   const [hsnList, setHsnList] = useState([]);
   const [items, setItems] = useState([]);
@@ -392,13 +415,39 @@ export default function SalesCounter() {
     let cancelled = false;
     axios.get(`/api/pharmacy/patients/${patientUuid}/active-admission`)
       .then((r) => {
-        if (!cancelled) setPatientAdmissionNumber(r.data?.admission_number || '');
+        if (cancelled) return;
+        const num = r.data?.admission_number || '';
+        // A lookup just applied a specific stay. Keep that number if this
+        // patient is not currently admitted; otherwise show the active stay.
+        if (admissionLockRef.current && admissionLockRef.current === patientUuid) {
+          admissionLockRef.current = null;
+          if (num) {
+            setPatientAdmissionNumber(num);
+            setAdmissionDraft(num);
+          }
+          return;
+        }
+        admissionLockRef.current = null;
+        setPatientAdmissionNumber(num);
       })
       .catch(() => {
-        if (!cancelled) setPatientAdmissionNumber('');
+        if (!cancelled) {
+          admissionLockRef.current = null;
+          setPatientAdmissionNumber('');
+        }
       });
     return () => { cancelled = true; };
   }, [selectedPatient?.patient_id]);
+
+  useEffect(() => {
+    if (isEditing || admissionFocusedRef.current) return;
+    setAdmissionDraft(patientAdmissionNumber || activePrescription?.admission_number || '');
+  }, [patientAdmissionNumber, activePrescription?.admission_number, isEditing]);
+
+  useEffect(() => {
+    if (!isEditing) return;
+    setAdmissionDraft(editingSale?.admission_number || '');
+  }, [isEditing, editingSale?.admission_number]);
 
   const handlePatientChange = (patient) => {
     explicitRxRef.current = null;
@@ -412,6 +461,9 @@ export default function SalesCounter() {
         doctor_number: '', doctor_name: '', payment_type: customer.payment_type,
       });
       setBillingMode('cash_at_pharmacy');
+      setAdmissionMatches([]);
+      setAdmissionMiss(false);
+      if (!admissionFocusedRef.current) setAdmissionDraft('');
       return;
     }
     const name = [patient.first_name, patient.last_name].filter(Boolean).join(' ').trim();
@@ -422,6 +474,74 @@ export default function SalesCounter() {
       patient_name: name,
       patient_address: patient.address || patient.village || '',
     }));
+  };
+
+  const applyAdmissionPatient = (patient) => {
+    if (!patient) return;
+    if (admissionTimer.current) clearTimeout(admissionTimer.current);
+    admissionSearchSeq.current += 1;
+    admissionLockRef.current = patient.patient_id || true;
+    const number = patient.admission_number || '';
+    setAdmissionDraft(number);
+    setPatientAdmissionNumber(number);
+    setAdmissionMatches([]);
+    setAdmissionMiss(false);
+    setAdmissionSearching(false);
+    if (patient.admission_status === 'admitted') setBillingMode('inpatient_bill');
+    handlePatientChange(patient);
+  };
+
+  const runAdmissionSearch = async (term, { pickSingle = false } = {}) => {
+    const q = String(term || '').trim();
+    const seq = ++admissionSearchSeq.current;
+    if (!q) {
+      setAdmissionMatches([]);
+      setAdmissionMiss(false);
+      setAdmissionSearching(false);
+      return;
+    }
+    setAdmissionSearching(true);
+    setAdmissionMiss(false);
+    try {
+      const res = await axios.post('/api/patients/search', {
+        search_term: q,
+        sort_by: 'name',
+        sort_order: 'asc',
+        include_admissions: true,
+      });
+      if (seq !== admissionSearchSeq.current) return;
+      const hits = (res.data?.patients || []).filter((p) => admissionMatchesTerm(p, q)).slice(0, 8);
+      const exact = hits.filter((p) => admissionExactMatch(p, q));
+      if (exact.length === 1 || (pickSingle && hits.length === 1)) {
+        applyAdmissionPatient(exact[0] || hits[0]);
+        return;
+      }
+      setAdmissionMatches(hits);
+      setAdmissionMiss(hits.length === 0 && q.length >= 3);
+    } catch {
+      if (seq !== admissionSearchSeq.current) return;
+      setAdmissionMatches([]);
+      setAdmissionMiss(true);
+    } finally {
+      if (seq === admissionSearchSeq.current) setAdmissionSearching(false);
+    }
+  };
+
+  const onAdmissionInput = (value) => {
+    admissionFocusedRef.current = true;
+    setAdmissionDraft(value);
+    setAdmissionMiss(false);
+    if (admissionTimer.current) clearTimeout(admissionTimer.current);
+    const q = value.trim();
+    if (!q) {
+      admissionSearchSeq.current += 1;
+      setAdmissionMatches([]);
+      setAdmissionSearching(false);
+      return;
+    }
+    admissionTimer.current = setTimeout(() => {
+      runAdmissionSearch(q);
+    }, 300);
   };
 
   const loadBatchesForMedicine = async (medicineId, { forLine } = {}) => {
@@ -881,6 +1001,9 @@ export default function SalesCounter() {
       setBillingMode('cash_at_pharmacy');
       setTaxMode(defaultSalesTaxMode);
       setBillDiscountAmount('');
+      setAdmissionDraft('');
+      setAdmissionMatches([]);
+      setAdmissionMiss(false);
       setCustomer({ patient_phone: '', patient_ip_id: '', patient_name: '', patient_address: '', doctor_number: '', doctor_name: '', payment_type: 'cash' });
     } catch (e) {
       toast({ variant: 'destructive', title: isEditing ? 'Update failed' : 'Sale failed', description: errMsg(e) });
@@ -894,15 +1017,6 @@ export default function SalesCounter() {
     : customer.patient_name
       ? customer.patient_name
       : 'Walk-in (optional)';
-
-  // Admission number (ADM-…) for an inpatient prescription or an admission bill.
-  // patient_ip_id stays the patient UUID and is still sent with the sale.
-  const admissionIdShown = (
-    activePrescription?.admission_number
-    || editingSale?.admission_number
-    || (billingMode === 'inpatient_bill' ? patientAdmissionNumber : '')
-    || ''
-  );
 
   const compactInput = 'h-8 text-sm';
   const numberInputClass = `h-8 w-full min-w-0 text-center px-1 ${pharmacyNoSpinInputClass}`;
@@ -923,6 +1037,9 @@ export default function SalesCounter() {
     setBillingMode('cash_at_pharmacy');
     setTaxMode(defaultSalesTaxMode);
     setBillDiscountAmount('');
+    setAdmissionDraft('');
+    setAdmissionMatches([]);
+    setAdmissionMiss(false);
     clearCartStorage();
     setCustomer({
       patient_phone: '',
@@ -1236,6 +1353,8 @@ export default function SalesCounter() {
             onChange={handlePatientChange}
             label="Patient"
             compact
+            searchAdmissions
+            placeholder="Name, phone, MRN, or admission ID…"
           />
           {selectedPatient && (
             <div className="rounded-md border bg-blue-50/60 px-2.5 py-2 text-xs">
@@ -1281,9 +1400,56 @@ export default function SalesCounter() {
           )}
           <div className="grid grid-cols-2 gap-2">
             <div><Label className="text-xs">Phone</Label><Input className={compactInput} value={customer.patient_phone} onChange={e => setC('patient_phone', e.target.value)} /></div>
-            <div>
+            <div className="relative">
               <Label className="text-xs">Admission ID</Label>
-              <Input className={`${compactInput} bg-gray-50`} value={admissionIdShown} readOnly placeholder="—" />
+              <Input
+                className={`${compactInput}${isEditing ? ' bg-gray-50' : ''}`}
+                value={admissionDraft}
+                readOnly={isEditing}
+                placeholder={isEditing ? '—' : 'Type ADM-… or number'}
+                onChange={(e) => onAdmissionInput(e.target.value)}
+                onFocus={() => { admissionFocusedRef.current = true; }}
+                onBlur={() => {
+                  admissionFocusedRef.current = false;
+                  setTimeout(() => setAdmissionMatches([]), 200);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter' || isEditing) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (admissionTimer.current) clearTimeout(admissionTimer.current);
+                  if (admissionMatches.length === 1) {
+                    applyAdmissionPatient(admissionMatches[0]);
+                    return;
+                  }
+                  runAdmissionSearch(admissionDraft, { pickSingle: true });
+                }}
+                {...{ [NAV_SKIP_ATTR]: '' }}
+              />
+              {admissionMatches.length > 0 && (
+                <div className="absolute z-20 left-0 right-0 mt-1 border bg-white rounded shadow-lg max-h-48 overflow-y-auto">
+                  {admissionMatches.map((p) => (
+                    <button
+                      key={p.patient_id || p.id}
+                      type="button"
+                      className="w-full text-left px-2.5 py-1.5 hover:bg-gray-100 text-xs border-b last:border-b-0"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        applyAdmissionPatient(p);
+                      }}
+                    >
+                      <div className="font-medium text-gray-900">{p.admission_number || `#${p.admission_id}`}</div>
+                      <div className="text-gray-500">{[p.first_name, p.last_name].filter(Boolean).join(' ')}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {!isEditing && admissionSearching && (
+                <p className="text-[10px] text-gray-400 mt-0.5">Searching admission…</p>
+              )}
+              {!isEditing && admissionMiss && !admissionSearching && (
+                <p className="text-[10px] text-amber-700 mt-0.5">No admission found.</p>
+              )}
             </div>
             <div className="col-span-2"><Label className="text-xs">Patient Name</Label><Input className={compactInput} value={customer.patient_name} onChange={e => setC('patient_name', e.target.value)} /></div>
             <div className="col-span-2"><Label className="text-xs">Address</Label><Input className={compactInput} value={customer.patient_address} onChange={e => setC('patient_address', e.target.value)} /></div>

@@ -444,6 +444,18 @@ def main():
         else:
             log.info("Same version as previous launch")
 
+        # A rollback swaps the database before the installer can replace this
+        # executable. If that installer never did, put the database back
+        # before migrations run.
+        try:
+            from app.services.update_service import consume_pending_version_change
+            pending_note = consume_pending_version_change()
+            if pending_note:
+                log.warning("%s", pending_note)
+                print(pending_note)
+        except Exception:
+            log.exception("Pending version-change check failed")
+
         # Create desktop shortcut on first launch
         create_desktop_shortcut()
 

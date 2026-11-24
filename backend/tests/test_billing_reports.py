@@ -446,9 +446,11 @@ class TestReports:
         assert num(doc, "lab_count") == num(base_doc_row, "lab_count") + 1
         assert num(doc, "pharmacy_revenue") == num(base_doc_row, "pharmacy_revenue") + 100
         assert num(doc, "pharmacy_count") == num(base_doc_row, "pharmacy_count") + 1
+        assert num(doc, "pharmacy_ip_revenue") == num(base_doc_row, "pharmacy_ip_revenue") + 400
+        assert num(doc, "pharmacy_ip_count") == num(base_doc_row, "pharmacy_ip_count") + 1
         assert num(doc, "admission_revenue") == num(base_doc_row, "admission_revenue")
         unassigned = next(row for row in doc_rows if row["doctor_name"] == "(Unassigned)")
-        assert num(unassigned, "admission_revenue") == num(base_unassigned, "admission_revenue") + 1000
+        assert num(unassigned, "admission_revenue") == num(base_unassigned, "admission_revenue") + 600
 
         ip_only = client.get(
             "/api/hospital/billing/reports/doctor-revenue?module=pharmacy_ip",
@@ -468,11 +470,12 @@ class TestReports:
         assert prow["patient_id"] == pid
         assert num(prow, "lab_revenue") == num(base_prow, "lab_revenue") + 250
         assert num(prow, "pharmacy_revenue") == num(base_prow, "pharmacy_revenue") + 100
-        assert num(prow, "admission_revenue") == num(base_prow, "admission_revenue") + 1000
+        assert num(prow, "pharmacy_ip_revenue") == num(base_prow, "pharmacy_ip_revenue") + 400
+        assert num(prow, "admission_revenue") == num(base_prow, "admission_revenue") + 600
         assert num(prow, "other_revenue") == num(base_prow, "other_revenue") + 75
         assert prow["total_revenue"] == round(
             num(prow, "consultation_revenue") + num(prow, "lab_revenue") + num(prow, "pharmacy_revenue")
-            + num(prow, "admission_revenue") + num(prow, "other_revenue"),
+            + num(prow, "pharmacy_ip_revenue") + num(prow, "admission_revenue") + num(prow, "other_revenue"),
             2,
         )
 
@@ -485,10 +488,12 @@ class TestReports:
         assert city["referral_name"] == "City Clinic"
         assert city["patient_count"] == 1
         assert city["pharmacy_revenue"] == prow["pharmacy_revenue"]
+        assert city["pharmacy_ip_revenue"] == prow["pharmacy_ip_revenue"]
         assert city["lab_revenue"] == prow["lab_revenue"]
         assert city["admission_revenue"] == prow["admission_revenue"]
         assert city["total_revenue"] == round(
-            city["consultation_revenue"] + city["lab_revenue"] + city["pharmacy_revenue"] + city["admission_revenue"],
+            city["consultation_revenue"] + city["lab_revenue"] + city["pharmacy_revenue"]
+            + city["pharmacy_ip_revenue"] + city["admission_revenue"],
             2,
         )
 

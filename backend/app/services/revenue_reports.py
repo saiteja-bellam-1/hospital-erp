@@ -1,9 +1,9 @@
 """Period revenue for doctor, patient, and referral reports.
 
-Admission bills already include inpatient lab orders and pharmacy sales posted
-to the stay. Those lines are left out of the lab and pharmacy columns so a
-combined total does not count them twice. Counter pharmacy and lab that is
-not on an admission stay stay in their own columns.
+Admission bills include inpatient lab and pharmacy posted to the stay. Lab on
+a stay stays inside admission revenue. Pharmacy posted to a stay is reported
+as Pharmacy (IP) and removed from the admission figure, so the combined total
+does not count it twice. Counter pharmacy stays in the pharmacy column.
 """
 from datetime import datetime
 from typing import Optional
@@ -26,6 +26,7 @@ MONEY_KEYS = (
     "consultation_revenue",
     "lab_revenue",
     "pharmacy_revenue",
+    "pharmacy_ip_revenue",
     "admission_revenue",
     "other_revenue",
 )
@@ -33,6 +34,7 @@ COUNT_KEYS = (
     "consultation_count",
     "lab_count",
     "pharmacy_count",
+    "pharmacy_ip_count",
     "admission_count",
     "other_count",
 )
@@ -97,6 +99,47 @@ def _pharmacy_on_admission(sale: PharmacySale) -> bool:
     if sale.inpatient_bill_id:
         return True
     return (sale.billing_mode or "") == "inpatient_bill"
+
+
+def _return_totals(db: Session, sale_ids) -> dict:
+    totals = {}
+    if not sale_ids:
+        return totals
+    for ret in db.query(PharmacySaleReturn).filter(
+        PharmacySaleReturn.sale_id.in_(sale_ids),
+        PharmacySaleReturn.status == "confirmed",
+    ).all():
+        totals[ret.sale_id] = totals.get(ret.sale_id, 0.0) + _money(ret.grand_total)
+    return totals
+
+
+def _net_sale(sale: PharmacySale, returned: dict) -> float:
+    return round(max(_money(sale.grand_total) - _money(returned.get(sale.id)), 0.0), 2)
+
+
+def pharmacy_included_on_bills(db: Session, bill_ids) -> dict:
+    """Net pharmacy already inside these admission bills, keyed by bill id.
+
+    Used to lift Pharmacy (IP) out of the admission column. Sales posted onto
+    the bill count even when the sale date is outside the report period,
+    because the bill total in this period already includes them.
+    """
+    clean = [bill_id for bill_id in set(bill_ids) if bill_id]
+    if not clean:
+        return {}
+    sales = db.query(PharmacySale).filter(
+        PharmacySale.inpatient_bill_id.in_(clean),
+        PharmacySale.status == "completed",
+    ).all()
+    returned = _return_totals(db, [sale.id for sale in sales])
+    included = {}
+    for sale in sales:
+        net = _net_sale(sale, returned)
+        if net <= 0 or not sale.inpatient_bill_id:
+            continue
+        bill_id = sale.inpatient_bill_id
+        included[bill_id] = round(included.get(bill_id, 0.0) + net, 2)
+    return included
 
 
 def _lab_on_admission(order: PatientLabOrder) -> bool:
@@ -208,20 +251,15 @@ def load_period_activity(db: Session, hospital_id: int, d_from, d_to, patient_id
         sale_q = sale_q.filter(PharmacySale.patient_ip_id == patient_uuid)
     sales = sale_q.all()
     sale_ids = [sale.id for sale in sales]
-    returned = {}
+    returned = _return_totals(db, sale_ids)
     rx_doctor = {}
     if sale_ids:
-        for ret in db.query(PharmacySaleReturn).filter(
-            PharmacySaleReturn.sale_id.in_(sale_ids),
-            PharmacySaleReturn.status == "confirmed",
-        ).all():
-            returned[ret.sale_id] = returned.get(ret.sale_id, 0.0) + _money(ret.grand_total)
         for rx in db.query(Prescription).filter(Prescription.pharmacy_sale_id.in_(sale_ids)).all():
             if rx.pharmacy_sale_id and rx.doctor_id:
                 rx_doctor[rx.pharmacy_sale_id] = rx.doctor_id
     sale_patients = _patients_by_uuid(db, hospital_id, [sale.patient_ip_id for sale in sales])
     for sale in sales:
-        net = round(max(_money(sale.grand_total) - returned.get(sale.id, 0.0), 0.0), 2)
+        net = _net_sale(sale, returned)
         if net <= 0:
             continue
         doctor_id = rx_doctor.get(sale.id)
@@ -262,11 +300,14 @@ def load_period_activity(db: Session, hospital_id: int, d_from, d_to, patient_id
             row.id: row for row in db.query(Admission).filter(Admission.id.in_(adm_ids)).all()
         }
     adm_patients = _patients_by_ids(db, [bill.patient_id for bill in adm_bills])
+    pharmacy_on_bill = pharmacy_included_on_bills(db, [bill.id for bill in adm_bills])
     for bill in adm_bills:
         admission = adm_by_id.get(bill.reference_id) if bill.reference_id else None
         patient = adm_patients.get(bill.patient_id)
+        gross = _money(bill.total_amount)
+        pharmacy_inside = _money(pharmacy_on_bill.get(bill.id))
         admissions.append({
-            "amount": _money(bill.total_amount),
+            "amount": round(max(gross - pharmacy_inside, 0.0), 2),
             "doctor_id": admission.admitting_doctor_id if admission and admission.admitting_doctor_id else None,
             "doctor_label": None,
             "patient": patient,
@@ -337,38 +378,42 @@ def _doctor_name(event: dict, users_by_id: dict) -> tuple:
 def _event_streams(activity: dict, *, pharmacy_folded: bool = False):
     """Yield (stream, event).
 
-    Lab and counter pharmacy that were posted onto an admission are omitted.
-    ``pharmacy_folded`` yields only those inpatient pharmacy sales instead.
+    Lab posted onto an admission stays out of the lab column. Pharmacy posted
+    onto an admission is its own ``pharmacy_ip`` stream. ``pharmacy_folded``
+    yields only those inpatient sales, under the pharmacy stream, for the
+    Pharmacy (IP) module filter.
     """
     for event in activity["consults"]:
         yield "consultation", event
     for event in activity["admissions"]:
         yield "admission", event
-    if not pharmacy_folded:
-        for event in activity["labs"]:
-            if not event.get("on_admission"):
-                yield "lab", event
+    if pharmacy_folded:
         for event in activity["pharmacies"]:
-            if not event.get("on_admission"):
+            if event.get("on_admission"):
                 yield "pharmacy", event
-        for event in activity["others"]:
-            yield "other", event
         return
+    for event in activity["labs"]:
+        if not event.get("on_admission"):
+            yield "lab", event
     for event in activity["pharmacies"]:
         if event.get("on_admission"):
+            yield "pharmacy_ip", event
+        else:
             yield "pharmacy", event
+    for event in activity["others"]:
+        yield "other", event
 
 
 def doctor_revenue(db: Session, hospital_id: int, d_from, d_to, module: Optional[str] = None, patient_id: Optional[int] = None) -> dict:
     mod = (module or "all").strip().lower()
     if mod in ("", "all"):
-        allowed = {"consultation", "admission", "lab", "pharmacy"}
+        allowed = {"consultation", "admission", "lab", "pharmacy", "pharmacy_ip"}
         pharmacy_folded = False
     elif mod == "opd":
         allowed = {"consultation"}
         pharmacy_folded = False
     elif mod == "inpatient":
-        allowed = {"admission"}
+        allowed = {"admission", "pharmacy_ip"}
         pharmacy_folded = False
     elif mod == "lab":
         allowed = {"lab"}
@@ -442,20 +487,37 @@ def referral_revenue(
     referral_name: Optional[str] = None,
     referral_id: Optional[int] = None,
 ) -> dict:
-    """Same bill revenue as Referral Management: OP, lab, IP, and counter pharmacy.
+    """Same patients as Referral Management, with Pharmacy (IP) in its own column.
 
-    Commission is not included. Lab and pharmacy already on an admission bill
-    stay inside the admission total.
+    Commission is not included. Referral Management still keeps inpatient
+    pharmacy inside the IP total used for commission. This report lifts that
+    pharmacy into ``pharmacy_ip_revenue`` and reduces admission by the same
+    amount when the sale is already on the admission bill.
     """
     from app.routes.referrals import revenue_by_referral
     rows = revenue_by_referral(db, hospital_id, d_from, d_to)
     if referral_name is not None:
         wanted = _ref_key(referral_name)
         rows = [row for row in rows if _ref_key(row.get("referral_name")) == wanted]
+    rows = [_split_referral_pharmacy_ip(row) for row in rows]
     payload = _payload(d_from, d_to, rows)
     if referral_id:
         payload["referral_id"] = referral_id
     return payload
+
+
+def _split_referral_pharmacy_ip(row: dict) -> dict:
+    """Move pharmacy already inside the IP total into the Pharmacy (IP) column."""
+    out = dict(row)
+    included = _money(out.pop("pharmacy_ip_in_admission", 0))
+    ip_pharmacy = _money(out.get("pharmacy_ip_revenue"))
+    admission = _money(out.get("admission_revenue"))
+    removed = min(included, admission)
+    out["admission_revenue"] = round(admission - removed, 2)
+    out["pharmacy_ip_revenue"] = round(ip_pharmacy, 2)
+    out["pharmacy_ip_count"] = int(out.get("pharmacy_ip_count") or 0)
+    out["total_revenue"] = round(_money(out.get("total_revenue")) - removed + ip_pharmacy, 2)
+    return out
 
 
 def _payload(d_from, d_to, rows, patient_id: Optional[int] = None) -> dict:
@@ -476,11 +538,13 @@ def _payload(d_from, d_to, rows, patient_id: Optional[int] = None) -> dict:
             "consultation_total": totals["consultation_revenue"],
             "lab_total": totals["lab_revenue"],
             "pharmacy_total": totals["pharmacy_revenue"],
+            "pharmacy_ip_total": totals["pharmacy_ip_revenue"],
             "admission_total": totals["admission_revenue"],
             "other_total": totals["other_revenue"],
             "consultation_count": totals["consultation_count"],
             "lab_count": totals["lab_count"],
             "pharmacy_count": totals["pharmacy_count"],
+            "pharmacy_ip_count": totals["pharmacy_ip_count"],
             "admission_count": totals["admission_count"],
             "other_count": totals["other_count"],
             "patient_count": totals["patient_count"],

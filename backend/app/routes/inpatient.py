@@ -7393,6 +7393,8 @@ async def get_bill_pdf(
         "prepared_by_name": f"{current_user.first_name} {current_user.last_name}",
     }
 
+    from app.utils.pdf_layout import stamp_patient_pdf_fields
+    stamp_patient_pdf_fields(bill_data, patient)
     pdf_buffer = pdf_service.generate_inpatient_bill_pdf(
         bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'inpatient_bill'))
 

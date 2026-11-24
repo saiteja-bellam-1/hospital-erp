@@ -6,7 +6,7 @@ import { useToast } from '../../hooks/use-toast';
 import axios from 'axios';
 import {
   DownloadCloud, RefreshCw, CheckCircle2, AlertTriangle, Loader2,
-  Upload, Rocket, ShieldCheck, PowerOff,
+  Upload, Rocket, ShieldCheck, PowerOff, Undo2,
 } from 'lucide-react';
 
 const fmtBytes = (n) => {
@@ -16,6 +16,13 @@ const fmtBytes = (n) => {
   return `${(b / (1024 * 1024)).toFixed(1)} MB`;
 };
 
+const fmtWhen = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso).slice(0, 16).replace('T', ' ');
+  return d.toLocaleString();
+};
+
 const SoftwareUpdate = () => {
   const { toast } = useToast();
   const [info, setInfo] = useState(null);        // /update/check result
@@ -23,6 +30,8 @@ const SoftwareUpdate = () => {
   const [status, setStatus] = useState(null);     // /update/status result
   const [applying, setApplying] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [restoreSaved, setRestoreSaved] = useState(false);
+  const [applyMode, setApplyMode] = useState('upgrade');
   const [shutdownConfirm, setShutdownConfirm] = useState(false);
   const [shuttingDown, setShuttingDown] = useState(false);
 
@@ -48,7 +57,7 @@ const SoftwareUpdate = () => {
   const runCheck = useCallback(async () => {
     setChecking(true);
     try {
-      const res = await axios.get('/api/system/update/check');
+      const res = await axios.get('/api/system/update/check', { timeout: 90000 });
       setInfo(res.data);
     } catch (err) {
       const d = err.response?.data?.detail;
@@ -81,15 +90,23 @@ const SoftwareUpdate = () => {
     };
   }, [status, fetchStatus]);
 
-  const startDownload = async () => {
+  const startDownload = async (version) => {
     try {
-      const res = await axios.post('/api/system/update/download');
+      const res = await axios.post(
+        '/api/system/update/download',
+        version ? { version } : {},
+        { timeout: 90000 },
+      );
       if (!res.data?.started) {
         toast({ variant: 'destructive', title: 'Cannot download',
                 description: res.data?.reason || 'Download did not start' });
         return;
       }
-      setStatus({ state: 'downloading', bytes: 0, total: 0 });
+      setStatus({
+        state: 'downloading', bytes: 0, total: 0,
+        version: res.data.version || version || null,
+        relation: res.data.relation || null,
+      });
       fetchStatus();
     } catch (err) {
       const d = err.response?.data?.detail;
@@ -98,11 +115,22 @@ const SoftwareUpdate = () => {
     }
   };
 
+  const openConfirm = () => {
+    const rollback = status?.relation === 'older';
+    setRestoreSaved(rollback);
+    setConfirmOpen(true);
+  };
+
   const applyUpdate = async () => {
+    const rollback = status?.relation === 'older';
     setConfirmOpen(false);
+    setApplyMode(rollback || restoreSaved ? 'rollback' : 'upgrade');
     setApplying(true);
     try {
-      await axios.post('/api/system/update/apply');
+      // Snapshot + the Windows permission prompt can outlast the default 10s.
+      await axios.post('/api/system/update/apply', {
+        restore_snapshot: rollback ? true : restoreSaved,
+      }, { timeout: 0 });
       // Backend exits ~2s later — the app will restart. Connection drops here.
     } catch (err) {
       const d = err.response?.data?.detail;
@@ -123,8 +151,10 @@ const SoftwareUpdate = () => {
       const fd = new FormData();
       fd.append('installer', offInstaller);
       fd.append('manifest', offManifest);
-      const res = await axios.post('/api/system/update/upload', fd,
-        { headers: { 'Content-Type': 'multipart/form-data' } });
+      const res = await axios.post('/api/system/update/upload', fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 0,
+      });
       toast({ title: 'Update staged',
               description: `Version ${res.data?.version} verified and ready to install.` });
       setOffInstaller(null); setOffManifest(null);
@@ -162,10 +192,13 @@ const SoftwareUpdate = () => {
         <Card>
           <CardContent className="py-12 text-center space-y-3">
             <Loader2 className="h-10 w-10 mx-auto animate-spin text-blue-600" />
-            <h2 className="text-lg font-semibold">Installing update…</h2>
+            <h2 className="text-lg font-semibold">
+              {applyMode === 'rollback' ? 'Restoring version…' : 'Installing update…'}
+            </h2>
             <p className="text-sm text-gray-600">
-              The application will close and restart automatically. This page will
-              lose its connection — wait about a minute, then reload it.
+              {applyMode === 'rollback'
+                ? 'The saved database is being put back, then the application will close and restart on the selected version. This page will lose its connection — wait about a minute, then reload it.'
+                : 'The application will close and restart automatically. This page will lose its connection — wait about a minute, then reload it.'}
             </p>
           </CardContent>
         </Card>
@@ -195,7 +228,9 @@ const SoftwareUpdate = () => {
       <div>
         <h1 className="text-xl font-semibold">Software Update</h1>
         <p className="text-sm text-gray-500">
-          Keep KT HEALTH ERP up to date. Updates are signed and verified before install.
+          Choose a signed version to install. Each update saves a copy of the
+          database first. An older version can be restored only while that copy
+          is kept — the latest three copies are stored.
         </p>
       </div>
 
@@ -226,96 +261,193 @@ const SoftwareUpdate = () => {
             </div>
           )}
 
+          {info?.catalog_warning && (
+            <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded p-2 text-xs text-amber-900">
+              <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+              <span>{info.catalog_warning}</span>
+            </div>
+          )}
+
           {info && !info.error && !info.update_available && (
             <div className="flex items-center gap-2 bg-green-50 border border-green-200 rounded p-2 text-xs text-green-900">
               <CheckCircle2 className="h-4 w-4" />
-              You are on the latest version.
+              {(info.releases || []).some((rel) => rel.relation === 'newer')
+                ? 'You are on the latest stable version. A pre-release is listed below.'
+                : 'You are on the latest version.'}
             </div>
           )}
         </CardContent>
       </Card>
 
-      {/* Update available */}
-      {info?.update_available && (
-        <Card className="border-blue-300">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <DownloadCloud className="h-5 w-5 text-blue-600" />
-              Update available — v{info.latest_version}
-              {info.mandatory && <Badge variant="destructive" className="ml-1">Required</Badge>}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {info.released_at && (
-              <p className="text-xs text-gray-500">Released {info.released_at}</p>
-            )}
-            {info.release_notes && (
-              <div className="bg-gray-50 border rounded p-3 text-xs whitespace-pre-wrap max-h-52 overflow-y-auto">
-                {info.release_notes}
+      {/* Published versions — install a newer build, or roll back to one
+          whose database copy is still saved. */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <DownloadCloud className="h-5 w-5 text-blue-600" /> Versions
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {isDownloading && (
+            <div className="space-y-1">
+              <div className="h-2 bg-gray-200 rounded overflow-hidden">
+                <div className="h-full bg-blue-600 transition-all" style={{ width: `${pct}%` }} />
               </div>
-            )}
+              <p className="text-xs text-gray-500">
+                {st === 'verifying'
+                  ? `Verifying ${status?.version ? 'v' + status.version : 'download'}…`
+                  : `Downloading ${status?.version ? 'v' + status.version : ''}… ${fmtBytes(status?.bytes)}${status?.total ? ' / ' + fmtBytes(status.total) : ''} (${pct}%)`}
+              </p>
+            </div>
+          )}
 
-            {isDownloading && (
-              <div className="space-y-1">
-                <div className="h-2 bg-gray-200 rounded overflow-hidden">
-                  <div className="h-full bg-blue-600 transition-all" style={{ width: `${pct}%` }} />
-                </div>
-                <p className="text-xs text-gray-500">
-                  {st === 'verifying'
-                    ? 'Verifying download…'
-                    : `Downloading… ${fmtBytes(status?.bytes)}${status?.total ? ' / ' + fmtBytes(status.total) : ''} (${pct}%)`}
-                </p>
-              </div>
-            )}
+          {st === 'error' && (
+            <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded p-2 text-xs text-red-800">
+              <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+              <span>{status?.error || 'Download failed'}</span>
+            </div>
+          )}
 
-            {st === 'error' && (
-              <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded p-2 text-xs text-red-800">
-                <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
-                <span>{status?.error || 'Download failed'}</span>
+          {isReady && (
+            <div className="flex items-center gap-2">
+              <div className="flex-1 flex items-center gap-2 text-xs text-green-800">
+                <CheckCircle2 className="h-4 w-4" />
+                {status?.relation === 'older' ? 'Rollback' : 'Update'} {status?.version} verified and ready.
               </div>
-            )}
-
-            {isReady ? (
-              <div className="flex items-center gap-2">
-                <div className="flex-1 flex items-center gap-2 text-xs text-green-800">
-                  <CheckCircle2 className="h-4 w-4" /> Verified and ready to install.
-                </div>
-                <Button onClick={() => setConfirmOpen(true)}>
-                  <Rocket className="h-4 w-4 mr-1" /> Install &amp; Restart
-                </Button>
-              </div>
-            ) : (
-              <Button onClick={startDownload} disabled={isDownloading}>
-                {isDownloading ? <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                               : <DownloadCloud className="h-4 w-4 mr-1" />}
-                Download &amp; Install
+              <Button onClick={openConfirm}>
+                {status?.relation === 'older'
+                  ? <Undo2 className="h-4 w-4 mr-1" />
+                  : <Rocket className="h-4 w-4 mr-1" />}
+                {status?.relation === 'older' ? 'Roll back & Restart' : 'Install & Restart'}
               </Button>
-            )}
-          </CardContent>
-        </Card>
-      )}
+            </div>
+          )}
+
+          {(info?.releases || []).length === 0 && info && !checking && (
+            <p className="text-xs text-gray-500">
+              {info?.error
+                ? 'Versions will appear here once the update server can be reached.'
+                : 'No signed releases were found.'}
+            </p>
+          )}
+
+          {(info?.releases || []).length > 0 && (
+          <div className="divide-y border rounded">
+            {(info?.releases || []).map((rel) => {
+              const canRollback = rel.relation === 'older' && rel.snapshot_available;
+              return (
+                <div key={rel.version} className="p-3 space-y-2">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="font-mono text-sm font-semibold">v{rel.version}</span>
+                        {rel.relation === 'current' && <Badge variant="secondary">Installed</Badge>}
+                        {rel.relation === 'newer' && <Badge>Newer</Badge>}
+                        {rel.relation === 'older' && <Badge variant="outline">Older</Badge>}
+                        {rel.prerelease && <Badge variant="outline">Pre-release</Badge>}
+                        {rel.relation === 'newer' && rel.mandatory && (
+                          <Badge variant="destructive">Required</Badge>
+                        )}
+                      </div>
+                      {rel.released_at && (
+                        <p className="text-xs text-gray-500">Released {rel.released_at}</p>
+                      )}
+                      {rel.snapshot_available && rel.relation !== 'current' && (
+                        <p className="text-xs text-gray-500">
+                          Saved database {fmtWhen(rel.snapshot_taken_at)}
+                        </p>
+                      )}
+                      {rel.relation === 'older' && !rel.snapshot_available && (
+                        <p className="text-xs text-amber-800">
+                          No saved database — this version cannot be restored
+                        </p>
+                      )}
+                    </div>
+                    {rel.relation === 'newer' && (
+                      <Button size="sm" variant="outline" disabled={isDownloading}
+                              onClick={() => startDownload(rel.version)}>
+                        <DownloadCloud className="h-4 w-4 mr-1" /> Download
+                      </Button>
+                    )}
+                    {canRollback && (
+                      <Button size="sm" variant="outline" disabled={isDownloading}
+                              onClick={() => startDownload(rel.version)}>
+                        <Undo2 className="h-4 w-4 mr-1" /> Download rollback
+                      </Button>
+                    )}
+                  </div>
+                  {rel.release_notes && (
+                    <details className="text-xs">
+                      <summary className="cursor-pointer text-gray-600">Release notes</summary>
+                      <div className="mt-1 bg-gray-50 border rounded p-2 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                        {rel.release_notes}
+                      </div>
+                    </details>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Confirm dialog (inline) */}
       {confirmOpen && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <Card className="max-w-md mx-4">
             <CardHeader>
-              <CardTitle className="text-base">Install update now?</CardTitle>
+              <CardTitle className="text-base">
+                {status?.relation === 'older'
+                  ? `Roll back to v${status?.version}?`
+                  : `Install v${status?.version || ''} now?`}
+              </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
-              <p>
-                The application will close, the update will install, and it will
-                restart automatically. You will see one Windows permission
-                prompt — approve it to continue.
-              </p>
+              {status?.relation === 'older' ? (
+                <p>
+                  Version {status?.version} will be installed and the hospital
+                  database will be replaced with the copy saved
+                  {status?.snapshot_taken_at
+                    ? ` on ${fmtWhen(status.snapshot_taken_at)}, from when that version was last running`
+                    : ''}.
+                  Records entered after that copy are not in the restored database. A copy of
+                  the database as it is now is saved first.
+                </p>
+              ) : (
+                <p>
+                  The application will close, version {status?.version} will
+                  install, and it will restart. A copy of the current database
+                  is saved first so this version can be restored later.
+                </p>
+              )}
+              {status?.relation === 'newer' && status?.snapshot_taken_at && (
+                <label className="flex items-start gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={restoreSaved}
+                    onChange={(e) => setRestoreSaved(e.target.checked)}
+                  />
+                  <span>
+                    Replace the database with the copy saved from this version
+                    ({fmtWhen(status.snapshot_taken_at)}). Leave this off to keep
+                    current records and bring them forward.
+                  </span>
+                </label>
+              )}
               <p className="text-amber-800 bg-amber-50 border border-amber-200 rounded p-2 text-xs">
-                Make sure no one is mid-entry (billing, admissions). The
-                database is backed up automatically before the update.
+                {status?.relation === 'older' || restoreSaved
+                  ? 'Other users are paused once you continue, until the Windows permission prompt is answered. Make sure no one is mid-entry (billing, admissions).'
+                  : 'Make sure no one is mid-entry (billing, admissions). The database is copied before the update. Approve the Windows permission prompt to continue.'}
               </p>
               <div className="flex justify-end gap-2 pt-1">
                 <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancel</Button>
                 <Button onClick={applyUpdate}>
-                  <Rocket className="h-4 w-4 mr-1" /> Install &amp; Restart
+                  {status?.relation === 'older'
+                    ? <Undo2 className="h-4 w-4 mr-1" />
+                    : <Rocket className="h-4 w-4 mr-1" />}
+                  {status?.relation === 'older' ? 'Roll back & Restart' : 'Install & Restart'}
                 </Button>
               </div>
             </CardContent>
@@ -335,6 +467,8 @@ const SoftwareUpdate = () => {
             No internet on this machine? Get the installer and its
             <span className="font-mono"> manifest.json</span> from KT Health Soft,
             then upload both here. They are signature-verified before install.
+            An older installer is accepted only when a database copy from that
+            version is already saved.
           </p>
           <div className="grid sm:grid-cols-2 gap-3">
             <div>
@@ -356,17 +490,6 @@ const SoftwareUpdate = () => {
                      : <Upload className="h-4 w-4 mr-1" />}
             Verify &amp; stage update
           </Button>
-          {isReady && !info?.update_available && (
-            <div className="flex items-center gap-2 pt-1">
-              <div className="flex-1 flex items-center gap-2 text-xs text-green-800">
-                <CheckCircle2 className="h-4 w-4" />
-                Update {status?.version} staged and verified.
-              </div>
-              <Button onClick={() => setConfirmOpen(true)}>
-                <Rocket className="h-4 w-4 mr-1" /> Install &amp; Restart
-              </Button>
-            </div>
-          )}
         </CardContent>
       </Card>
 

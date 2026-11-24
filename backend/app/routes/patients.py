@@ -114,6 +114,9 @@ class PatientSearchResponse(BaseModel):
     last_appointment_date: Optional[datetime]
     total_appointments: int
     recent_visit_status: Optional[str]
+    admission_id: Optional[int] = None
+    admission_number: Optional[str] = None
+    admission_status: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -127,6 +130,8 @@ class PatientSearchFilters(BaseModel):
     has_recent_appointments: Optional[bool] = None
     sort_by: Optional[str] = "name"  # name, age, last_visit, created_at
     sort_order: Optional[str] = "asc"  # asc, desc
+    # Pharmacy POS: also match inpatient admission number / numeric admission id.
+    include_admissions: Optional[bool] = False
 
 class SearchResultsMetadata(BaseModel):
     total_count: int

@@ -47,6 +47,7 @@ import ReceptionPatientsPage from './modules/reception/ReceptionPatientsPage';
 import ReceptionAppointmentsPage from './modules/reception/ReceptionAppointmentsPage';
 import DoctorAvailabilityPage from './modules/reception/DoctorAvailabilityPage';
 import ReceptionReportsPage from './modules/reception/ReceptionReportsPage';
+import FrontDeskExpensesPage from './modules/reception/FrontDeskExpensesPage';
 import ReceptionPackagesPage from './modules/reception/ReceptionPackagesPage';
 import ProceduresBillingPage from './modules/reception/ProceduresBillingPage';
 import ReceptionLabOrdersPage from './modules/reception/ReceptionLabOrdersPage';
@@ -435,6 +436,7 @@ const DashboardShell = () => {
               <Route path="/reception/appointments" element={<ReceptionAppointmentsPage />} />
               <Route path="/reception/doctor-availability" element={<DoctorAvailabilityPage />} />
               <Route path="/reception/reports" element={<ReceptionReportsPage />} />
+              <Route path="/reception/expenses" element={<FrontDeskExpensesPage />} />
               <Route path="/reception/packages" element={<ReceptionPackagesPage />} />
               <Route path="/reception/lab-orders" element={<ReceptionLabOrdersPage />} />
               <Route path="/reception/procedures" element={<ProceduresBillingPage />} />

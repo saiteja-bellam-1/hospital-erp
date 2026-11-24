@@ -24,11 +24,14 @@ def _slim_invoice(row: dict) -> dict:
 
 def billing_dashboard(db: Session, hospital_id: int, d_from: date, d_to: date) -> dict:
     from app.services.collection_by_method import collection_by_method
+    from app.services.front_desk_expenses import attach_front_desk_expenses
     from app.services.gst_report_service import sales_summary
     from app.services.revenue_reports import doctor_revenue
 
     sales = sales_summary(db, hospital_id, d_from, d_to, group_by="day")
-    collection = collection_by_method(db, hospital_id, d_from, d_to)
+    collection = attach_front_desk_expenses(
+        db, hospital_id, collection_by_method(db, hospital_id, d_from, d_to),
+    )
     doctors = doctor_revenue(db, hospital_id, d_from, d_to)
 
     invoices = sales.get("invoices") or []
@@ -79,6 +82,8 @@ def billing_dashboard(db: Session, hospital_id: int, d_from: date, d_to: date) -
             "count": totals.get("count", 0),
             "net_receipts": receipts.get("net_collected", 0),
             "refunds": receipts.get("refunds", 0),
+            "expenses": receipts.get("expenses", 0),
+            "net_after_expenses": receipts.get("net_after_expenses", receipts.get("net_collected", 0)),
         },
         "by_module": modules,
         "by_method": collection.get("by_method") or {},

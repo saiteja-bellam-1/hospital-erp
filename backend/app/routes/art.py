@@ -23,9 +23,9 @@ from app.models.patient import Patient
 from app.models.user import User
 from app.services.art_ops import (
     CONSENT_FORMS, add_specimen, add_stimulation, assert_level2, book_appointment,
-    cancel_cycle, change_billing_mode, check_in_queue, clear_donor, close_culture,
+    cancel_cycle, case_consent_document, change_billing_mode, check_in_queue, clear_donor, close_culture,
     collect_payment, complete_appointment, create_donor, dispose_specimen,
-    donor_private, donor_public, get_centre, grade_specimen, issue_unit, lab_kpis,
+    donor_consent_document, donor_private, donor_public, get_centre, grade_specimen, issue_unit, lab_kpis,
     level2_licensed, open_culture, outcome_report, post_charge, receive_external,
     record_consent, record_donor_retrieval, record_fertilisation, record_outcome,
     record_retrieval, record_timeout, registry_export, reject_owner_change,
@@ -618,6 +618,38 @@ def consent_forms(user: User = Depends(require_feature_permission(Modules.ART, "
     return [{"code": code, "label": label} for code, label in CONSENT_FORMS]
 
 
+def _consent_pdf_response(db: Session, user: User, document: dict, filename: str, include_header: Optional[bool]):
+    from app.utils.export_branding import hospital_brand_dict
+    from app.utils.pdf_service import PDFService
+    from app.utils.pdf_settings import pdf_gen_kwargs
+    pdf = PDFService()
+    buf = pdf.generate_art_consent_form_pdf(
+        document,
+        hospital_brand_dict(db, user.hospital_id),
+        **pdf_gen_kwargs(db, user.hospital_id, "consent", query_include_header=include_header),
+    )
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/cases/{case_id}/consent-form.pdf")
+def case_consent_pdf(
+    case_id: int,
+    form_code: str,
+    include_header: Optional[bool] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_feature_permission(Modules.ART, "view_art")),
+):
+    case = _case_or_404(db, case_id, user.hospital_id)
+    centre = get_centre(db, user.hospital_id)
+    document = case_consent_document(case, centre, form_code)
+    safe_name = f"{case.case_number}-{form_code}.pdf"
+    return _consent_pdf_response(db, user, document, safe_name, include_header)
+
+
 @router.post("/cases/{case_id}/consents")
 def add_consent(
     case_id: int,
@@ -1123,6 +1155,21 @@ def donor_codes(
 ):
     rows = db.query(ArtDonor).filter(ArtDonor.hospital_id == user.hospital_id).all()
     return [donor_public(r) for r in rows]
+
+
+@router.get("/donors/{donor_id}/consent-form.pdf")
+def donor_consent_pdf(
+    donor_id: int,
+    include_header: Optional[bool] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_feature_permission(Modules.ART, "view_donor_identity")),
+):
+    donor = db.query(ArtDonor).filter(ArtDonor.id == donor_id, ArtDonor.hospital_id == user.hospital_id).first()
+    if not donor:
+        raise HTTPException(status_code=404, detail="Donor not found.")
+    centre = get_centre(db, user.hospital_id)
+    document = donor_consent_document(donor, centre)
+    return _consent_pdf_response(db, user, document, f"{donor.donor_code}-consent.pdf", include_header)
 
 
 @router.get("/donors")

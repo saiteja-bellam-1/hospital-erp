@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { NavLink, Routes, Route, Link, useNavigate, useParams } from 'react-router-dom';
+import { Routes, Route, Link, useNavigate, useParams } from 'react-router-dom';
 import axios from 'axios';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -9,13 +9,43 @@ import { Textarea } from '../../components/ui/textarea';
 import { Badge } from '../../components/ui/badge';
 import PatientSearchPicker from '../../components/PatientSearchPicker';
 import { printPdfFromUrl } from '../../utils/printPdf';
-import { useAuth } from '../../contexts/AuthContext';
 
 function errMsg(e) {
   const d = e?.response?.data?.detail;
   if (typeof d === 'string') return d;
   if (Array.isArray(d)) return d.map((x) => x.msg || JSON.stringify(x)).join('; ');
   return e?.message || 'Request failed';
+}
+
+async function errorFromBlob(e) {
+  const data = e?.response?.data;
+  if (data && typeof data.text === 'function') {
+    try {
+      const parsed = JSON.parse(await data.text());
+      if (typeof parsed.detail === 'string') return parsed.detail;
+    } catch {
+      /* The body was not a JSON error. */
+    }
+  }
+  return errMsg(e);
+}
+
+async function downloadPdf(path, filename) {
+  const res = await axios.get(path, { responseType: 'blob' });
+  const type = res.headers['content-type'] || '';
+  if (!type.includes('application/pdf')) {
+    const parsed = JSON.parse(await res.data.text());
+    const detail = typeof parsed.detail === 'string' ? parsed.detail : 'Could not download the form';
+    throw new Error(detail);
+  }
+  const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -108,47 +138,9 @@ function plain(code) {
   return key.replace(/_/g, ' ');
 }
 
-const NAV = [
-  ['/dashboard/art/board', 'Today'],
-  ['/dashboard/art/cases', 'Cases'],
-  ['/dashboard/art/catalog', 'Prices'],
-  ['/dashboard/art/bank', 'Donor bank'],
-  ['/dashboard/art/reports', 'Results'],
-  ['/dashboard/art/setup', 'Clinic setup'],
-];
-
-function artLinks(user) {
-  const roles = user?.roles || (user?.role ? [user.role] : []);
-  const has = (...names) => names.some((name) => roles.includes(name));
-  const admin = has('hospital_admin', 'super_admin');
-  const billing = admin || has('billing_admin');
-  const reports = billing || has('art_clinician', 'art_embryologist', 'art_bank_officer');
-  return NAV.filter(([to]) => {
-    if (to.endsWith('/catalog')) return billing;
-    if (to.endsWith('/reports')) return reports;
-    if (to.endsWith('/setup')) return admin;
-    return true;
-  });
-}
-
 function Shell({ title, description, actions, children }) {
-  const { user } = useAuth();
-  const links = artLinks(user);
   return (
     <div className="space-y-4">
-      <nav className="flex flex-wrap gap-1 border-b pb-2">
-        {links.map(([to, label]) => (
-          <NavLink
-            key={to}
-            to={to}
-            className={({ isActive }) => (
-              `rounded-md px-3 py-1.5 text-sm ${isActive ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-100'}`
-            )}
-          >
-            {label}
-          </NavLink>
-        ))}
-      </nav>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h2 className="text-xl font-semibold text-gray-900">{title}</h2>
@@ -428,10 +420,23 @@ function CasePage() {
     try {
       await axios.post(`/api/art/cases/${caseId}/consents`, { form_code: formCode, signed_by_name: signedBy });
       setSignedBy('');
-      setInfo('Consent recorded.');
+      setInfo('Signed copy recorded.');
       load();
     } catch (e) {
       setError(errMsg(e));
+    }
+  }
+
+  async function downloadConsent() {
+    try {
+      await downloadPdf(
+        `/api/art/cases/${caseId}/consent-form.pdf`,
+        `${data?.case_number || 'consent'}-${formCode}.pdf`,
+      );
+      setInfo('Form downloaded. Sign the paper copy, then record it here.');
+      setError('');
+    } catch (e) {
+      setError(await errorFromBlob(e));
     }
   }
 
@@ -577,9 +582,10 @@ function CasePage() {
           </Card>
 
           <Card>
-            <CardHeader><CardTitle className="text-base">Signed consents</CardTitle></CardHeader>
+            <CardHeader><CardTitle className="text-base">Consents</CardTitle></CardHeader>
             <CardContent className="space-y-3">
-              {data.consents.length === 0 && <p className="text-sm text-gray-500">No consent on file. A procedure stays blocked until the matching form is signed.</p>}
+              <p className="text-sm text-gray-500">Download a form filled with this case. Sign it on paper, file it, then record who signed. A procedure stays blocked until that record is here.</p>
+              {data.consents.length === 0 && <p className="text-sm text-gray-500">No signed form recorded yet.</p>}
               {data.consents.map((row) => (
                 <div key={row.id} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
                   <div>
@@ -597,11 +603,15 @@ function CasePage() {
                     ))}
                   </select>
                 </Field>
-                <Field label="Signed by">
+                <Field label="Signed by" hint="Write this after the paper copy has been signed">
                   <Input value={signedBy} onChange={(e) => setSignedBy(e.target.value)} />
                 </Field>
               </div>
-              <Button onClick={addConsent} disabled={!signedBy.trim()}>Record consent</Button>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" onClick={downloadConsent}>Download for signing</Button>
+                <Button onClick={addConsent} disabled={!signedBy.trim()}>Record signed copy</Button>
+              </div>
+              <p className="text-xs text-gray-500">The donor’s own consent is downloaded from the donor bank, where the donor’s name is kept.</p>
             </CardContent>
           </Card>
 
@@ -947,6 +957,15 @@ function BankPage() {
     }
   }
 
+  async function downloadDonorConsent(row) {
+    try {
+      await downloadPdf(`/api/art/donors/${row.id}/consent-form.pdf`, `${row.donor_code}-consent.pdf`);
+      setError('');
+    } catch (e) {
+      setError(await errorFromBlob(e));
+    }
+  }
+
   return (
     <Shell
       title="Donor bank"
@@ -993,7 +1012,10 @@ function BankPage() {
                     <p className="font-medium">{row.legal_name}</p>
                     <p className="text-xs text-gray-500">{row.donor_code} · {row.phone || 'No phone'}</p>
                   </div>
-                  <Badge variant="outline">{plain(row.status)}</Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline">{plain(row.status)}</Badge>
+                    <Button variant="outline" size="sm" onClick={() => downloadDonorConsent(row)}>Download for signing</Button>
+                  </div>
                 </div>
               ))}
               <div className="grid gap-3 sm:grid-cols-2">

@@ -55,12 +55,18 @@ def _sample_bill() -> dict:
         "patient_age": 35,
         "patient_gender": "M",
         "patient_phone": "9999999999",
+        "patient_email": "patient@example.com",
+        "aadhaar_number": "234567890123",
+        "patient_blood_group": "O+",
+        "abha_id": "12-3456-7890-1234",
+        "emergency_contact": "Ravi (Brother) · 9888888888",
+        "gstin": "29ABCDE1234F1Z5",
         "mrn": "MRN-PREVIEW",
         "referred_by": "Self",
         "payment_method": "Cash",
         "items": [
-            {"item_name": "Sample consultation", "item_code": "CONS", "total_price": 500},
-            {"item_name": "Sample procedure", "item_code": "PROC", "total_price": 1000},
+            {"item_name": "Sample consultation", "item_code": "CONS", "quantity": 1, "total_price": 500},
+            {"item_name": "Sample procedure", "item_code": "PROC", "quantity": 2, "total_price": 1000},
         ],
         "subtotal": 1500,
         "discount_amount": 100,
@@ -87,6 +93,13 @@ def _sample_inpatient_bill() -> dict:
             "gender": "F",
             "phone": "9999999999",
             "aadhaar_number": "234567890123",
+            "patient_email": "patient@example.com",
+            "email": "patient@example.com",
+            "patient_blood_group": "B+",
+            "blood_group": "B+",
+            "abha_id": "12-3456-7890-1234",
+            "emergency_contact": "Ravi (Brother) · 9888888888",
+            "gstin": "29ABCDE1234F1Z5",
             "referred_by": "Self",
         },
         "admission": {
@@ -118,6 +131,11 @@ def _sample_prescription() -> dict:
         "patient_age": 35,
         "patient_gender": "M",
         "patient_phone": "9999999999",
+        "patient_email": "patient@example.com",
+        "aadhaar_number": "234567890123",
+        "abha_id": "12-3456-7890-1234",
+        "emergency_contact": "Ravi (Brother) · 9888888888",
+        "allergies": "Penicillin",
         "mrn": "MRN-PREVIEW",
         "doctor_name": "Dr. Sample Doctor",
         "doctor_specialization": "General Medicine",
@@ -161,6 +179,12 @@ def _sample_lab_report() -> dict:
         "patient_age": 35,
         "patient_gender": "male",
         "patient_phone": "9999999999",
+        "patient_email": "patient@example.com",
+        "aadhaar_number": "234567890123",
+        "patient_blood_group": "O+",
+        "abha_id": "12-3456-7890-1234",
+        "emergency_contact": "Ravi (Brother) · 9888888888",
+        "sample_type": "Blood",
         "mrn": "MRN-PREVIEW",
         "sample_id": "S-PREVIEW",
         "test_name": "Complete Blood Count",
@@ -460,6 +484,7 @@ def generate_print_preview_pdf(
     report_header_overrides: dict[str, str] | None = None,
     report_footer_overrides: dict[str, str] | None = None,
     footer_gap_mm: float = 0.0,
+    pdf_layout: dict | None = None,
 ):
     if report_type not in VALID_REPORT_KEYS:
         report_type = "opd_bill"
@@ -515,6 +540,13 @@ def generate_print_preview_pdf(
             if prescription_vitals_column_width_in is not None
             else DEFAULT_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN
         )
+    from app.utils.pdf_layout import normalize_pdf_layout
+    from app.utils.pdf_settings import get_pdf_layout
+
+    if pdf_layout is not None:
+        kwargs["pdf_layout"] = normalize_pdf_layout(pdf_layout)
+    else:
+        kwargs["pdf_layout"] = get_pdf_layout(db, hospital_id)
     hi = _hospital_info(db, hospital_id)
 
     if report_type == "prescription":

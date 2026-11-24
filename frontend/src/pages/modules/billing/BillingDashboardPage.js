@@ -183,8 +183,10 @@ export default function BillingDashboardPage() {
         <ActionKpiCard
           icon={Banknote}
           label="Net receipts"
-          value={formatInr(totals.net_receipts)}
-          sub={Number(totals.refunds) > 0 ? `Refunds ${formatInr(totals.refunds)}` : 'Cash in by tender'}
+          value={formatInr(totals.net_after_expenses ?? totals.net_receipts)}
+          sub={Number(totals.expenses) > 0
+            ? `After expenses ${formatInr(totals.expenses)}`
+            : (Number(totals.refunds) > 0 ? `Refunds ${formatInr(totals.refunds)}` : 'Cash in by tender')}
           tone="cyan"
           onClick={() => openReport('daily-collection')}
         />

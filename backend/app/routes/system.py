@@ -360,23 +360,52 @@ def _require_admin(current_user: User):
         raise HTTPException(status_code=403, detail="Admin access required")
 
 
+async def _optional_json(request: Request) -> dict:
+    """JSON object body, or {} when the client posted nothing.
+
+    The original update buttons posted an empty body. A missing or empty
+    body must keep meaning "the newest version" / "do not restore a snapshot".
+    """
+    ctype = request.headers.get("content-type", "")
+    if "application/json" not in ctype:
+        return {}
+    try:
+        payload = await request.json()
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 @router.get("/update/check")
 async def update_check(current_user: User = Depends(get_current_user)):
-    """Check GitHub Releases for a newer signed build. Admin only."""
+    """List signed GitHub releases and compare them with the installed build.
+    Admin only. `releases` includes older versions and whether a database
+    copy is saved for each one."""
     _require_admin(current_user)
     from app.services import update_service
     result = update_service.check_for_update()
-    # Drop internal keys (e.g. the cached _manifest) before returning.
+    # Drop internal keys before returning.
     return {k: v for k, v in result.items() if not k.startswith("_")}
 
 
 @router.post("/update/download")
-async def update_download(current_user: User = Depends(get_current_user)):
-    """Start a background download of the latest installer. Admin only.
-    Poll GET /update/status for progress."""
+async def update_download(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """Start a background download of one signed installer. Admin only.
+
+    Body ``{"version": "1.2.1"}`` selects that release (newer or, when a
+    database copy exists, older). An empty body downloads the newest stable
+    release newer than the one installed. Poll GET /update/status for progress.
+    """
     _require_admin(current_user)
     from app.services import update_service
-    return update_service.start_download()
+    body = await _optional_json(request)
+    version = body.get("version")
+    if version is not None:
+        version = str(version).strip() or None
+    return update_service.start_download(version)
 
 
 @router.get("/update/status")
@@ -388,13 +417,23 @@ async def update_status(current_user: User = Depends(get_current_user)):
 
 
 @router.post("/update/apply")
-async def update_apply(current_user: User = Depends(get_current_user)):
+async def update_apply(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
     """Launch the staged installer (one UAC prompt) and exit so it can replace
-    the running binary. Windows + bundled only. Admin only."""
+    the running binary. Windows + bundled only. Admin only.
+
+    Body ``{"restore_snapshot": true}`` replaces the live database with the
+    copy saved for the staged version. An older staged version always
+    restores that copy. An empty body keeps the live database and lets the
+    new build migrate it forward.
+    """
     _require_admin(current_user)
     from app.services import update_service
+    body = await _optional_json(request)
     try:
-        return update_service.apply_update()
+        return update_service.apply_update(restore_snapshot=bool(body.get("restore_snapshot")))
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

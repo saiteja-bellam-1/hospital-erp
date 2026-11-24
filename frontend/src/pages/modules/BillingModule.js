@@ -925,6 +925,9 @@ const BillingModule = () => {
                       {(summary.received_refunds || 0) > 0
                         ? ` Refunds ${formatCurrency(summary.received_refunds)}.`
                         : ''}
+                      {summary.expenses_applied
+                        ? ' Front-desk expenses are deducted in Net after expenses and on Daily breakdown.'
+                        : ''}
                     </p>
                   </div>
                   <Button
@@ -943,7 +946,7 @@ const BillingModule = () => {
                     Daily breakdown
                   </Button>
                 </div>
-                {receivedEntries(summary).length === 0 ? (
+                {receivedEntries(summary).length === 0 && !(summary.expenses_applied && Number(summary.expenses_total) > 0) ? (
                   <p className="text-sm text-gray-500">No money received in this range.</p>
                 ) : (
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-2">
@@ -957,6 +960,18 @@ const BillingModule = () => {
                       <p className="text-[11px] text-green-700">Received</p>
                       <p className="text-base font-semibold text-green-800">{formatCurrency(summary.received_total)}</p>
                     </div>
+                    {summary.expenses_applied && (
+                      <>
+                        <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2">
+                          <p className="text-[11px] text-rose-700">Expenses</p>
+                          <p className="text-base font-semibold text-rose-800">{formatCurrency(summary.expenses_total)}</p>
+                        </div>
+                        <div className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2">
+                          <p className="text-[11px] text-emerald-800">Net after expenses</p>
+                          <p className="text-base font-semibold text-emerald-900">{formatCurrency(summary.net_after_expenses)}</p>
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
               </CardContent>

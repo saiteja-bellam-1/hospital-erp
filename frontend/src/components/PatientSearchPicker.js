@@ -25,6 +25,7 @@ export default function PatientSearchPicker({
   className = '',
   compact = false,
   allowRegister = true,
+  searchAdmissions = false,
 }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
@@ -48,6 +49,7 @@ export default function PatientSearchPicker({
           search_term: query.trim(),
           sort_by: 'name',
           sort_order: 'asc',
+          ...(searchAdmissions ? { include_admissions: true } : {}),
         });
         setResults((res.data?.patients || []).slice(0, 10));
       } catch {
@@ -58,7 +60,7 @@ export default function PatientSearchPicker({
     }, 300);
 
     return () => clearTimeout(timer);
-  }, [query]);
+  }, [query, searchAdmissions]);
 
   const openRegister = () => {
     setRegisterPrefill(guessPatientFieldsFromQuery(query));
@@ -103,6 +105,7 @@ export default function PatientSearchPicker({
           <div className={compact ? 'min-w-0' : undefined}>
             <p className={`font-medium text-green-900 ${compact ? 'text-xs truncate' : ''}`}>
               {value.first_name} {value.last_name}
+              {value.admission_number ? ` · ${value.admission_number}` : ''}
             </p>
             {!compact && (
               <p className="text-sm text-green-600">
@@ -176,6 +179,7 @@ export default function PatientSearchPicker({
                             </p>
                             <p className="text-xs text-gray-500">
                               {patient.primary_phone}
+                              {patient.admission_number ? ` • ${patient.admission_number}` : ''}
                               {patient.patient_id ? ` • ID: ${String(patient.patient_id).slice(0, 8)}…` : ''}
                             </p>
                           </div>

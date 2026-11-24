@@ -17,6 +17,7 @@ import {
   rateAmountColumns, flattenRateRows, billingModuleEnabledMap, selectFitStyle,
 } from './BillingReportControls';
 import { localMonthStart } from '../../../utils/localDate';
+import FrontDeskExpensesPanel from '../reception/FrontDeskExpensesPanel';
 
 /** Billing-style reports that accept a module query param — scoped when a module is selected. */
 const BILLING_MODULES_WITH_SCOPE = [
@@ -30,12 +31,12 @@ const BILLING_MODULES_WITH_SCOPE = [
  */
 const REPORT_CATALOG = [
   { id: 'sales', label: 'Sales register', modules: BILLING_MODULES_WITH_SCOPE, scopesModule: true, uses: ['period', 'patient'], hint: 'Invoices for the selected module' },
-  { id: 'daily-collection', label: 'Daily collection', modules: BILLING_MODULES_WITH_SCOPE, scopesModule: true, uses: ['period', 'patient'], hint: 'Cash, UPI, card and other tenders by day' },
+  { id: 'daily-collection', label: 'Daily collection', modules: BILLING_MODULES_WITH_SCOPE, scopesModule: true, uses: ['period', 'patient'], hint: 'Cash, UPI, card and other tenders by day. Front-desk expenses are deducted on the all-modules view.' },
   { id: 'tax-summary', label: 'Tax summary', modules: BILLING_MODULES_WITH_SCOPE, scopesModule: true, uses: ['period', 'patient'], hint: 'GST register by day' },
   { id: 'outstanding', label: 'Outstanding', modules: BILLING_MODULES_WITH_SCOPE, scopesModule: true, uses: ['period', 'patient'], hint: 'Unpaid billed amounts' },
-  { id: 'doctor-revenue', label: 'Doctor revenue', modules: ['all', 'opd', 'inpatient', 'lab', 'pharmacy', 'pharmacy_ip'], scopesModule: true, uses: ['period', 'patient', 'doctor'], hint: 'Consults, admissions, lab, and pharmacy for each doctor' },
-  { id: 'patient-revenue', label: 'Patient revenue', modules: ['all', 'opd', 'inpatient', 'lab', 'pharmacy', 'pharmacy_ip'], uses: ['period', 'patient'], hint: 'Revenue from each patient in the selected period' },
-  { id: 'referral-revenue', label: 'Referral revenue', modules: ['all', 'opd', 'inpatient', 'lab', 'pharmacy', 'pharmacy_ip'], uses: ['period'], hint: 'Revenue from each referrer in the selected period' },
+  { id: 'doctor-revenue', label: 'Doctor revenue', modules: ['all', 'opd', 'inpatient', 'lab', 'pharmacy', 'pharmacy_ip'], scopesModule: true, uses: ['period', 'patient', 'doctor'], hint: 'Consults, admissions, lab, counter pharmacy, and pharmacy charged to an inpatient stay' },
+  { id: 'patient-revenue', label: 'Patient revenue', modules: ['all', 'opd', 'inpatient', 'lab', 'pharmacy', 'pharmacy_ip'], uses: ['period', 'patient'], hint: 'Revenue from each patient, with inpatient pharmacy in its own column' },
+  { id: 'referral-revenue', label: 'Referral revenue', modules: ['all', 'opd', 'inpatient', 'lab', 'pharmacy', 'pharmacy_ip'], uses: ['period'], hint: 'Revenue from each referrer, with inpatient pharmacy in its own column' },
   { id: 'doctor-efficiency', label: 'Doctor efficiency', modules: ['all', 'opd', 'inpatient'], requires: 'inpatient', uses: ['period', 'doctor'], hint: 'OPD consults, IP admissions, visits, OT, LOS' },
 
   { id: 'opd-activity', label: 'OPD activity', modules: ['opd'], requires: 'outpatient', uses: ['period', 'doctor'], hint: 'Appointments, no-shows, and doctor load' },
@@ -111,7 +112,8 @@ function doctorRevenueColumns(module) {
   const showConsult = !module || module === 'all' || module === 'opd';
   const showAdmission = !module || module === 'all' || module === 'inpatient';
   const showLab = !module || module === 'all' || module === 'lab';
-  const showPharmacy = !module || module === 'all' || module === 'pharmacy' || module === 'pharmacy_ip';
+  const showPharmacy = !module || module === 'all' || module === 'pharmacy';
+  const showPharmacyIp = !module || module === 'all' || module === 'inpatient';
   if (showConsult) {
     cols.push(
       { key: 'consultation_count', label: 'Consults', align: 'right' },
@@ -134,6 +136,18 @@ function doctorRevenueColumns(module) {
     cols.push(
       { key: 'pharmacy_count', label: 'Pharmacy', align: 'right' },
       { key: 'pharmacy_revenue', label: 'Pharmacy revenue', align: 'right', money: true },
+    );
+  }
+  if (module === 'pharmacy_ip') {
+    cols.push(
+      { key: 'pharmacy_count', label: 'Pharmacy (IP)', align: 'right' },
+      { key: 'pharmacy_revenue', label: 'Pharmacy (IP) revenue', align: 'right', money: true },
+    );
+  }
+  if (showPharmacyIp) {
+    cols.push(
+      { key: 'pharmacy_ip_count', label: 'Pharmacy (IP)', align: 'right' },
+      { key: 'pharmacy_ip_revenue', label: 'Pharmacy (IP) revenue', align: 'right', money: true },
     );
   }
   cols.push({ key: 'total_revenue', label: 'Total', align: 'right', money: true });
@@ -344,6 +358,7 @@ export default function ReportsPage() {
           admission_total: Math.round(rows.reduce((s, r) => s + Number(r.admission_revenue || 0), 0) * 100) / 100,
           lab_total: Math.round(rows.reduce((s, r) => s + Number(r.lab_revenue || 0), 0) * 100) / 100,
           pharmacy_total: Math.round(rows.reduce((s, r) => s + Number(r.pharmacy_revenue || 0), 0) * 100) / 100,
+          pharmacy_ip_total: Math.round(rows.reduce((s, r) => s + Number(r.pharmacy_ip_revenue || 0), 0) * 100) / 100,
           grand_total: Math.round(rows.reduce((s, r) => s + Number(r.total_revenue || 0), 0) * 100) / 100,
         };
       } else if (kind === 'opd-activity') {
@@ -435,28 +450,35 @@ export default function ReportsPage() {
     let lines = [];
     if (kind === 'daily-collection') {
       const methods = data.methods || [];
-      header = ['Date', 'Net total', 'Refunds', ...methods];
-      lines = (data.rows || []).map((r) => [
-        r.date, r.total, r.refunds, ...methods.map((m) => r.by_method?.[m] || 0),
-      ]);
+      if (data.expenses_applied) {
+        header = ['Date', 'Collected', 'Refunds', 'Expenses', 'Net', ...methods];
+        lines = (data.rows || []).map((r) => [
+          r.date, r.total, r.refunds, r.expenses, r.net, ...methods.map((m) => r.by_method?.[m] || 0),
+        ]);
+      } else {
+        header = ['Date', 'Net total', 'Refunds', ...methods];
+        lines = (data.rows || []).map((r) => [
+          r.date, r.total, r.refunds, ...methods.map((m) => r.by_method?.[m] || 0),
+        ]);
+      }
     } else if (kind === 'doctor-revenue') {
-      header = ['Doctor', 'Consultations', 'Consult revenue', 'Admissions', 'Admission revenue', 'Lab orders', 'Lab revenue', 'Pharmacy bills', 'Pharmacy revenue', 'Total'];
+      header = ['Doctor', 'Consultations', 'Consult revenue', 'Admissions', 'Admission revenue', 'Lab orders', 'Lab revenue', 'Pharmacy bills', 'Pharmacy revenue', 'Pharmacy (IP) bills', 'Pharmacy (IP) revenue', 'Total'];
       lines = (data.rows || []).map((r) => [
         r.doctor_name, r.consultation_count, r.consultation_revenue,
         r.admission_count, r.admission_revenue, r.lab_count, r.lab_revenue,
-        r.pharmacy_count, r.pharmacy_revenue, r.total_revenue,
+        r.pharmacy_count, r.pharmacy_revenue, r.pharmacy_ip_count, r.pharmacy_ip_revenue, r.total_revenue,
       ]);
     } else if (kind === 'patient-revenue') {
-      header = ['Patient', 'MRN', 'Phone', 'Referrer', 'Consult revenue', 'Lab revenue', 'Pharmacy revenue', 'Admission revenue', 'Other revenue', 'Total'];
+      header = ['Patient', 'MRN', 'Phone', 'Referrer', 'Consult revenue', 'Lab revenue', 'Pharmacy revenue', 'Pharmacy (IP) revenue', 'Admission revenue', 'Other revenue', 'Total'];
       lines = (data.rows || []).map((r) => [
         r.patient_name, r.mrn, r.phone, r.referred_by, r.consultation_revenue, r.lab_revenue,
-        r.pharmacy_revenue, r.admission_revenue, r.other_revenue, r.total_revenue,
+        r.pharmacy_revenue, r.pharmacy_ip_revenue, r.admission_revenue, r.other_revenue, r.total_revenue,
       ]);
     } else if (kind === 'referral-revenue') {
-      header = ['Referrer', 'Phone', 'Patients', 'Consult revenue', 'Lab revenue', 'Pharmacy revenue', 'Admission revenue', 'Other revenue', 'Total'];
+      header = ['Referrer', 'Phone', 'Patients', 'Consult revenue', 'Lab revenue', 'Pharmacy revenue', 'Pharmacy (IP) revenue', 'Admission revenue', 'Other revenue', 'Total'];
       lines = (data.rows || []).map((r) => [
         r.referral_name, r.phone, r.patient_count, r.consultation_revenue, r.lab_revenue,
-        r.pharmacy_revenue, r.admission_revenue, r.other_revenue, r.total_revenue,
+        r.pharmacy_revenue, r.pharmacy_ip_revenue, r.admission_revenue, r.other_revenue, r.total_revenue,
       ]);
     } else if (kind === 'tax-summary') {
       header = ['Date', 'Bills', 'Taxable value', 'Tax amount'];
@@ -1056,42 +1078,57 @@ export default function ReportsPage() {
       )}
 
       {kind === 'daily-collection' && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Daily collection</CardTitle>
-            <p className="text-xs font-normal text-gray-500 mt-1">
-              Net money received by payment type, including OPD, lab, pharmacy cash, canteen, day care, physio, and admission deposits. Refunds are shown separately and already netted in the total.
-            </p>
-          </CardHeader>
-          <CardContent>
-            {loading ? (
-              <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
-            ) : (
-              <MoneyTable
-                columns={[
-                  { key: 'date', label: 'Date' },
-                  ...(view?.methods || []).map((m) => ({
-                    key: `m_${m}`, label: m, align: 'right', money: true,
-                  })),
-                  { key: 'refunds', label: 'Refunds', align: 'right', money: true },
-                  { key: 'total', label: 'Net', align: 'right', money: true },
-                ]}
-                rows={(view?.rows || []).map((r) => ({
-                  ...r,
-                  ...Object.fromEntries((view?.methods || []).map((m) => [`m_${m}`, r.by_method?.[m] || 0])),
-                }))}
-                totals={{
-                  total: t.net_collected,
-                  refunds: t.refunds,
-                  ...Object.fromEntries((view?.methods || []).map((m) => [
-                    `m_${m}`,
-                    (view?.rows || []).reduce((s, r) => s + Number(r.by_method?.[m] || 0), 0),
-                  ])),
-                }}
-              />
-            )}
-          </CardContent>
-        </Card>
+        <>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Daily collection</CardTitle>
+              <p className="text-xs font-normal text-gray-500 mt-1">
+                {view?.expenses_applied
+                  ? 'Money received by payment type, including OPD, lab, pharmacy cash, canteen, day care, physio, and admission deposits. Refunds are already netted in Collected. Net is Collected minus front-desk expenses.'
+                  : 'Money received by payment type for this module or patient. Front-desk expenses are deducted only on the all-modules breakdown, with no patient selected.'}
+              </p>
+            </CardHeader>
+            <CardContent>
+              {loading ? (
+                <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+              ) : (
+                <MoneyTable
+                  columns={[
+                    { key: 'date', label: 'Date' },
+                    ...(view?.methods || []).map((m) => ({
+                      key: `m_${m}`, label: m, align: 'right', money: true,
+                    })),
+                    { key: 'refunds', label: 'Refunds', align: 'right', money: true },
+                    ...(view?.expenses_applied ? [
+                      { key: 'total', label: 'Collected', align: 'right', money: true },
+                      { key: 'expenses', label: 'Expenses', align: 'right', money: true },
+                      { key: 'net', label: 'Net', align: 'right', money: true },
+                    ] : [
+                      { key: 'total', label: 'Net', align: 'right', money: true },
+                    ]),
+                  ]}
+                  rows={(view?.rows || []).map((r) => ({
+                    ...r,
+                    ...Object.fromEntries((view?.methods || []).map((m) => [`m_${m}`, r.by_method?.[m] || 0])),
+                  }))}
+                  totals={{
+                    total: t.net_collected,
+                    refunds: t.refunds,
+                    expenses: t.expenses,
+                    net: t.net_after_expenses,
+                    ...Object.fromEntries((view?.methods || []).map((m) => [
+                      `m_${m}`,
+                      (view?.rows || []).reduce((s, r) => s + Number(r.by_method?.[m] || 0), 0),
+                    ])),
+                  }}
+                />
+              )}
+            </CardContent>
+          </Card>
+          {view?.expenses_applied && (
+            <FrontDeskExpensesPanel dateFrom={dateFrom} dateTo={dateTo} onChanged={run} />
+          )}
+        </>
       )}
 
       {kind === 'doctor-revenue' && (
@@ -1101,7 +1138,7 @@ export default function ReportsPage() {
             <p className="text-xs font-normal text-gray-500 mt-1">
               {module === 'pharmacy_ip'
                 ? 'Inpatient pharmacy sales posted to an admission, grouped by the doctor on the sale.'
-                : 'Consults, admissions, outpatient lab, and counter pharmacy. Lab and pharmacy already included on an admission bill stay in admission revenue.'}
+                : 'Consults, admissions, outpatient lab, and pharmacy. Pharmacy charged to an inpatient stay is in Pharmacy (IP), not inside admission revenue. Lab already on an admission bill stays in admission revenue.'}
             </p>
           </CardHeader>
           <CardContent>
@@ -1120,6 +1157,8 @@ export default function ReportsPage() {
                   lab_revenue: t.lab_total,
                   pharmacy_count: (view?.rows || []).reduce((s, r) => s + Number(r.pharmacy_count || 0), 0),
                   pharmacy_revenue: t.pharmacy_total,
+                  pharmacy_ip_count: (view?.rows || []).reduce((s, r) => s + Number(r.pharmacy_ip_count || 0), 0),
+                  pharmacy_ip_revenue: t.pharmacy_ip_total,
                   total_revenue: t.grand_total,
                 }}
               />
@@ -1133,7 +1172,7 @@ export default function ReportsPage() {
           <CardHeader>
             <CardTitle className="text-base">Patient revenue</CardTitle>
             <p className="text-xs font-normal text-gray-500 mt-1">
-              Billed amount for each patient in the selected period. Lab and pharmacy already included on an admission bill are counted under admissions only.
+              Billed amount for each patient in the selected period. Pharmacy charged to an inpatient stay is in Pharmacy (IP). Lab already on an admission bill stays under admissions.
             </p>
           </CardHeader>
           <CardContent>
@@ -1147,6 +1186,7 @@ export default function ReportsPage() {
                   { key: 'consultation_revenue', label: 'Consults', align: 'right', money: true },
                   { key: 'lab_revenue', label: 'Lab', align: 'right', money: true },
                   { key: 'pharmacy_revenue', label: 'Pharmacy', align: 'right', money: true },
+                  { key: 'pharmacy_ip_revenue', label: 'Pharmacy (IP)', align: 'right', money: true },
                   { key: 'admission_revenue', label: 'Admissions', align: 'right', money: true },
                   { key: 'other_revenue', label: 'Other', align: 'right', money: true },
                   { key: 'total_revenue', label: 'Total', align: 'right', money: true },
@@ -1156,6 +1196,7 @@ export default function ReportsPage() {
                   consultation_revenue: t.consultation_total,
                   lab_revenue: t.lab_total,
                   pharmacy_revenue: t.pharmacy_total,
+                  pharmacy_ip_revenue: t.pharmacy_ip_total,
                   admission_revenue: t.admission_total,
                   other_revenue: t.other_total,
                   total_revenue: t.grand_total,
@@ -1171,7 +1212,7 @@ export default function ReportsPage() {
           <CardHeader>
             <CardTitle className="text-base">Referral revenue</CardTitle>
             <p className="text-xs font-normal text-gray-500 mt-1">
-              Bill value from patients registered under each referrer in the selected period. This is revenue, not commission. Lab and pharmacy already on an admission bill are included in admissions.
+              Bill value from patients registered under each referrer in the selected period. This is revenue, not commission. Pharmacy charged to an inpatient stay is in Pharmacy (IP). Lab already on an admission bill stays in admissions.
             </p>
           </CardHeader>
           <CardContent>
@@ -1186,6 +1227,7 @@ export default function ReportsPage() {
                   { key: 'consultation_revenue', label: 'Consults', align: 'right', money: true },
                   { key: 'lab_revenue', label: 'Lab', align: 'right', money: true },
                   { key: 'pharmacy_revenue', label: 'Pharmacy', align: 'right', money: true },
+                  { key: 'pharmacy_ip_revenue', label: 'Pharmacy (IP)', align: 'right', money: true },
                   { key: 'admission_revenue', label: 'Admissions', align: 'right', money: true },
                   { key: 'phone', label: 'Phone' },
                 ]}
@@ -1195,6 +1237,7 @@ export default function ReportsPage() {
                   consultation_revenue: t.consultation_total,
                   lab_revenue: t.lab_total,
                   pharmacy_revenue: t.pharmacy_total,
+                  pharmacy_ip_revenue: t.pharmacy_ip_total,
                   admission_revenue: t.admission_total,
                   other_revenue: t.other_total,
                   total_revenue: t.grand_total,

@@ -219,6 +219,9 @@ def revenue_by_referral(db: Session, hospital_id: int, d_from=None, d_to=None):
             "lab_count": summary["total_lab_orders"],
             "pharmacy_revenue": summary["pharmacy_revenue"],
             "pharmacy_count": summary["total_pharmacy_sales"],
+            "pharmacy_ip_revenue": details["pharmacy_ip_split"]["revenue"],
+            "pharmacy_ip_count": details["pharmacy_ip_split"]["count"],
+            "pharmacy_ip_in_admission": details["pharmacy_ip_split"]["removed_from_admission"],
             "admission_revenue": summary["ip_revenue"],
             "admission_count": summary["total_ip_bills"],
             "other_revenue": 0.0,
@@ -459,6 +462,65 @@ def _in_period(value, d_from, d_to) -> bool:
     return True
 
 
+def _sale_nets(db: Session, sales) -> dict:
+    if not sales:
+        return {}
+    returned = {}
+    sale_ids = [sale.id for sale in sales]
+    for ret in db.query(PharmacySaleReturn).filter(
+        PharmacySaleReturn.sale_id.in_(sale_ids),
+        PharmacySaleReturn.status == "confirmed",
+    ).all():
+        returned[ret.sale_id] = returned.get(ret.sale_id, 0.0) + _money(ret.grand_total)
+    return {
+        sale.id: round(max(_money(sale.grand_total) - _money(returned.get(sale.id)), 0.0), 2)
+        for sale in sales
+    }
+
+
+def _pharmacy_ip_split(db, hospital_id, patient_uuids, ip_bills, d_from, d_to) -> dict:
+    """Inpatient pharmacy for these patients, separate from commission IP revenue.
+
+    ``revenue`` is pharmacy charged to a stay in the period. ``removed_from_admission``
+    is how much of this period's admission bills that pharmacy already occupies.
+    """
+    bill_ids = [bill["id"] for bill in ip_bills if bill.get("id")]
+    linked = []
+    if bill_ids:
+        linked = db.query(PharmacySale).filter(
+            PharmacySale.inpatient_bill_id.in_(bill_ids),
+            PharmacySale.status == "completed",
+        ).all()
+    period_sales = []
+    if patient_uuids:
+        period_sales = db.query(PharmacySale).filter(
+            PharmacySale.hospital_id == hospital_id,
+            PharmacySale.patient_ip_id.in_(patient_uuids),
+            PharmacySale.status == "completed",
+            or_(
+                PharmacySale.inpatient_bill_id.isnot(None),
+                PharmacySale.billing_mode == "inpatient_bill",
+            ),
+        ).all()
+        period_sales = [sale for sale in period_sales if _in_period(sale.sale_date, d_from, d_to)]
+    unique = {sale.id: sale for sale in [*linked, *period_sales]}
+    nets = _sale_nets(db, list(unique.values()))
+    linked_by_bill = {}
+    for sale in linked:
+        linked_by_bill[sale.inpatient_bill_id] = linked_by_bill.get(sale.inpatient_bill_id, 0.0) + nets.get(sale.id, 0.0)
+    removed = 0.0
+    for bill in ip_bills:
+        gross = _money(bill.get("amount"))
+        inside = _money(linked_by_bill.get(bill.get("id")))
+        removed += min(inside, gross)
+    counted = [sale for sale in period_sales if nets.get(sale.id, 0.0) > 0]
+    return {
+        "revenue": round(sum(nets.get(sale.id, 0.0) for sale in counted), 2),
+        "count": len(counted),
+        "removed_from_admission": round(removed, 2),
+    }
+
+
 def _assemble_referral_details(db: Session, referral: Referral, d_from=None, d_to=None):
     ref_name = (referral.name or "").strip()
     hospital_id = referral.hospital_id
@@ -620,6 +682,10 @@ def _assemble_referral_details(db: Session, referral: Referral, d_from=None, d_t
                 "reference": sale.sale_number,
             })
 
+    pharmacy_ip_split = _pharmacy_ip_split(
+        db, hospital_id, patient_uuids, ip_bills, d_from, d_to,
+    )
+
     commissions = db.query(ReferralCommission).filter(
         ReferralCommission.referral_id == referral.id
     ).order_by(ReferralCommission.payment_date.desc()).all()
@@ -670,6 +736,7 @@ def _assemble_referral_details(db: Session, referral: Referral, d_from=None, d_t
         "lab_orders": lab_bills,
         "inpatient_bills": ip_bills,
         "pharmacy_sales": pharmacy_bills,
+        "pharmacy_ip_split": pharmacy_ip_split,
         "commissions": commission_list,
         "summary": {
             "total_consultations": len(apt_bills),

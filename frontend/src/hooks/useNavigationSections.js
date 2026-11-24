@@ -8,7 +8,7 @@ import {
   DownloadCloud, Pill, ShoppingCart, Boxes, Truck, BookOpen, LayoutGrid, Plus,
   Warehouse, Tags, Layers, Ruler, Percent, Link2, ArrowLeftRight, Store, Droplets,
   UtensilsCrossed, IndianRupee, Settings2, Undo2, UserCheck, PanelTop, Settings,
-  CreditCard, Heart,
+  CreditCard, Heart, Wallet,
 } from 'lucide-react';
 import { PHARMACY_ROLE_NAMES } from './usePharmacyPermissions';
 import { CANTEEN_ROLE_NAMES } from './useCanteenPermissions';
@@ -156,7 +156,14 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
       add(items, make('Lab Packages', Package, '/dashboard/reception/packages'));
       add(items, make('Lab Orders', TestTube, '/dashboard/reception/lab-orders'));
     }
+    add(items, make('Expenses', Wallet, '/dashboard/reception/expenses'));
     if (items.length > 0) sections.push({ label: 'Outpatient', items });
+  }
+
+  if (hasRole('frontdesk') && !hasAnyRole('receptionist', 'hospital_admin', 'super_admin')) {
+    const items = [];
+    add(items, make('Expenses', Wallet, '/dashboard/reception/expenses'));
+    if (items.length > 0) sections.push({ label: 'Front desk', items });
   }
 
   // ── BILLING ── always-on hub (ledger + GST / sales reports)
@@ -167,6 +174,9 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     }
     add(items, make('Bills', Receipt, '/dashboard/billing'));
     add(items, make('Referrals', Share2, '/dashboard/billing/referrals'));
+    if (hasRole('billing_admin') && !hasAnyRole('hospital_admin', 'super_admin', 'receptionist')) {
+      add(items, make('Expenses', Wallet, '/dashboard/reception/expenses'));
+    }
     if (hasAnyRole('hospital_admin', 'super_admin', 'billing_admin')) {
       add(items, make('Reports', BarChart3, '/dashboard/billing/reports'));
       add(items, make('Sales Summary', TrendingUp, '/dashboard/billing/sales-summary'));

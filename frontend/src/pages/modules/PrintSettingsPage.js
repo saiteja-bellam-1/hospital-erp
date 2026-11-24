@@ -9,7 +9,7 @@ import { Label } from '../../components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs';
 import { useToast } from '../../hooks/use-toast';
 import { useAuth } from '../../contexts/AuthContext';
-import { Printer, Save, ArrowLeft, Eye, ChevronUp, ChevronDown, Receipt, FileText, LayoutTemplate, Users, Tag } from 'lucide-react';
+import { Printer, Save, ArrowLeft, Eye, ChevronUp, ChevronDown, Receipt, FileText, LayoutTemplate, Users, Tag, Palette, RotateCcw } from 'lucide-react';
 import { invalidatePdfPrintSettingsCache, resolveIncludeHeaderForReport, resolveIncludeFooterForReport } from '../../hooks/usePdfPrintSettings';
 import PrintSettingsPreviewDialog from '../../components/PrintSettingsPreviewDialog';
 import LabelSettingsFields from '../../components/LabelSettingsFields';
@@ -74,6 +74,159 @@ const LABEL_SIZE_SECTIONS = [
 function mergeLabelSettings(defaults, raw) {
   if (!raw || typeof raw !== 'object') return { ...defaults };
   return { ...defaults, ...raw };
+}
+
+const DEFAULT_PDF_LAYOUT = {
+  typeface: 'helvetica',
+  size: 'standard',
+  accent: 'black',
+  paper: 'a4',
+  margins: 'standard',
+  spacing: 'standard',
+  padding: 'standard',
+  line_spacing: 'standard',
+  title_align: 'center',
+  body_align: 'left',
+  sections: {
+    bill: {
+      phone: true, address: true, referral: true, token: true, item_code: true, amount_in_words: true,
+      quantity: false, email: false, aadhaar: false, blood_group: false, abha: false,
+      emergency_contact: false, gstin: false,
+    },
+    prescription: {
+      phone: true, address: true, referral: true, diagnosis: true, medicines: true, instructions: true, signature: true,
+      email: false, aadhaar: false, abha: false, emergency_contact: false, allergies: false, medicine_notes: false,
+    },
+    lab_report: {
+      reference_range: true, remarks: true, method: true,
+      email: false, aadhaar: false, blood_group: false, abha: false, emergency_contact: false, sample_type: false,
+    },
+  },
+};
+
+const PDF_LAYOUT_CATALOG = {
+  typefaces: [
+    { value: 'helvetica', label: 'Helvetica', description: 'Current print face.' },
+    { value: 'times', label: 'Times', description: 'Serif face for a more formal look.' },
+  ],
+  sizes: [
+    { value: 'compact', label: 'Compact', description: 'Slightly smaller type.' },
+    { value: 'standard', label: 'Standard', description: 'Current type size.' },
+    { value: 'large', label: 'Large', description: 'Easier to read on the page.' },
+  ],
+  accents: [
+    { value: 'black', label: 'Black', swatch: '#111111' },
+    { value: 'navy', label: 'Navy', swatch: '#1B3A4B' },
+    { value: 'teal', label: 'Teal', swatch: '#0E6B6B' },
+    { value: 'maroon', label: 'Maroon', swatch: '#6E2430' },
+  ],
+  papers: [
+    { value: 'a4', label: 'A4', description: 'Current paper size.' },
+    { value: 'letter', label: 'Letter', description: 'US Letter (8.5 × 11 in).' },
+  ],
+  margins: [
+    { value: 'compact', label: 'Narrow', description: 'More content on the page.' },
+    { value: 'standard', label: 'Standard', description: 'Current margins.' },
+    { value: 'wide', label: 'Wide', description: 'More space around the content.' },
+  ],
+  spacings: [
+    { value: 'tight', label: 'Tight', description: 'Less space between blocks.' },
+    { value: 'standard', label: 'Standard', description: 'Current space between blocks.' },
+    { value: 'roomy', label: 'Roomy', description: 'More space between blocks.' },
+  ],
+  paddings: [
+    { value: 'tight', label: 'Tight', description: 'Text sits closer to the box edge.' },
+    { value: 'standard', label: 'Standard', description: 'Current padding inside tables.' },
+    { value: 'roomy', label: 'Roomy', description: 'More air inside each row.' },
+  ],
+  line_spacings: [
+    { value: 'tight', label: 'Tight', description: 'Lines sit closer together.' },
+    { value: 'standard', label: 'Standard', description: 'Current line spacing.' },
+    { value: 'open', label: 'Open', description: 'More space between lines.' },
+  ],
+  aligns: [
+    { value: 'left', label: 'Left' },
+    { value: 'center', label: 'Centre' },
+    { value: 'right', label: 'Right' },
+  ],
+  sections: [
+    {
+      group: 'bill',
+      label: 'Bills',
+      hint: 'OPD bills, lab bills, and inpatient bills. Token and item code apply to OPD and lab bills.',
+      fields: [
+        { key: 'phone', label: 'Patient phone' },
+        { key: 'address', label: 'Patient address' },
+        { key: 'referral', label: 'Doctor or referral' },
+        { key: 'token', label: 'Token number' },
+        { key: 'item_code', label: 'Item code column' },
+        { key: 'amount_in_words', label: 'Amount in words' },
+        { key: 'quantity', label: 'Quantity column', optional: true },
+        { key: 'email', label: 'Patient email', optional: true },
+        { key: 'aadhaar', label: 'Aadhaar', optional: true },
+        { key: 'blood_group', label: 'Blood group', optional: true },
+        { key: 'abha', label: 'ABHA ID', optional: true },
+        { key: 'emergency_contact', label: 'Emergency contact', optional: true },
+        { key: 'gstin', label: 'Patient GSTIN', optional: true },
+      ],
+    },
+    {
+      group: 'prescription',
+      label: 'Prescriptions',
+      hint: 'Vitals stay on the Prescription tab. These switches cover the other blocks.',
+      fields: [
+        { key: 'phone', label: 'Patient phone' },
+        { key: 'address', label: 'Patient address' },
+        { key: 'referral', label: 'Referred by' },
+        { key: 'diagnosis', label: 'Diagnosis' },
+        { key: 'medicines', label: 'Medicines' },
+        { key: 'instructions', label: 'Instructions and follow-up' },
+        { key: 'signature', label: 'Doctor signature' },
+        { key: 'email', label: 'Patient email', optional: true },
+        { key: 'aadhaar', label: 'Aadhaar', optional: true },
+        { key: 'abha', label: 'ABHA ID', optional: true },
+        { key: 'emergency_contact', label: 'Emergency contact', optional: true },
+        { key: 'allergies', label: 'Allergies', optional: true },
+        { key: 'medicine_notes', label: 'Notes under each medicine', optional: true },
+      ],
+    },
+    {
+      group: 'lab_report',
+      label: 'Lab reports',
+      hint: 'Single and combined reports. Patient details and the result value always print.',
+      fields: [
+        { key: 'reference_range', label: 'Biological reference range' },
+        { key: 'remarks', label: 'Parameter remarks' },
+        { key: 'method', label: 'Method column' },
+        { key: 'email', label: 'Patient email', optional: true },
+        { key: 'aadhaar', label: 'Aadhaar', optional: true },
+        { key: 'blood_group', label: 'Blood group', optional: true },
+        { key: 'abha', label: 'ABHA ID', optional: true },
+        { key: 'emergency_contact', label: 'Emergency contact', optional: true },
+        { key: 'sample_type', label: 'Sample type', optional: true },
+      ],
+    },
+  ],
+};
+
+function mergePdfLayout(raw) {
+  const sections = {};
+  Object.entries(DEFAULT_PDF_LAYOUT.sections).forEach(([group, fields]) => {
+    sections[group] = { ...fields, ...(raw?.sections?.[group] || {}) };
+  });
+  return {
+    typeface: raw?.typeface || DEFAULT_PDF_LAYOUT.typeface,
+    size: raw?.size || DEFAULT_PDF_LAYOUT.size,
+    accent: raw?.accent || DEFAULT_PDF_LAYOUT.accent,
+    paper: raw?.paper || DEFAULT_PDF_LAYOUT.paper,
+    margins: raw?.margins || DEFAULT_PDF_LAYOUT.margins,
+    spacing: raw?.spacing || DEFAULT_PDF_LAYOUT.spacing,
+    padding: raw?.padding || DEFAULT_PDF_LAYOUT.padding,
+    line_spacing: raw?.line_spacing || DEFAULT_PDF_LAYOUT.line_spacing,
+    title_align: raw?.title_align || DEFAULT_PDF_LAYOUT.title_align,
+    body_align: raw?.body_align || DEFAULT_PDF_LAYOUT.body_align,
+    sections,
+  };
 }
 
 const OVERRIDE_OPTIONS = [
@@ -306,6 +459,8 @@ const PrintSettingsPage = () => {
     Object.fromEntries(LABEL_SIZE_SECTIONS.map((section) => [section.key, { ...section.defaults }]))
   ));
   const [savingLabelKey, setSavingLabelKey] = useState(null);
+  const [pdfLayout, setPdfLayout] = useState(DEFAULT_PDF_LAYOUT);
+  const [layoutCatalog, setLayoutCatalog] = useState(PDF_LAYOUT_CATALOG);
 
   const roles = user?.roles || [user?.role];
   const canEdit = roles.some((r) =>
@@ -325,6 +480,7 @@ const PrintSettingsPage = () => {
     footerGapMm,
     overrides,
     footerOverrides,
+    pdfLayout,
     resolveIncludeHeader: (reportType) =>
       resolveIncludeHeaderForReport(
         { include_header_on_pdfs: includeHeaderOnPdfs, report_header_overrides: overrides },
@@ -347,6 +503,7 @@ const PrintSettingsPage = () => {
     footerGapMm,
     overrides,
     footerOverrides,
+    pdfLayout,
   ]);
 
   const openPreview = useCallback((key, label) => {
@@ -381,6 +538,8 @@ const PrintSettingsPage = () => {
         setFooterReportCatalog(res.data.footer_report_catalog || []);
         setOverrides(res.data.report_header_overrides || {});
         setFooterOverrides(res.data.report_footer_overrides || {});
+        setPdfLayout(mergePdfLayout(res.data.pdf_layout));
+        if (res.data.pdf_layout_catalog) setLayoutCatalog(res.data.pdf_layout_catalog);
         setLabelSettings((prev) => {
           const next = { ...prev };
           LABEL_SIZE_SECTIONS.forEach((section) => {
@@ -560,6 +719,7 @@ const PrintSettingsPage = () => {
         footer_gap_mm: footerGap,
         report_header_overrides: overrides,
         report_footer_overrides: footerOverrides,
+        pdf_layout: pdfLayout,
         patient_file_label_settings: labelSettings.patient_file_label_settings,
         lab_label_settings: labelSettings.lab_label_settings,
         pharmacy_label_settings: labelSettings.pharmacy_label_settings,
@@ -578,6 +738,20 @@ const PrintSettingsPage = () => {
     } finally {
       setSaving(false);
     }
+  };
+
+  const setLayoutField = (key, value) => {
+    setPdfLayout((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const setLayoutSection = (group, key, checked) => {
+    setPdfLayout((prev) => ({
+      ...prev,
+      sections: {
+        ...prev.sections,
+        [group]: { ...(prev.sections?.[group] || {}), [key]: checked },
+      },
+    }));
   };
 
   if (!canEdit) {
@@ -610,8 +784,8 @@ const PrintSettingsPage = () => {
               Customisations
             </h1>
             <p className="text-sm text-muted-foreground mt-1 max-w-xl">
-              Bills, letterhead, prescription vitals, label sizes, and per-document overrides.
-              Outpatient, laboratory, and pharmacy sticker sizes are saved separately.
+              Style, paper, and which blocks print. Today’s PDFs stay as they are until you change them.
+              Letterhead, vitals, and sticker sizes are on the other tabs.
             </p>
           </div>
         </div>
@@ -632,7 +806,10 @@ const PrintSettingsPage = () => {
       ) : (
         <>
           <Tabs value={settingsTab} onValueChange={setSettingsTab} className="w-full">
-            <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 h-auto gap-1">
+            <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 h-auto gap-1">
+              <TabsTrigger value="style" className="gap-1.5 text-xs sm:text-sm">
+                <Palette className="h-4 w-4 shrink-0" /> Style
+              </TabsTrigger>
               <TabsTrigger value="bills" className="gap-1.5 text-xs sm:text-sm">
                 <Receipt className="h-4 w-4 shrink-0" /> Bills
               </TabsTrigger>
@@ -652,6 +829,275 @@ const PrintSettingsPage = () => {
                 <Tag className="h-4 w-4 shrink-0" /> Labels
               </TabsTrigger>
             </TabsList>
+
+            <TabsContent value="style" className="mt-4 space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-lg">Type and colour</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  <p className="text-sm text-muted-foreground">
+                    Applies to printed documents. Leave these on the standard choices to keep the PDFs you have today.
+                  </p>
+                  <section className="space-y-3">
+                    <p className="text-sm font-medium">Typeface</p>
+                    <div className="grid gap-3 sm:grid-cols-2 max-w-3xl">
+                      {(layoutCatalog.typefaces || []).map((opt) => (
+                        <OptionCard
+                          key={opt.value}
+                          name="pdf-typeface"
+                          value={opt.value}
+                          checked={pdfLayout.typeface === opt.value}
+                          onChange={() => setLayoutField('typeface', opt.value)}
+                          label={opt.label}
+                          description={opt.description}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                  <section className="space-y-3">
+                    <p className="text-sm font-medium">Type size</p>
+                    <div className="grid gap-3 sm:grid-cols-3 max-w-3xl">
+                      {(layoutCatalog.sizes || []).map((opt) => (
+                        <OptionCard
+                          key={opt.value}
+                          name="pdf-size"
+                          value={opt.value}
+                          checked={pdfLayout.size === opt.value}
+                          onChange={() => setLayoutField('size', opt.value)}
+                          label={opt.label}
+                          description={opt.description}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                  <section className="space-y-3">
+                    <p className="text-sm font-medium">Heading colour</p>
+                    <div className="flex flex-wrap gap-2">
+                      {(layoutCatalog.accents || []).map((opt) => {
+                        const selected = pdfLayout.accent === opt.value;
+                        return (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => setLayoutField('accent', opt.value)}
+                            className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
+                              selected ? 'border-primary/50 bg-muted/40' : 'border-border hover:bg-muted/20'
+                            }`}
+                            aria-pressed={selected}
+                          >
+                            <span
+                              className="h-4 w-4 rounded-full border border-border"
+                              style={{ backgroundColor: opt.swatch || '#111' }}
+                            />
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Colours titles and rules. Body text stays black so it still prints clearly.
+                    </p>
+                  </section>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-lg">Paper</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  <p className="text-sm text-muted-foreground">
+                    Portrait documents such as bills, prescriptions, lab reports, and discharge summaries.
+                    Landscape pharmacy invoices keep their own paper.
+                  </p>
+                  <section className="space-y-3">
+                    <p className="text-sm font-medium">Size</p>
+                    <div className="grid gap-3 sm:grid-cols-2 max-w-3xl">
+                      {(layoutCatalog.papers || []).map((opt) => (
+                        <OptionCard
+                          key={opt.value}
+                          name="pdf-paper"
+                          value={opt.value}
+                          checked={pdfLayout.paper === opt.value}
+                          onChange={() => setLayoutField('paper', opt.value)}
+                          label={opt.label}
+                          description={opt.description}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                  <section className="space-y-3">
+                    <p className="text-sm font-medium">Margins</p>
+                    <div className="grid gap-3 sm:grid-cols-3 max-w-3xl">
+                      {(layoutCatalog.margins || []).map((opt) => (
+                        <OptionCard
+                          key={opt.value}
+                          name="pdf-margins"
+                          value={opt.value}
+                          checked={pdfLayout.margins === opt.value}
+                          onChange={() => setLayoutField('margins', opt.value)}
+                          label={opt.label}
+                          description={opt.description}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-lg">Spacing and alignment</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  <p className="text-sm text-muted-foreground">
+                    Gap between blocks, padding inside tables, line spacing, and how titles and body text line up.
+                    Amounts stay right-aligned. Letterhead space on the Letterhead tab is unchanged.
+                  </p>
+                  {[
+                    ['spacing', 'Space between blocks', layoutCatalog.spacings],
+                    ['padding', 'Padding inside tables', layoutCatalog.paddings],
+                    ['line_spacing', 'Line spacing', layoutCatalog.line_spacings],
+                  ].map(([field, title, options]) => (
+                    <section key={field} className="space-y-3">
+                      <p className="text-sm font-medium">{title}</p>
+                      <div className="grid gap-3 sm:grid-cols-3 max-w-3xl">
+                        {(options || []).map((opt) => (
+                          <OptionCard
+                            key={opt.value}
+                            name={`pdf-${field}`}
+                            value={opt.value}
+                            checked={pdfLayout[field] === opt.value}
+                            onChange={() => setLayoutField(field, opt.value)}
+                            label={opt.label}
+                            description={opt.description}
+                          />
+                        ))}
+                      </div>
+                    </section>
+                  ))}
+                  <section className="space-y-3">
+                    <p className="text-sm font-medium">Title alignment</p>
+                    <div className="flex flex-wrap gap-2">
+                      {(layoutCatalog.aligns || []).map((opt) => {
+                        const selected = pdfLayout.title_align === opt.value;
+                        return (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => setLayoutField('title_align', opt.value)}
+                            className={`rounded-lg border px-3 py-2 text-sm ${
+                              selected ? 'border-primary/50 bg-muted/40' : 'border-border hover:bg-muted/20'
+                            }`}
+                            aria-pressed={selected}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+                  <section className="space-y-3">
+                    <p className="text-sm font-medium">Body alignment</p>
+                    <div className="flex flex-wrap gap-2">
+                      {(layoutCatalog.aligns || []).map((opt) => {
+                        const selected = pdfLayout.body_align === opt.value;
+                        return (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => setLayoutField('body_align', opt.value)}
+                            className={`rounded-lg border px-3 py-2 text-sm ${
+                              selected ? 'border-primary/50 bg-muted/40' : 'border-border hover:bg-muted/20'
+                            }`}
+                            aria-pressed={selected}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-lg">Sections</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  <p className="text-sm text-muted-foreground">
+                    Turn printed blocks off to leave them out. Extra details stay off until you include them.
+                    Line items, totals, and patient names stay on.
+                  </p>
+                  {(layoutCatalog.sections || []).map((group) => {
+                    const printed = (group.fields || []).filter((field) => !field.optional);
+                    const optional = (group.fields || []).filter((field) => field.optional);
+                    const renderField = (field) => {
+                      const checked = pdfLayout.sections?.[group.group]?.[field.key] === true;
+                      return (
+                        <label key={field.key} className="flex items-center gap-3 px-3 py-2.5 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            className="w-4 h-4 shrink-0"
+                            checked={checked}
+                            onChange={(e) => setLayoutSection(group.group, field.key, e.target.checked)}
+                          />
+                          <span className="text-sm">{field.label}</span>
+                        </label>
+                      );
+                    };
+                    return (
+                      <section key={group.group} className="space-y-3">
+                        <div>
+                          <p className="text-sm font-medium">{group.label}</p>
+                          {group.hint ? (
+                            <p className="text-xs text-muted-foreground mt-0.5">{group.hint}</p>
+                          ) : null}
+                        </div>
+                        <div className="border rounded-lg divide-y max-w-3xl">
+                          {printed.map(renderField)}
+                        </div>
+                        {optional.length ? (
+                          <div className="space-y-2 max-w-3xl">
+                            <p className="text-xs font-medium text-muted-foreground">Add to the print</p>
+                            <div className="border rounded-lg divide-y">
+                              {optional.map(renderField)}
+                            </div>
+                            {group.group === 'bill' ? (
+                              <p className="text-xs text-muted-foreground">
+                                Aadhaar on inpatient bills still prints from the admission when the number is on file.
+                                This switch adds it to OPD and lab bills.
+                              </p>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </section>
+                    );
+                  })}
+                </CardContent>
+              </Card>
+
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="outline" size="sm" onClick={() => setPdfLayout(mergePdfLayout(null))}>
+                  <RotateCcw className="h-4 w-4 mr-2" />
+                  Use original style
+                </Button>
+                <Button type="button" variant="secondary" size="sm" onClick={() => openPreview('opd_bill', 'OPD Bill')}>
+                  <Eye className="h-4 w-4 mr-2" />
+                  Preview bill
+                </Button>
+                <Button type="button" variant="secondary" size="sm" onClick={() => openPreview('prescription', 'Prescription')}>
+                  <Eye className="h-4 w-4 mr-2" />
+                  Preview prescription
+                </Button>
+                <Button type="button" variant="secondary" size="sm" onClick={() => openPreview('lab_report', 'Lab Report')}>
+                  <Eye className="h-4 w-4 mr-2" />
+                  Preview lab report
+                </Button>
+              </div>
+            </TabsContent>
 
             <TabsContent value="bills" className="mt-4">
               <Card>

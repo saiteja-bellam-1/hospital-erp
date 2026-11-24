@@ -121,6 +121,22 @@ def test_phase1_frontdesk_case_cycle_and_billing(client, seed_data, db_session):
     case_id = case.json()["id"]
     assert case.json()["case_number"].startswith("ART-")
 
+    consent_pdf = client.get(
+        f"/api/art/cases/{case_id}/consent-form.pdf",
+        headers=desk,
+        params={"form_code": "iui_husband"},
+    )
+    assert consent_pdf.status_code == 200, consent_pdf.text
+    assert consent_pdf.content.startswith(b"%PDF")
+    assert "attachment" in consent_pdf.headers["content-disposition"]
+    donor_form = client.get(
+        f"/api/art/cases/{case_id}/consent-form.pdf",
+        headers=desk,
+        params={"form_code": "donor_oocyte"},
+    )
+    assert donor_form.status_code == 400
+    assert "donor bank" in donor_form.json()["detail"].lower()
+
     workup = client.put(f"/api/art/cases/{case_id}/workup", headers=admin, json={
         "infertility_years": 3,
         "amh": 2.1,
@@ -557,6 +573,11 @@ def test_phase3_bank_inside_outside_and_registry(client, seed_data, db_session):
     donor_id = donor.json()["id"]
     code = donor.json()["donor_code"]
     assert donor.json()["legal_name"] == "Private Donor"
+
+    donor_pdf = client.get(f"/api/art/donors/{donor_id}/consent-form.pdf", headers=admin)
+    assert donor_pdf.status_code == 200, donor_pdf.text
+    assert donor_pdf.content.startswith(b"%PDF")
+    assert client.get(f"/api/art/donors/{donor_id}/consent-form.pdf", headers=desk).status_code == 403
 
     codes = client.get("/api/art/donors/codes", headers=desk)
     assert codes.status_code == 200, codes.text

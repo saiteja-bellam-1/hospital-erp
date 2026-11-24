@@ -323,6 +323,8 @@ NEW_COLUMNS = [
     ("admission_discharge_summaries", "transfer_facility", "VARCHAR(200)"),
     ("admission_discharge_summaries", "transfer_reason", "TEXT"),
     ("admission_discharge_summaries", "transfer_contact", "VARCHAR(200)"),
+    # Front-desk expenses saved before categories were a hospital list
+    ("front_desk_expenses", "category_id", "INTEGER REFERENCES front_desk_expense_categories(id)"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.
@@ -408,6 +410,9 @@ def migrate():
             # Get existing columns for this table
             result = conn.execute(text(f"PRAGMA table_info({table})"))
             existing = {row[1] for row in result.fetchall()}
+            if not existing:
+                print(f"  Skip missing table: {table}")
+                continue
 
             if col not in existing:
                 conn.execute(text(

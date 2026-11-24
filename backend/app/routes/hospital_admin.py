@@ -928,6 +928,7 @@ class PrintSettingsUpdate(BaseModel):
     pharmacy_label_settings: Optional[dict] = None
     patient_file_label_settings: Optional[dict] = None
     show_patient_barcode_on_pdfs: Optional[bool] = None
+    pdf_layout: Optional[dict] = None
 
 
 class PrintSettingsPreviewRequest(BaseModel):
@@ -944,6 +945,7 @@ class PrintSettingsPreviewRequest(BaseModel):
     footer_gap_mm: float = 0.0
     report_header_overrides: Optional[dict[str, str]] = None
     report_footer_overrides: Optional[dict[str, str]] = None
+    pdf_layout: Optional[dict] = None
 
 
 @router.post("/print-settings/preview")
@@ -1017,6 +1019,7 @@ async def preview_print_settings(
         footer_gap_mm=data.footer_gap_mm,
         report_header_overrides=data.report_header_overrides,
         report_footer_overrides=data.report_footer_overrides,
+        pdf_layout=data.pdf_layout,
     )
     return Response(
         content=buf.getvalue(),
@@ -1100,6 +1103,7 @@ async def update_print_settings(
         pharmacy_label_settings=data.pharmacy_label_settings,
         patient_file_label_settings=data.patient_file_label_settings,
         show_patient_barcode_on_pdfs=data.show_patient_barcode_on_pdfs,
+        pdf_layout=data.pdf_layout,
         created_by=current_user.id,
     )
     db.commit()
@@ -3086,6 +3090,10 @@ async def get_all_bills(
             "received_by_method": received["by_method"],
             "received_total": received["totals"]["net_collected"],
             "received_refunds": received["totals"]["refunds"],
+            **_front_desk_expense_summary(
+                db, hospital_id, d_from, d_to, bill_type, patient_search, doctor_id, referred_by,
+                float(received["totals"]["net_collected"] or 0),
+            ),
         },
         "doctors": doctor_list,
         "referrals": referral_list,
@@ -3238,6 +3246,9 @@ def _build_billing_export_xlsx(
         ("Cancelled", summary.get("cancelled_count", 0)),
         ("Received (net)", float(summary.get("received_total") or 0)),
     ]
+    if summary.get("expenses_applied"):
+        metrics.append(("Front-desk expenses", float(summary.get("expenses_total") or 0)))
+        metrics.append(("Net after expenses", float(summary.get("net_after_expenses") or 0)))
     for method, amount in (summary.get("received_by_method") or {}).items():
         metrics.append((f"Received — {method}", float(amount or 0)))
     by_type: dict = {}
@@ -4391,6 +4402,35 @@ def _report_auth(current_user: User):
         raise HTTPException(status_code=403, detail="Not authorized to view billing reports")
 
 
+def _collection_report_auth(current_user: User):
+    from app.services.front_desk_expenses import user_can_manage_expenses
+    if not user_can_manage_expenses(current_user):
+        raise HTTPException(status_code=403, detail="Not authorized to view the daily breakdown")
+
+
+def _front_desk_expense_summary(
+    db, hospital_id, d_from, d_to, bill_type, patient_search, doctor_id, referred_by, received_total,
+):
+    """Expenses reduce the unfiltered all-modules receipt total only."""
+    from app.services.front_desk_expenses import expenses_apply, sum_expenses
+    scoped = bool((patient_search or "").strip() or doctor_id or (referred_by or "").strip())
+    apply = expenses_apply(bill_type, None) and not scoped
+    spent = 0.0
+    if apply:
+        try:
+            spent = sum_expenses(
+                db, hospital_id, date.fromisoformat(d_from), date.fromisoformat(d_to),
+            )
+        except ValueError:
+            apply = False
+            spent = 0.0
+    return {
+        "expenses_applied": apply,
+        "expenses_total": spent,
+        "net_after_expenses": round(float(received_total or 0) - spent, 2),
+    }
+
+
 def _parse_date_range(date_from: Optional[str], date_to: Optional[str]):
     today = datetime.now().date()
     d_to = datetime.strptime(date_to, "%Y-%m-%d").date() if date_to else today
@@ -4437,16 +4477,25 @@ async def report_daily_collection(
     Includes the central payment ledger plus tills that store the tender on
     their own rows (OPD, lab, pharmacy cash, canteen, admission deposits).
     Refund rows net against collections so the row reflects net cash in.
+    Front-desk expenses are deducted from the all-modules total.
     """
-    _report_auth(current_user)
+    _collection_report_auth(current_user)
     d_from, d_to = _parse_date_range(date_from, date_to)
     from app.services.collection_by_method import collection_by_method, sources_for
-    return collection_by_method(
+    from app.services.front_desk_expenses import attach_front_desk_expenses
+    payload = collection_by_method(
         db,
         current_user.hospital_id,
         d_from,
         d_to,
         sources=sources_for(module=module),
+        patient_id=patient_id,
+    )
+    return attach_front_desk_expenses(
+        db,
+        current_user.hospital_id,
+        payload,
+        module=module,
         patient_id=patient_id,
     )
 
@@ -4460,10 +4509,11 @@ async def report_doctor_revenue(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Revenue per doctor for consults, admissions, outpatient lab, and counter pharmacy.
+    """Revenue per doctor for consults, admissions, outpatient lab, and pharmacy.
 
-    Lab orders and pharmacy sales already posted to an admission bill stay inside
-    admission revenue. The pharmacy_ip module shows those inpatient sales on their own.
+    Lab posted to an admission stays inside admission revenue. Pharmacy posted to
+    an admission is Pharmacy (IP), and that amount is taken out of the admission
+    column. The pharmacy_ip module shows only those inpatient sales.
     """
     _report_auth(current_user)
     d_from, d_to = _parse_date_range(date_from, date_to)
@@ -6084,6 +6134,8 @@ async def get_bill_pdf(
         "logo_url": getattr(hospital, "logo_url", "") if hospital else "",
         "hospital_subname": getattr(hospital, "hospital_subname", "") if hospital else "",
     }
+    from app.utils.pdf_layout import stamp_patient_pdf_fields
+    stamp_patient_pdf_fields(bill_data, patient)
     buf = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'opd_bill'))
     return Response(content=buf.getvalue(), media_type="application/pdf",
                     headers={"Content-Disposition": f'inline; filename="{bill.bill_number}.pdf"'})

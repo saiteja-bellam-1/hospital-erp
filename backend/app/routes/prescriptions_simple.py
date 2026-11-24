@@ -8,6 +8,7 @@ import uuid
 
 from config.database import get_db
 from app.utils.pdf_settings import pdf_gen_kwargs
+from app.utils.pdf_layout import extra_patient_pdf_fields
 from app.models.prescriptions_simple import SimplePrescription
 from app.models.patient import Patient
 from app.models.user import User
@@ -460,6 +461,23 @@ def _hospital_info_for_pdf(db: Session, hospital_id: int) -> dict:
     }
 
 
+def _active_allergy_names(db: Optional[Session], patient: Patient) -> str:
+    if db is None or patient is None:
+        return ""
+    from app.models.patient import PatientAllergy
+    rows = (
+        db.query(PatientAllergy)
+        .filter(PatientAllergy.patient_id == patient.id, PatientAllergy.is_active == True)
+        .all()
+    )
+    names = []
+    for row in rows:
+        allergen = (row.allergen or "").strip()
+        if allergen and allergen not in names:
+            names.append(allergen)
+    return ", ".join(names)
+
+
 def _build_patient_prescription_fields(patient: Patient, db: Optional[Session] = None) -> dict:
     """Patient fields shared by filled and blank prescription PDFs."""
     mrn_ean13 = getattr(patient, "mrn_ean13", None) or ""
@@ -484,6 +502,8 @@ def _build_patient_prescription_fields(patient: Patient, db: Optional[Session] =
         "address_line1": patient.address_line1 or "",
         "address_line2": patient.address_line2 or "",
         "patient_id_display": patient.patient_id,
+        **extra_patient_pdf_fields(patient),
+        "allergies": _active_allergy_names(db, patient),
     }
 
 
@@ -1084,6 +1104,11 @@ async def download_prescription_pdf(
         "patient_gender": patient_gender,
         "patient_phone": patient_phone,
         "patient_blood_group": patient_blood_group,
+        "patient_email": patient_fields.get("patient_email", "") if patient else "",
+        "aadhaar_number": patient_fields.get("aadhaar_number", "") if patient else "",
+        "abha_id": patient_fields.get("abha_id", "") if patient else "",
+        "emergency_contact": patient_fields.get("emergency_contact", "") if patient else "",
+        "allergies": patient_fields.get("allergies", "") if patient else "",
         "mrn": patient_fields.get("mrn", "") if patient else "",
         "mrn_ean13": patient_fields.get("mrn_ean13", "") if patient else "",
         "village": patient_fields.get("village", "") if patient else "",

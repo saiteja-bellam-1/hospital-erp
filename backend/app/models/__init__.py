@@ -13,6 +13,7 @@ from .ehr import Consultation, Diagnosis, TreatmentPlan, MedicalNote
 from .outpatient import Appointment, OutpatientVisit
 from .inpatient import Admission, RoomManagement, DischargeRecord
 from .settlement import Settlement, SettlementConfig
+from .expense import FrontDeskExpense  # noqa: F401
 from .system import SystemModule, SystemSettings
 from .physiotherapy import (  # noqa: F401 — register physio mappers with Base
     PhysioService,

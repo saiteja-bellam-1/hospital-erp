@@ -1641,6 +1641,8 @@ async def download_appointment_bill(
     }
 
     # Generate PDF
+    from app.utils.pdf_layout import stamp_patient_pdf_fields
+    stamp_patient_pdf_fields(bill_data, patient)
     pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'opd_bill'))
 
     return StreamingResponse(

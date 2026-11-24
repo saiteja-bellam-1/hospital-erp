@@ -768,3 +768,285 @@ def test_generate_bill_pdf_with_patient_barcode(db_session):
     assert on_buf.getvalue()[:4] == b"%PDF"
     assert off_buf.getvalue()[:4] == b"%PDF"
     assert len(on_buf.getvalue()) > len(off_buf.getvalue())
+
+
+def _pdf_text(buf):
+    from io import BytesIO
+    from PyPDF2 import PdfReader
+
+    reader = PdfReader(BytesIO(buf.getvalue()))
+    return "\n".join((page.extract_text() or "") for page in reader.pages)
+
+
+def _pdf_font_names(buf):
+    from io import BytesIO
+    from PyPDF2 import PdfReader
+
+    reader = PdfReader(BytesIO(buf.getvalue()))
+    names = []
+    font = reader.pages[0].get("/Resources", {}).get("/Font", {})
+    if hasattr(font, "get_object"):
+        font = font.get_object()
+    for ref in font.values():
+        obj = ref.get_object() if hasattr(ref, "get_object") else ref
+        names.append(str(obj.get("/BaseFont", "")))
+    return names
+
+
+def test_pdf_layout_defaults_match_current_print(db_session):
+    from app.utils.pdf_layout import default_pdf_layout
+    from app.utils.pdf_settings import get_pdf_layout
+
+    layout = get_pdf_layout(db_session, 1)
+    assert layout.to_dict() == default_pdf_layout().to_dict()
+    assert layout.style_is_default
+    assert layout.format_is_default
+    assert layout.section_on("bill", "phone") is True
+    assert layout.section_on("bill", "email") is False
+    assert layout.section_on("bill", "quantity") is False
+    assert layout.rhythm_is_default
+    assert layout.align_is_default
+
+
+def test_update_print_settings_persists_pdf_layout(db_session):
+    payload = update_print_settings(
+        db_session,
+        1,
+        pdf_layout={
+            "typeface": "times",
+            "size": "large",
+            "accent": "navy",
+            "paper": "letter",
+            "margins": "wide",
+            "sections": {"bill": {"phone": False, "not_a_field": False}},
+            "ignored": True,
+        },
+        created_by=1,
+    )
+    layout = payload["pdf_layout"]
+    assert layout["typeface"] == "times"
+    assert layout["size"] == "large"
+    assert layout["accent"] == "navy"
+    assert layout["paper"] == "letter"
+    assert layout["margins"] == "wide"
+    assert layout["sections"]["bill"]["phone"] is False
+    assert layout["sections"]["bill"]["address"] is True
+    assert layout["sections"]["bill"]["quantity"] is False
+    assert layout["sections"]["bill"]["email"] is False
+    assert layout["spacing"] == "standard"
+    assert layout["title_align"] == "center"
+    assert layout["body_align"] == "left"
+    assert "not_a_field" not in layout["sections"]["bill"]
+    assert "ignored" not in layout
+    assert any(item["value"] == "times" for item in payload["pdf_layout_catalog"]["typefaces"])
+
+
+def test_bill_pdf_hides_selected_sections():
+    from app.utils.pdf_layout import normalize_pdf_layout
+    from app.utils.pdf_service import PDFService
+
+    try:
+        from PyPDF2 import PdfReader  # noqa: F401
+    except ImportError:
+        pytest.skip("PyPDF2 not installed")
+
+    svc = PDFService()
+    bill = {
+        "bill_number": "T-LAYOUT-1",
+        "bill_date": "2026-01-01T00:00:00",
+        "patient_name": "Layout Patient",
+        "patient_phone": "9990001111",
+        "token_number": "42",
+        "payment_method": "Cash",
+        "doctor_name": "Dr Layout",
+        "items": [{"item_name": "Consultation", "item_code": "CONSULT", "total_price": 500}],
+        "subtotal": 500,
+        "discount_amount": 0,
+        "total_amount": 500,
+        "amount_paid": 500,
+        "balance_due": 0,
+    }
+    hi = {"name": "Test Hospital", "address": "1 Road", "phone": "", "email": ""}
+    hidden = normalize_pdf_layout({
+        "sections": {
+            "bill": {
+                "phone": False,
+                "token": False,
+                "item_code": False,
+                "referral": False,
+                "amount_in_words": False,
+            }
+        }
+    })
+    text = _pdf_text(svc.generate_bill_pdf(
+        bill, hi, include_header=False, pdf_layout=hidden,
+    ))
+    assert "Layout Patient" in text
+    assert "9990001111" not in text
+    assert "TOKEN" not in text
+    assert "CONSULT" not in text
+    assert "Dr Layout" not in text
+    assert "In words" not in text
+    assert "500.00" in text
+
+
+def test_pdf_layout_changes_paper_typeface_and_margins(monkeypatch):
+    from app.utils.pdf_layout import normalize_pdf_layout
+    from app.utils.pdf_service import PDFService, SimpleDocTemplate
+
+    try:
+        from PyPDF2 import PdfReader  # noqa: F401
+    except ImportError:
+        pytest.skip("PyPDF2 not installed")
+
+    captured = {}
+    real = SimpleDocTemplate
+
+    def wrapper(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr("app.utils.pdf_service.SimpleDocTemplate", wrapper)
+    svc = PDFService()
+    bill = {
+        "bill_number": "T-LAYOUT-2",
+        "bill_date": "2026-01-01T00:00:00",
+        "patient_name": "Layout Patient",
+        "payment_method": "Cash",
+        "items": [{"item_name": "Consultation", "item_code": "C", "total_price": 500}],
+        "subtotal": 500,
+        "discount_amount": 0,
+        "total_amount": 500,
+        "amount_paid": 500,
+        "balance_due": 0,
+    }
+    hi = {"name": "Test Hospital", "address": "", "phone": "", "email": ""}
+    layout = normalize_pdf_layout({
+        "typeface": "times",
+        "size": "large",
+        "accent": "teal",
+        "paper": "letter",
+        "margins": "wide",
+    })
+    buf = svc.generate_bill_pdf(bill, hi, include_header=True, pdf_layout=layout)
+    assert captured["pagesize"][0] == pytest.approx(612, abs=1)
+    assert captured["leftMargin"] == pytest.approx(30 * 1.35)
+    assert captured["rightMargin"] == pytest.approx(30 * 1.35)
+    from io import BytesIO
+    from PyPDF2 import PdfReader
+    page = PdfReader(BytesIO(buf.getvalue())).pages[0]
+    assert float(page.mediabox.width) == pytest.approx(612, abs=1)
+    fonts = " ".join(_pdf_font_names(buf))
+    assert "Times" in fonts
+
+
+def test_prescription_pdf_hides_diagnosis_and_signature():
+    from app.utils.pdf_layout import normalize_pdf_layout
+    from app.utils.pdf_service import PDFService
+
+    try:
+        from PyPDF2 import PdfReader  # noqa: F401
+    except ImportError:
+        pytest.skip("PyPDF2 not installed")
+
+    svc = PDFService()
+    rx = {
+        "prescription_number": "RX-1",
+        "prescription_date": "2026-01-01T00:00:00",
+        "patient_name": "Rx Patient",
+        "patient_age": 30,
+        "patient_gender": "F",
+        "doctor_name": "Dr Signer",
+        "diagnosis": "UniqueDiagnosisPhrase",
+        "notes": "UniqueInstructionPhrase",
+        "items": [{
+            "medicine_name": "UniqueMedicinePhrase",
+            "dosage": "1",
+            "duration": "5 days",
+            "frequency_schedule": "1-0-1",
+        }],
+    }
+    hi = {"name": "Test Hospital", "address": "", "phone": "", "email": ""}
+    layout = normalize_pdf_layout({
+        "sections": {
+            "prescription": {
+                "diagnosis": False,
+                "medicines": False,
+                "instructions": False,
+                "signature": False,
+            }
+        }
+    })
+    text = _pdf_text(svc.generate_prescription_pdf(rx, hi, include_header=False, pdf_layout=layout))
+    assert "Rx Patient" in text
+    assert "UniqueDiagnosisPhrase" not in text
+    assert "UniqueMedicinePhrase" not in text
+    assert "UniqueInstructionPhrase" not in text
+    assert "Rx Patient" in text
+
+
+def test_optional_bill_fields_stay_off_until_enabled():
+    from app.utils.pdf_layout import normalize_pdf_layout
+    from app.utils.pdf_service import PDFService
+
+    try:
+        from PyPDF2 import PdfReader  # noqa: F401
+    except ImportError:
+        pytest.skip("PyPDF2 not installed")
+
+    svc = PDFService()
+    bill = {
+        "bill_number": "T-EXTRA-1",
+        "bill_date": "2026-01-01T00:00:00",
+        "patient_name": "Extra Patient",
+        "patient_email": "extra.patient@example.com",
+        "patient_phone": "9990001111",
+        "items": [{"item_name": "Consultation", "item_code": "CONSULT", "quantity": 3, "total_price": 500}],
+        "subtotal": 500,
+        "discount_amount": 0,
+        "total_amount": 500,
+        "amount_paid": 500,
+        "balance_due": 0,
+    }
+    hi = {"name": "Test Hospital", "address": "", "phone": "", "email": ""}
+    plain = _pdf_text(svc.generate_bill_pdf(bill, hi, include_header=False))
+    assert "extra.patient@example.com" not in plain
+    assert "Qty" not in plain
+
+    shown = normalize_pdf_layout({"sections": {"bill": {"email": True, "quantity": True}}})
+    text = _pdf_text(svc.generate_bill_pdf(bill, hi, include_header=False, pdf_layout=shown))
+    assert "extra.patient@example.com" in text
+    assert "Qty" in text
+    assert "3" in text
+
+
+def test_roomy_spacing_scales_small_gaps_only(monkeypatch):
+    from app.utils import pdf_service as mod
+    from app.utils.pdf_layout import normalize_pdf_layout
+    from app.utils.pdf_service import PDFService
+
+    heights = []
+    real = mod._RLSpacer
+
+    def wrapper(width, height, *args, **kwargs):
+        heights.append(height)
+        return real(width, height, *args, **kwargs)
+
+    monkeypatch.setattr(mod, "_RLSpacer", wrapper)
+    svc = PDFService()
+    bill = {
+        "bill_number": "T-SPACE-1",
+        "bill_date": "2026-01-01T00:00:00",
+        "patient_name": "Space Patient",
+        "items": [{"item_name": "Consultation", "total_price": 100}],
+        "subtotal": 100,
+        "discount_amount": 0,
+        "total_amount": 100,
+        "amount_paid": 0,
+        "balance_due": 100,
+    }
+    hi = {"name": "Test Hospital", "address": "", "phone": "", "email": ""}
+    layout = normalize_pdf_layout({"spacing": "roomy"})
+    svc.generate_bill_pdf(bill, hi, include_header=False, letterhead_gap_pt=100, pdf_layout=layout)
+    assert any(abs(h - 100) < 0.1 for h in heights)
+    assert any(abs(h - (6 * 1.7)) < 0.2 for h in heights)

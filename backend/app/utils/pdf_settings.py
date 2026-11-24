@@ -9,6 +9,12 @@ from sqlalchemy.orm import Session
 
 from app.models.permissions import HospitalSettings
 from app.utils.barcode_draw import DEFAULT_LABEL_DPI, normalize_label_dpi
+from app.utils.pdf_layout import (
+    PDF_LAYOUT_CATALOG,
+    PdfLayout,
+    default_pdf_layout,
+    normalize_pdf_layout,
+)
 
 PRINT_SETTING_CATEGORY = "print"
 PRINT_INCLUDE_HEADER_KEY = "include_header_on_pdfs"
@@ -32,6 +38,7 @@ PRINT_LAB_LABEL_SETTINGS_KEY = "lab_label_settings"
 PRINT_PHARMACY_LABEL_SETTINGS_KEY = "pharmacy_label_settings"
 PRINT_PATIENT_FILE_LABEL_SETTINGS_KEY = "patient_file_label_settings"
 PRINT_SHOW_PATIENT_BARCODE_KEY = "show_patient_barcode_on_pdfs"
+PRINT_PDF_LAYOUT_KEY = "pdf_layout"
 
 # Report types that may draw the patient MRN Code128 barcode in the demographics box.
 PATIENT_BARCODE_REPORT_KEYS = frozenset({"prescription", "lab_report", "opd_bill", "lab_bill"})
@@ -820,6 +827,8 @@ def get_print_settings_payload(db: Session, hospital_id: int | None) -> dict[str
         "pharmacy_label_settings": get_pharmacy_label_settings(db, hospital_id),
         "patient_file_label_settings": get_patient_file_label_settings(db, hospital_id),
         "show_patient_barcode_on_pdfs": get_show_patient_barcode_on_pdfs(db, hospital_id),
+        "pdf_layout": get_pdf_layout(db, hospital_id).to_dict(),
+        "pdf_layout_catalog": PDF_LAYOUT_CATALOG,
         "label_sheet_modes": sorted(LABEL_SHEET_MODES),
         "label_dim_min_mm": MIN_LABEL_DIM_MM,
         "label_dim_max_mm": MAX_LABEL_DIM_MM,
@@ -1017,6 +1026,7 @@ def pdf_gen_kwargs(
         )
     if report_type in PATIENT_BARCODE_REPORT_KEYS:
         kw["show_patient_barcode"] = get_show_patient_barcode_on_pdfs(db, hospital_id)
+    kw["pdf_layout"] = get_pdf_layout(db, hospital_id)
     return kw
 
 
@@ -1056,6 +1066,7 @@ def update_print_settings(
     pharmacy_label_settings: dict[str, Any] | None = None,
     patient_file_label_settings: dict[str, Any] | None = None,
     show_patient_barcode_on_pdfs: bool | None = None,
+    pdf_layout: dict[str, Any] | None = None,
     created_by: int | None = None,
 ) -> dict[str, Any]:
     if include_header_on_pdfs is not None:
@@ -1116,4 +1127,35 @@ def update_print_settings(
         set_patient_file_label_settings(
             db, patient_file_label_settings, created_by=created_by
         )
+    if pdf_layout is not None:
+        set_pdf_layout(db, pdf_layout, created_by=created_by)
     return get_print_settings_payload(db, hospital_id)
+
+
+def get_pdf_layout(db: Session, hospital_id: int | None) -> PdfLayout:
+    row = _get_setting_row(db, PRINT_PDF_LAYOUT_KEY)
+    if row is None or not row.setting_value:
+        return default_pdf_layout()
+    try:
+        payload = json.loads(row.setting_value)
+    except (TypeError, json.JSONDecodeError):
+        return default_pdf_layout()
+    return normalize_pdf_layout(payload)
+
+
+def set_pdf_layout(
+    db: Session,
+    layout: dict[str, Any],
+    created_by: int | None = None,
+) -> dict[str, Any]:
+    cleaned = normalize_pdf_layout(layout).to_dict()
+    _upsert_setting(
+        db,
+        key=PRINT_PDF_LAYOUT_KEY,
+        value=json.dumps(cleaned),
+        setting_type="json",
+        description="Hospital PDF style, paper format, and section visibility",
+        created_by=created_by,
+    )
+    db.flush()
+    return cleaned

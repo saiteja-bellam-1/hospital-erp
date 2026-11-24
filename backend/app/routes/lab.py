@@ -11,6 +11,7 @@ import io
 
 from config.database import get_db
 from app.utils.pdf_settings import bill_pdf_gen_kwargs, pdf_gen_kwargs, get_lab_label_settings
+from app.utils.pdf_layout import extra_patient_pdf_fields, stamp_patient_pdf_fields
 from app.services.barcode_service import (
     ensure_patient_mrn_ean13,
     ensure_sample_ean13_for_order,
@@ -852,7 +853,9 @@ def _build_report_response(report: LabReport, db: Session) -> dict:
         "report_date": report.report_date,
         "sample_id": order.sample_id or "",
         "interpretation": report.interpretation,
-        "results": results
+        "sample_type": _sample_type_label(test) or "",
+        "results": results,
+        **extra_patient_pdf_fields(patient),
     }
 
 # ============================================================
@@ -1743,6 +1746,7 @@ async def reception_book_lab_tests(
 
     from fastapi.responses import StreamingResponse
     order_ids = ",".join(str(o.id) for o in orders)
+    stamp_patient_pdf_fields(bill_data, patient)
     pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
     filename = f"lab_bill_{bill_data['bill_number']}.pdf"
     return StreamingResponse(pdf_buffer, media_type="application/pdf",
@@ -2291,6 +2295,7 @@ async def download_order_bill(
 
     from app.utils.pdf_service import pdf_service
     from fastapi.responses import StreamingResponse
+    stamp_patient_pdf_fields(bill_data, patient)
     pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
     filename = f"lab_bill_{order.order_number}.pdf"
     return StreamingResponse(pdf_buffer, media_type="application/pdf",
@@ -2379,6 +2384,7 @@ async def regenerate_lab_bill(
 
     from app.utils.pdf_service import pdf_service
     from fastapi.responses import StreamingResponse
+    stamp_patient_pdf_fields(bill_data, patient)
     pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
     return StreamingResponse(pdf_buffer, media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename=lab_bill.pdf"})
@@ -2486,6 +2492,7 @@ async def download_grouped_lab_bill(
 
     from app.utils.pdf_service import pdf_service
     from fastapi.responses import StreamingResponse
+    stamp_patient_pdf_fields(bill_data, patient)
     pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
     filename = f"lab_bill_{bill_number}.pdf"
     return StreamingResponse(pdf_buffer, media_type="application/pdf",
@@ -2651,6 +2658,7 @@ async def generate_lab_bill(
 
     try:
         order_ids_str = ",".join(str(o.id) for o in orders)
+        stamp_patient_pdf_fields(bill_data, patient)
         pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
         filename = f"lab_bill_{bill_number}.pdf"
         return StreamingResponse(
@@ -3819,6 +3827,7 @@ async def book_package(
 
     try:
         order_ids = ",".join(str(o.id) for o in orders)
+        stamp_patient_pdf_fields(bill_data, patient)
         pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
         filename = f"lab_package_bill_{bill_number}.pdf"
         return StreamingResponse(

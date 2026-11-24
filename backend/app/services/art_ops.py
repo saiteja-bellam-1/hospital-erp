@@ -48,6 +48,183 @@ PROCEDURE_CONSENT = {
     "freeze_gamete": "gamete_freeze",
 }
 
+# The donor's own consent is printed from the bank file, where the legal name is kept.
+DONOR_CONSENT_CODES = {"donor_sperm": "sperm", "donor_oocyte": "oocyte"}
+
+CONSENT_BODY = {
+    "couple_treatment": [
+        "We have been told, in language we understand, what this treatment involves, the chance of a pregnancy, and the main risks. Those risks include no pregnancy, a multiple pregnancy, infection, bleeding, and ovarian hyperstimulation.",
+        "We agree to treatment at this registered clinic. The sex of an embryo will not be selected.",
+        "We may withdraw this consent before the procedure. Once an embryo has been created, withdrawal follows the written instructions already given for storage or discard.",
+    ],
+    "iui_husband": [
+        "I agree to intrauterine insemination using sperm from the husband or partner named on this form, after the sample is prepared.",
+        "This does not guarantee a pregnancy. The sample is used only for the people named here.",
+    ],
+    "iui_donor": [
+        "We agree to intrauterine insemination with donor sperm. The donor is identified on this chart only by a donor code. We will not be told the donor's name, and the donor will not be told ours.",
+        "The donor has no parental rights over a child born from this treatment. The sample is used only after the required infection screen is clear.",
+    ],
+    "embryo_freeze": [
+        "We agree that embryos from this treatment may be frozen and stored at this clinic.",
+        "Storage is reviewed every year. Unused embryos cannot be given to another couple. If storage is not renewed, or if we sign a discard form, the clinic follows that instruction.",
+        "What should happen if one of us dies or cannot decide is written on the separate storage form. That form is part of this consent.",
+    ],
+    "gamete_freeze": [
+        "I agree that my eggs or sperm may be frozen and stored at this clinic.",
+        "They will not be used to create an embryo, and will not be given to anyone else, unless I sign a later consent that says so.",
+        "Storage is reviewed every year. Samples kept because of cancer treatment may be stored for the longer period allowed for that purpose.",
+    ],
+    "parental_assent": [
+        "I am the parent or lawful guardian of the person named on this form. I agree that their eggs or sperm may be frozen before treatment that may affect their fertility.",
+        "The samples stay in that person's name. They are not used, and not given to anyone else, unless that person signs their own consent when they are able to decide.",
+    ],
+    "oocyte_retrieval": [
+        "I agree to egg collection under anaesthesia or sedation, as explained to me.",
+        "I understand the risks, including bleeding, infection, injury to nearby organs, and a reaction to the medicines.",
+        "The number of eggs collected is written on the procedure record. Eggs are not used except as this consent, and any later consent, allow.",
+    ],
+    "donor_sperm": [
+        "I am donating sperm to this registered bank. I have completed the infection screen required before a donation can be cleared.",
+        "I give up any claim to be treated as a parent of a child born from this donation. My name stays in the bank file. The recipient's chart shows only my donor code.",
+        "I may withdraw this consent before a sample is issued.",
+    ],
+    "donor_oocyte": [
+        "I am donating eggs to this registered bank. I have been told about the stimulation medicines and about egg collection, including the risks.",
+        "Insurance for this donation covers at least 12 months from the collection. I have been told the intended number of eggs is not more than 7. The number actually collected is still recorded.",
+        "I give up any claim to be treated as a parent of a child born from these eggs. My name stays in the bank file. The recipient's chart shows only my donor code.",
+        "I may withdraw this consent before the eggs are collected.",
+    ],
+    "death_incapacity": [
+        "If one of the people named here dies, or cannot decide, the stored eggs, sperm, or embryos are handled as marked below.",
+        "This instruction does not allow the samples to be given to a different couple.",
+    ],
+    "withdrawal": [
+        "We withdraw the consents previously signed for this case.",
+        "Withdrawal applies to treatment that has not yet been carried out. Embryos already created are handled under the storage and discard instructions already signed.",
+    ],
+    "discard": [
+        "We instruct this clinic to discard the eggs, sperm, or embryos identified on this form.",
+        "Once discarded they cannot be restored. They will not be used for treatment and will not be given to anyone else.",
+    ],
+}
+
+DEATH_CHOICES = [
+    "Continue storage until the renewal date",
+    "Discard the stored samples",
+    "Use them only as both people have already agreed in writing",
+]
+
+
+def _age_years(born, stored_age) -> str:
+    if born:
+        today = date.today()
+        years = today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+        return str(years)
+    if stored_age is not None:
+        return str(stored_age)
+    return ""
+
+
+def _patient_address(patient: Patient) -> str:
+    parts = [
+        patient.address_line1, patient.address_line2, patient.village,
+        patient.mandal, patient.district,
+    ]
+    joined = ", ".join(part.strip() for part in parts if part and str(part).strip())
+    if joined:
+        return joined
+    return (patient.address or "").strip()
+
+
+def _person_fields(patient: Patient, role: str) -> list[tuple[str, str]]:
+    rows = [(role, f"{patient.first_name} {patient.last_name}".strip())]
+    age = _age_years(patient.date_of_birth, patient.age)
+    if age:
+        rows.append(("Age", age))
+    if patient.mrn:
+        rows.append(("MRN", patient.mrn))
+    if patient.primary_phone:
+        rows.append(("Phone", patient.primary_phone))
+    address = _patient_address(patient)
+    if address:
+        rows.append(("Address", address))
+    return rows
+
+
+def _clinic_fields(centre: ArtCentre, reference_label: str, reference: str) -> list[tuple[str, str]]:
+    level = "IVF, ICSI, and the embryology lab" if centre.clinic_level >= 2 else "Investigations and IUI"
+    rows = [
+        ("Clinic registration", centre.clinic_registration_no or "Not recorded"),
+        ("Clinic is registered for", level),
+        ("Clinic director", centre.director_name or "Not recorded"),
+        (reference_label, reference),
+    ]
+    if centre.bank_registration_no:
+        rows.append(("Bank registration", centre.bank_registration_no))
+    return rows
+
+
+def case_consent_document(case: ArtCase, centre: ArtCentre, form_code: str) -> dict:
+    """Unsigned consent for a couple or woman. Donor identity is not included."""
+    if form_code in DONOR_CONSENT_CODES:
+        raise HTTPException(
+            status_code=400,
+            detail="Download the donor's own consent from the donor bank. The donor's name is not kept on the patient chart.",
+        )
+    titles = dict(CONSENT_FORMS)
+    if form_code not in titles:
+        raise HTTPException(status_code=400, detail="Unknown consent form.")
+    fields = _clinic_fields(centre, "Case number", case.case_number)
+    fields.extend(_person_fields(case.woman, "Woman"))
+    signers = [{"role": "Woman", "name": f"{case.woman.first_name} {case.woman.last_name}".strip()}]
+    if case.case_type == "couple" and case.partner:
+        fields.extend(_person_fields(case.partner, "Husband or partner"))
+        signers.append({
+            "role": "Husband or partner",
+            "name": f"{case.partner.first_name} {case.partner.last_name}".strip(),
+        })
+    if form_code == "parental_assent":
+        signers = [{"role": "Parent or guardian", "name": ""}]
+    signers.extend([
+        {"role": "Witness", "name": ""},
+        {"role": "Doctor or counsellor", "name": ""},
+    ])
+    return {
+        "title": titles[form_code],
+        "reference": case.case_number,
+        "fields": fields,
+        "paragraphs": CONSENT_BODY[form_code],
+        "choices": DEATH_CHOICES if form_code == "death_incapacity" else [],
+        "signers": signers,
+    }
+
+
+def donor_consent_document(donor: ArtDonor, centre: ArtCentre) -> dict:
+    form_code = "donor_oocyte" if donor.donor_type == "oocyte" else "donor_sperm"
+    titles = dict(CONSENT_FORMS)
+    fields = _clinic_fields(centre, "Donor code", donor.donor_code)
+    fields.append(("Donor's name", donor.legal_name))
+    age = _age_years(donor.date_of_birth, None)
+    if age:
+        fields.append(("Age", age))
+    if donor.phone:
+        fields.append(("Phone", donor.phone))
+    if donor.address:
+        fields.append(("Address", donor.address))
+    return {
+        "title": titles[form_code],
+        "reference": donor.donor_code,
+        "fields": fields,
+        "paragraphs": CONSENT_BODY[form_code],
+        "choices": [],
+        "signers": [
+            {"role": "Donor", "name": donor.legal_name},
+            {"role": "Witness", "name": ""},
+            {"role": "Bank officer", "name": ""},
+        ],
+    }
+
 
 def level2_licensed(db: Session) -> bool:
     """Level 2 lab is open when no licence filter exists, or the grant lists art_lab."""

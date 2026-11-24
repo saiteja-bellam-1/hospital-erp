@@ -61,6 +61,7 @@ const PrintSettingsPreviewDialog = ({
           footer_gap_mm: footerGap,
           report_header_overrides: draftSettings.overrides || {},
           report_footer_overrides: draftSettings.footerOverrides || {},
+          pdf_layout: draftSettings.pdfLayout || null,
         },
         { responseType: 'blob' }
       );

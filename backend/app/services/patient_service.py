@@ -11,8 +11,89 @@ from app.utils.patient_age import compute_age_parts_from_dob
 from app.services.barcode_service import barcode_lookup_codes
 
 
-def patient_search_match_clause(search_term: str):
-    """OR clause: name / phone / id / MRN text / patient MRN barcode."""
+def _admission_search_predicates(term: str):
+    """Match an inpatient stay by admission number or numeric admission id.
+
+    Short digit strings match Admission.id only. A contains-match on
+    ADM-YYYYMMDD-NNNN would treat "1" as every admission whose date contains 1.
+    """
+    from sqlalchemy import select
+    from app.models.inpatient import Admission
+
+    compact = (term or "").strip()
+    if not compact:
+        return None
+    predicates = []
+    upper = compact.upper()
+    digits_only = compact.isdigit()
+    has_digit = any(ch.isdigit() for ch in compact)
+    # "ADM-" alone would match every stay. Require a digit so typeahead
+    # starts narrowing at ADM-2… / 20261124-0001 / 0007.
+    number_fragment = (
+        (upper.startswith("ADM") or "-" in compact) and len(compact) >= 4 and has_digit
+    )
+    if number_fragment or (digits_only and len(compact) >= 4):
+        predicates.append(Admission.admission_number.ilike(f"%{compact}%"))
+    if digits_only:
+        try:
+            admission_pk = int(compact)
+        except ValueError:
+            admission_pk = None
+        if admission_pk and admission_pk > 0:
+            predicates.append(Admission.id == admission_pk)
+    if not predicates:
+        return None
+    return select(Admission.patient_id).where(or_(*predicates))
+
+
+def admission_term_matches(admission_id, admission_number, term: str) -> bool:
+    """Same rules as _admission_search_predicates, for picking a row to display."""
+    compact = (term or "").strip()
+    if not compact:
+        return False
+    upper = compact.upper()
+    number = (admission_number or "").upper()
+    digits_only = compact.isdigit()
+    has_digit = any(ch.isdigit() for ch in compact)
+    if (
+        ((upper.startswith("ADM") or "-" in compact) and len(compact) >= 4 and has_digit)
+        or (digits_only and len(compact) >= 4)
+    ):
+        if upper in number:
+            return True
+    if digits_only:
+        try:
+            if int(compact) > 0 and int(compact) == admission_id:
+                return True
+        except ValueError:
+            return False
+    return False
+
+
+def _pick_admission(admissions, term: str):
+    """Prefer the stay the search hit. Otherwise the current admission."""
+    if not admissions:
+        return None
+    hits = [
+        adm for adm in admissions
+        if admission_term_matches(adm.id, adm.admission_number, term)
+    ]
+    if hits:
+        hits.sort(key=lambda adm: (adm.status == "admitted", adm.id or 0), reverse=True)
+        return hits[0]
+    active = [adm for adm in admissions if adm.status == "admitted"]
+    if not active:
+        return None
+    active.sort(key=lambda adm: adm.id or 0, reverse=True)
+    return active[0]
+
+
+def patient_search_match_clause(search_term: str, include_admissions: bool = False):
+    """OR clause: name / phone / id / MRN text / patient MRN barcode.
+
+    include_admissions also matches inpatient admission number (ADM-…) and
+    the numeric admission id. Used by the pharmacy sales counter.
+    """
     term = (search_term or "").strip()
     if not term:
         return True
@@ -31,6 +112,10 @@ def patient_search_match_clause(search_term: str):
         clauses.append(Patient.aadhaar_number == aadhaar_digits)
     for code in barcode_lookup_codes(term):
         clauses.append(Patient.mrn_ean13 == code)
+    if include_admissions:
+        admission_ids = _admission_search_predicates(term)
+        if admission_ids is not None:
+            clauses.append(Patient.id.in_(admission_ids))
     return or_(*clauses)
 
 def _next_mrn_for(db: Session, hospital_id: int) -> str:
@@ -164,6 +249,29 @@ class PatientService:
         if (search_term or "").strip():
             query = query.filter(patient_search_match_clause(search_term))
         return query.all()
+
+    def _attach_admission_matches(self, patient_data: List[Dict], search_term: str) -> None:
+        """Stamp the stay the counter should show: the matched admission, else the active one."""
+        from app.models.inpatient import Admission
+
+        ids = [p["id"] for p in patient_data if p.get("id")]
+        if not ids:
+            return
+        rows = (
+            self.db.query(Admission)
+            .filter(Admission.patient_id.in_(ids))
+            .all()
+        )
+        grouped: Dict[int, List] = {}
+        for row in rows:
+            grouped.setdefault(row.patient_id, []).append(row)
+        for patient in patient_data:
+            chosen = _pick_admission(grouped.get(patient["id"]) or [], search_term)
+            if not chosen:
+                continue
+            patient["admission_id"] = chosen.id
+            patient["admission_number"] = chosen.admission_number
+            patient["admission_status"] = chosen.status
     
     def calculate_age(self, date_of_birth: date) -> int:
         """Calculate whole years from date of birth."""
@@ -189,8 +297,11 @@ class PatientService:
         
         # Apply search term filter
         search_term = filters.get('search_term')
+        include_admissions = bool(filters.get("include_admissions"))
         if search_term:
-            query = query.filter(patient_search_match_clause(search_term))
+            query = query.filter(
+                patient_search_match_clause(search_term, include_admissions=include_admissions)
+            )
         
         # Apply age filters
         if filters.get('min_age') or filters.get('max_age'):
@@ -289,6 +400,9 @@ class PatientService:
                 'total_appointments': total_appointments or 0,
                 'recent_visit_status': recent_visit_status
             })
+
+        if include_admissions:
+            self._attach_admission_matches(patient_data, search_term or "")
         
         # Create metadata
         total_pages = (total_count + per_page - 1) // per_page
