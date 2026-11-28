@@ -19,6 +19,8 @@ from app.models.user import User
 from app.models.hospital import Hospital
 from app.models.inpatient import Admission, RoomManagement
 from app.models.patient import Patient
+from app.services import service_payments as _svc_pay
+from app.services.service_payments import ServicePaymentIn
 from app.models.canteen import (
     CanteenCategory, CanteenItem, CanteenOrder, CanteenOrderItem,
     CanteenSale, CanteenSaleItem,
@@ -763,6 +765,8 @@ class SaleLineIn(BaseModel):
 
 class SaleCreate(BaseModel):
     payment_type: str = Field("cash", pattern="^(cash|upi|card)$")
+    # Amount received now. Omitted -> full. Less -> balance collected later.
+    amount_paid: Optional[float] = Field(None, ge=0)
     customer_name: Optional[str] = Field(None, max_length=150)
     customer_phone: Optional[str] = Field(None, max_length=30)
     discount_amount: float = Field(0, ge=0)
@@ -818,6 +822,9 @@ def _sale_to_dict(s: CanteenSale) -> dict:
         "subtotal": float(s.subtotal or 0),
         "discount_amount": float(s.discount_amount or 0),
         "grand_total": float(s.grand_total or 0),
+        "amount_paid": _svc_pay.effective_paid(_svc_pay.CANTEEN_SALE, s),
+        "balance_due": _svc_pay.balance_due(_svc_pay.CANTEEN_SALE, s),
+        "payment_state": _svc_pay.payment_state(_svc_pay.CANTEEN_SALE, s),
         "notes": s.notes,
         "void_reason": s.void_reason,
         "voided_at": s.voided_at.isoformat() if s.voided_at else None,
@@ -947,6 +954,11 @@ async def create_sale(
             quantity=qty,
             line_total=line_total,
         ))
+    _svc_pay.set_initial_payment(
+        db, _svc_pay.CANTEEN_SALE, sale,
+        _svc_pay.resolve_initial_amount(float(grand), data.amount_paid),
+        method=data.payment_type, received_by_id=current_user.id, hospital_id=hospital.id,
+    )
     try:
         db.commit()
     except IntegrityError:
@@ -964,6 +976,39 @@ async def create_sale(
         details={"grand_total": float(grand), "payment_type": data.payment_type},
     )
     return _sale_to_dict(sale)
+
+
+@router.post("/sales/{sale_id}/payments")
+async def collect_sale_payment(
+    sale_id: int,
+    body: ServicePaymentIn,
+    current_user: User = Depends(require_canteen_permission("create_sale")),
+    db: Session = Depends(get_db),
+):
+    """Collect the balance (full or part) on a canteen sale."""
+    hospital = _get_hospital(db)
+    sale = (
+        db.query(CanteenSale)
+        .options(joinedload(CanteenSale.items))
+        .filter(CanteenSale.id == sale_id, CanteenSale.hospital_id == hospital.id)
+        .first()
+    )
+    if not sale:
+        raise HTTPException(status_code=404, detail="Sale not found")
+    if body.payment_method not in PAYMENT_TYPES:
+        raise HTTPException(status_code=400, detail=f"Payment method must be one of {', '.join(PAYMENT_TYPES)}")
+    _svc_pay.record_payment(
+        db, _svc_pay.CANTEEN_SALE, sale, body.amount,
+        method=body.payment_method, received_by_id=current_user.id,
+        hospital_id=hospital.id, reference=body.reference, notes=body.notes,
+    )
+    db.commit()
+    db.refresh(sale)
+    _svc_pay.audit_collection(db, current_user, _svc_pay.CANTEEN_SALE, sale.id,
+                              sale.sale_number, body.amount, body.payment_method)
+    out = _sale_to_dict(sale)
+    out["payments"] = _svc_pay.payment_rows_json(_svc_pay.payments_for(db, _svc_pay.CANTEEN_SALE, [sale.id]))
+    return out
 
 
 @router.post("/sales/{sale_id}/void")

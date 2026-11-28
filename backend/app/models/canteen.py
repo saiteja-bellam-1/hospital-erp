@@ -4,7 +4,7 @@ Availability is gated by the inpatient module (no separate license feature).
 Legacy MealPlan / FoodOrder tables remain for historical bills.
 """
 from sqlalchemy import (
-    Column, Integer, String, Boolean, DateTime, ForeignKey, Text,
+    Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Float,
     Numeric, Date, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
@@ -110,6 +110,7 @@ class CanteenSale(Base):
     sale_date = Column(DateTime(timezone=True), default=system_now, nullable=False)
     status = Column(String(20), default="completed", nullable=False)  # completed | voided
     payment_type = Column(String(20), default="cash", nullable=False)  # cash | upi | card
+    amount_paid = Column(Float, nullable=True)  # running total from service_payments; NULL = legacy row
     customer_name = Column(String(150), nullable=True)
     customer_phone = Column(String(30), nullable=True)
     subtotal = Column(Numeric(10, 2), nullable=False, default=0)

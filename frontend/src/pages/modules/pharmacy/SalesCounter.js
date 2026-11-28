@@ -148,6 +148,10 @@ export default function SalesCounter() {
   const [patientPanelOpen, setPatientPanelOpen] = useState(false);
   const [batchPick, setBatchPick] = useState(null);
   const [billDiscountAmount, setBillDiscountAmount] = useState('');
+  // Counter collection: blank = full (cash) / nothing (credit); a figure in
+  // between records a part payment and leaves the balance on credit.
+  const [amountReceived, setAmountReceived] = useState('');
+  const [tenderMethod, setTenderMethod] = useState('cash');
   const [editingSale, setEditingSale] = useState(null);
   const [editReason, setEditReason] = useState('');
   const [editReasonOpen, setEditReasonOpen] = useState(false);
@@ -944,6 +948,11 @@ export default function SalesCounter() {
 
   const submitSale = async () => {
     if (!validateSaleForm()) return;
+    if (!isEditing && billingMode === 'cash_at_pharmacy' && amountReceived !== ''
+        && (Number(amountReceived) < 0 || Number(amountReceived) > totals.grand + 0.009)) {
+      toast({ variant: 'destructive', title: 'Check amount received', description: `Enter between ₹0 and ₹${totals.grand.toFixed(2)}` });
+      return;
+    }
     if (isEditing && !editReason.trim()) {
       setEditReasonOpen(true);
       return;
@@ -959,6 +968,10 @@ export default function SalesCounter() {
         billing_mode: billingMode,
         tax_mode: taxMode,
         bill_discount_amount: billDiscAmt,
+        ...(!isEditing && billingMode === 'cash_at_pharmacy' ? {
+          payment_method: tenderMethod,
+          ...(amountReceived !== '' ? { amount_paid: roundMoney(Number(amountReceived) || 0) } : {}),
+        } : {}),
         items: items.map(ln => ({
           medicine_id: ln.medicine.id,
           prescription_item_id: ln.prescription_item_id || null,
@@ -982,7 +995,9 @@ export default function SalesCounter() {
             : `Sale ${d.sale_number} saved (₹${d.grand_total})`,
         description: !isEditing && d.billing_mode === 'inpatient_bill'
           ? 'Patient pays at discharge or interim bill'
-          : undefined,
+          : (!isEditing && Number(d.balance_due) > 0
+            ? `Received ₹${Number(d.amount_paid || 0).toFixed(2)} · balance ₹${Number(d.balance_due).toFixed(2)} on credit`
+            : undefined),
       });
       setPreviewSaleId(d.id);
       if (isEditing) {
@@ -1001,6 +1016,8 @@ export default function SalesCounter() {
       setBillingMode('cash_at_pharmacy');
       setTaxMode(defaultSalesTaxMode);
       setBillDiscountAmount('');
+      setAmountReceived('');
+      setTenderMethod('cash');
       setAdmissionDraft('');
       setAdmissionMatches([]);
       setAdmissionMiss(false);
@@ -1544,6 +1561,40 @@ export default function SalesCounter() {
               ₹{totals.grand.toFixed(2)}
             </span>
           </div>
+          {!isEditing && billingMode === 'cash_at_pharmacy' && totals.grand > 0 && (
+            <div className="pt-2 mt-1 border-t grid grid-cols-2 gap-2 items-end">
+              <div>
+                <Label className="text-xs">Received now (₹)</Label>
+                <Input
+                  type="number" min="0" step="0.01" inputMode="decimal"
+                  className="h-8 text-right"
+                  value={amountReceived}
+                  onChange={(e) => setAmountReceived(e.target.value)}
+                  placeholder={customer.payment_type === 'credit' ? '0 (credit)' : totals.grand.toFixed(2)}
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Tender</Label>
+                <select className="h-8 w-full rounded-md border border-input bg-white px-2 text-sm"
+                  value={tenderMethod} onChange={(e) => setTenderMethod(e.target.value)}>
+                  <option value="cash">Cash</option>
+                  <option value="upi">UPI</option>
+                  <option value="card">Card</option>
+                </select>
+              </div>
+              {(() => {
+                const received = amountReceived === ''
+                  ? (customer.payment_type === 'credit' ? 0 : totals.grand)
+                  : Math.min(Number(amountReceived) || 0, totals.grand);
+                const bal = roundMoney(totals.grand - received);
+                return bal > 0 ? (
+                  <p className="col-span-2 text-xs font-semibold text-amber-700 text-right">
+                    Balance ₹{bal.toFixed(2)} goes on credit
+                  </p>
+                ) : null;
+              })()}
+            </div>
+          )}
         </div>
       </div>
       </FormNavContainer>
@@ -1555,6 +1606,10 @@ export default function SalesCounter() {
         onClose={() => setPreviewSaleId(null)}
         title="Sale Invoice Preview"
         path={previewSaleId ? `/api/pharmacy/sales/${previewSaleId}/invoice/pdf` : null}
+        filename="pharmacy-invoice.pdf"
+        whatsapp={lastSale && lastSale.id === previewSaleId
+          ? { kind: 'pharmacy_invoice', phone: lastSale.patient_phone, patientName: lastSale.patient_name }
+          : null}
       />
 
       <Dialog open={editReasonOpen} onOpenChange={setEditReasonOpen}>

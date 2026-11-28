@@ -129,8 +129,12 @@ def parse_and_validate(
     extra_optional: tuple = (),
     fixed_role: Optional[str] = None,
     allow_additional_roles: bool = True,
+    password_optional: bool = False,
 ) -> tuple[list, list]:
     """Parse CSV text and validate every row.
+
+    ``password_optional`` (in-app importers only): the ``password`` column may
+    be missing or blank; the applier then generates a temporary password.
 
     Returns ``(rows, errors)``. ``rows`` is always returned (even on errors) so
     callers can show "5 of 7 parsed" UX; but the applier MUST refuse to run
@@ -159,9 +163,14 @@ def parse_and_validate(
 
     # When the importer pins the role (doctor/nurse paths), `role` column is
     # NOT required from the operator — we inject it. Same for additional_roles.
-    base_required = tuple(c for c in REQUIRED_COLUMNS if not (fixed_role and c == "role"))
+    base_required = tuple(
+        c for c in REQUIRED_COLUMNS
+        if not (fixed_role and c == "role") and not (password_optional and c == "password")
+    )
     required_here = base_required + tuple(extra_required)
     optional_here = OPTIONAL_COLUMNS + tuple(extra_optional)
+    if password_optional:
+        optional_here = optional_here + ("password",)
     if fixed_role:
         optional_here = tuple(c for c in optional_here if c != "additional_roles") if not allow_additional_roles else optional_here
     expected_columns = required_here + optional_here
@@ -416,6 +425,118 @@ def parse_and_validate_staff(
         existing_usernames=existing_usernames,
         existing_emails=existing_emails,
     )
+
+
+# ---------------------------------------------------------------------------
+# Mixed-role in-app importer. Accepts the file produced by the user export
+# (any role, doctors included) as well as hand-written sheets. Blank/missing
+# password => a temporary one is generated and returned to the caller.
+# ---------------------------------------------------------------------------
+MIXED_ALLOWED_ROLES = INSTALLER_ALLOWED_ROLES | {"doctor", "nurse"}
+MIXED_EXTRA_OPTIONAL = ("specialization", "license_number") + DOCTOR_EXTRA_OPTIONAL
+
+
+def parse_and_validate_mixed(
+    csv_text: str,
+    *,
+    existing_usernames: Optional[Iterable[str]] = None,
+    existing_emails: Optional[Iterable[str]] = None,
+) -> tuple[list, list]:
+    rows, errors = parse_and_validate(
+        csv_text,
+        allowed_roles=MIXED_ALLOWED_ROLES,
+        existing_usernames=existing_usernames,
+        existing_emails=existing_emails,
+        extra_optional=MIXED_EXTRA_OPTIONAL,
+        password_optional=True,
+    )
+    doctor_rows = [r for r in rows if r.role == "doctor"]
+    for row in doctor_rows:
+        for col in DOCTOR_EXTRA_REQUIRED:
+            if not row.extras.get(col):
+                errors.append(ImportError(row.line_no, col, f"{col} is required for doctors"))
+    _validate_doctor_extras(doctor_rows, errors)
+    return rows, errors
+
+
+def apply_mixed(db, rows: list, hospital_id: int) -> dict:
+    """Create every row in a single transaction (all-or-nothing).
+
+    Returns ``{"created", "usernames", "generated_passwords"}`` where
+    ``generated_passwords`` maps username -> temporary password for rows whose
+    password was blank.
+    """
+    import secrets
+    import uuid as _uuid
+    from app.models.user import User, UserRole
+    from app.models.doctor_availability import DoctorAvailability
+    from app.utils.auth import get_password_hash
+
+    role_objs = {r.name.lower(): r for r in db.query(UserRole).all()}
+    needed = set()
+    for row in rows:
+        needed.add(row.role.lower())
+        needed.update(r.lower() for r in row.additional_roles)
+    for name in needed:
+        if name not in MIXED_ALLOWED_ROLES:
+            raise ValueError(f"Role {name!r} is not allowed in this import")
+        if name not in role_objs:
+            raise ValueError(f"Required role {name!r} is not seeded in user_roles")
+
+    _check_runtime_conflicts(db, rows)
+
+    generated: dict = {}
+    usernames = []
+    try:
+        for row in rows:
+            password = row.password
+            if not password:
+                password = secrets.token_urlsafe(9)
+                generated[row.username] = password
+            is_doctor = row.role == "doctor"
+            ex = row.extras
+            try:
+                exp = int(ex.get("experience_years") or 0) or None
+            except ValueError:
+                exp = None
+            user = User(
+                user_id=str(_uuid.uuid4()),
+                username=row.username,
+                email=row.email,
+                password_hash=get_password_hash(password),
+                first_name=row.first_name,
+                last_name=row.last_name,
+                phone=row.phone or None,
+                role_id=role_objs[row.role].id,
+                hospital_id=hospital_id,
+                is_active=True,
+                must_change_password=True,
+            )
+            if is_doctor:
+                user.specialization = ex.get("specialization") or None
+                user.license_number = ex.get("license_number") or None
+                user.qualification = ex.get("qualification") or None
+                user.consultation_fee_inr = ex.get("consultation_fee_inr") or None
+                user.inpatient_fee_inr = ex.get("inpatient_fee_inr") or None
+                user.emergency_fee_inr = ex.get("emergency_fee_inr") or None
+                user.experience_years = exp
+            extra_roles = [role_objs[r.lower()] for r in row.additional_roles]
+            if extra_roles:
+                user.roles = extra_roles
+            db.add(user)
+            if is_doctor:
+                db.flush()
+                try:
+                    duration = int(ex.get("default_consultation_duration") or 10)
+                except ValueError:
+                    duration = 10
+                db.add(DoctorAvailability(doctor_id=user.id, default_consultation_duration=duration))
+            usernames.append(row.username)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return {"created": len(usernames), "usernames": usernames, "generated_passwords": generated}
 
 
 def apply_users(

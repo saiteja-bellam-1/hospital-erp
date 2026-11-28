@@ -460,12 +460,13 @@ const LabTechDashboard = () => {
     });
   };
 
-  const printReport = (reportId) => {
+  const printReport = (reportId, who = null) => {
     if (!reportId) return;
     setReportPreview({
       path: `/api/lab/reports/${reportId}/download`,
       title: 'Lab Report Preview',
       filename: `lab_report_${reportId}.pdf`,
+      whatsapp: who ? { kind: 'lab_report', phone: who.patient_phone, patientName: who.patient_name, patientId: who.patient_id } : null,
     });
   };
 
@@ -834,7 +835,7 @@ const LabTechDashboard = () => {
                 <Button size="sm" variant="outline" onClick={() => openReport(order.report_id)}>
                   <Eye className="h-3 w-3 mr-1" /> View Report
                 </Button>
-                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => printReport(order.report_id)}>
+                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => printReport(order.report_id, order)}>
                   <Printer className="h-3 w-3 mr-1" /> Print Report
                 </Button>
               </>
@@ -932,7 +933,7 @@ const LabTechDashboard = () => {
                       <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openReport(order.report_id)}>
                         <Eye className="h-3 w-3 mr-1" /> Report
                       </Button>
-                      <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => printReport(order.report_id)}>
+                      <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => printReport(order.report_id, order)}>
                         <Printer className="h-3 w-3 mr-1" /> Print
                       </Button>
                     </>
@@ -1034,7 +1035,7 @@ const LabTechDashboard = () => {
                     <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openReport(order.report_id)}>
                       <Eye className="h-3 w-3 mr-1" /> Report
                     </Button>
-                    <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => printReport(order.report_id)}>
+                    <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => printReport(order.report_id, order)}>
                       <Printer className="h-3 w-3 mr-1" /> Print
                     </Button>
                   </>
@@ -1556,7 +1557,7 @@ const LabTechDashboard = () => {
           )}
 
           <div className="flex justify-end gap-2 mt-4">
-            <Button variant="outline" onClick={() => printReport(viewingReport.id)}>
+            <Button variant="outline" onClick={() => printReport(viewingReport.id, viewingReport)}>
               <Printer className="h-4 w-4 mr-2" /> Print Report
             </Button>
           </div>
@@ -1679,6 +1680,7 @@ const LabTechDashboard = () => {
         params={reportPreview?.params || {}}
         filename={reportPreview?.filename || 'lab_report.pdf'}
         letterheadReportType="lab_report"
+        whatsapp={reportPreview?.whatsapp || null}
       />
 
     </div>

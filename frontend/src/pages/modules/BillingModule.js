@@ -22,6 +22,7 @@ import PatientSearchPicker from '../../components/PatientSearchPicker';
 import EditBillDialog, { canEditBill, canCancelBill, isPharmacyPosBill } from '../../components/billing/EditBillDialog';
 import { localDateString, localDateStringOffset, localWeekStart, localMonthStart, localLastMonthRange } from '../../utils/localDate';
 import ActionKpiCard from '../../components/dashboard/ActionKpiCard';
+import CollectPaymentDialog from '../../components/billing/CollectPaymentDialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -148,6 +149,7 @@ const BillingModule = () => {
 
   // Payment dialog
   const [payBill, setPayBill] = useState(null);
+  const [servicePayRow, setServicePayRow] = useState(null);
   const [paymentForm, setPaymentForm] = useState({
     amount_paid: '', payment_method: 'cash', transaction_reference: '', notes: ''
   });
@@ -298,6 +300,12 @@ const BillingModule = () => {
     }
   };
 
+  // WhatsApp kind per bill type (admission/consolidated bills have no template).
+  const whatsappForBill = (bill) => {
+    const kind = { consultation: 'consultation_invoice', lab: 'lab_invoice', pharmacy: 'pharmacy_invoice' }[bill?.type];
+    return kind ? { kind, phone: bill.patient_phone, patientName: bill.patient_name, patientId: bill.patient_id } : null;
+  };
+
   const handlePrintBill = (bill) => {
     const path = getBillPdfPath(bill);
     if (!path) return;
@@ -322,7 +330,7 @@ const BillingModule = () => {
     }
     const path = getBillPdfPath(bill);
     if (path) {
-      setPdfPreview({ title: `Bill — ${bill.reference || bill.patient_name}`, path });
+      setPdfPreview({ title: `Bill — ${bill.reference || bill.patient_name}`, path, whatsapp: whatsappForBill(bill) });
     }
   };
 
@@ -720,6 +728,17 @@ const BillingModule = () => {
     } finally {
       setCreditNoteSaving(false);
     }
+  };
+
+  // Consultation / lab / pharmacy / canteen rows are not Bill rows; they
+  // collect through /api/hospital/billing/rows/{id}/payments.
+  const SERVICE_ROW_PREFIXES = ['APT-', 'LBG-', 'LAB-', 'PHARM-', 'CAN-'];
+  const isServiceRow = (bill) => SERVICE_ROW_PREFIXES.some((p) => String(bill?.id || '').startsWith(p));
+  const canCollectPayment = (bill) => {
+    if (!bill || ['cancelled', 'paid', 'consolidated', 'refunded'].includes(bill.payment_status)) return false;
+    if (bill.type === 'admission') return true;
+    if (isServiceRow(bill)) return true;
+    return Boolean(bill.bill_id) && ['DC-', 'PHY-', 'CONS-', 'CU-'].some((p) => String(bill.id).startsWith(p));
   };
 
   const openPaymentDialog = async (bill) => {
@@ -1180,8 +1199,11 @@ const BillingModule = () => {
                             <td className="py-2.5 pr-3 text-right">
                               <p className="font-semibold">{formatCurrency(bill.amount)}</p>
                               {bill.discount > 0 && <p className="text-[10px] text-green-600">-{formatCurrency(bill.discount)} disc.</p>}
-                              {bill.type === 'admission' && bill.amount_paid > 0 && bill.payment_status !== 'paid' && (
+                              {bill.amount_paid > 0 && bill.payment_status !== 'paid' && bill.payment_status !== 'cancelled' && (
                                 <p className="text-[10px] text-blue-600">Paid: {formatCurrency(bill.amount_paid)}</p>
+                              )}
+                              {bill.payment_status === 'partial' && bill.type !== 'admission' && Number(bill.balance_due) > 0 && (
+                                <p className="text-[10px] text-amber-700">Due: {formatCurrency(bill.balance_due)}</p>
                               )}
                             </td>
                             <td className="py-2.5 pr-3 text-xs text-gray-700 whitespace-nowrap">{formatMethods(bill.payment_method)}</td>
@@ -1211,10 +1233,10 @@ const BillingModule = () => {
                                     <Pencil className="w-3 h-3 mr-0.5" /> Edit
                                   </Button>
                                 )}
-                                {/* Collect payment for admission bills with balance */}
-                                {bill.type === 'admission' && bill.payment_status !== 'cancelled' && bill.payment_status !== 'paid' && (
+                                {/* Collect full / partial payment on any bill with a balance */}
+                                {canCollectPayment(bill) && (
                                   <Button size="sm" variant="ghost" className="h-6 text-[10px] text-green-600 hover:text-green-700 hover:bg-green-50 px-2"
-                                    onClick={() => openPaymentDialog(bill)}>
+                                    onClick={() => (isServiceRow(bill) ? setServicePayRow(bill) : openPaymentDialog(bill))}>
                                     <CreditCard className="w-3 h-3 mr-0.5" /> Pay
                                   </Button>
                                 )}
@@ -1533,6 +1555,7 @@ const BillingModule = () => {
                       <Button variant="outline" onClick={() => setPdfPreview({
                         title: `Bill — ${detailBill.reference || detailBill.patient_name}`,
                         path: getBillPdfPath(detailBill),
+                        whatsapp: whatsappForBill(detailBill),
                       })}>
                         <Eye className="h-4 w-4 mr-1" /> View PDF
                       </Button>
@@ -1549,6 +1572,18 @@ const BillingModule = () => {
           )}
         </DialogContent>
       </Dialog>
+
+      <CollectPaymentDialog
+        open={!!servicePayRow}
+        onOpenChange={(o) => { if (!o) setServicePayRow(null); }}
+        infoUrl={servicePayRow ? `/api/hospital/billing/rows/${encodeURIComponent(servicePayRow.id)}/payments` : null}
+        postUrl={servicePayRow ? `/api/hospital/billing/rows/${encodeURIComponent(servicePayRow.id)}/payments` : null}
+        subtitle={servicePayRow ? `${servicePayRow.patient_name} · ${servicePayRow.reference}` : ''}
+        methods={servicePayRow?.type === 'canteen'
+          ? [{ value: 'cash', label: 'Cash' }, { value: 'upi', label: 'UPI' }, { value: 'card', label: 'Card' }]
+          : undefined}
+        onSuccess={() => fetchBills()}
+      />
 
       {/* Payment Dialog */}
       <Dialog open={!!payBill} onOpenChange={(open) => { if (!open) setPayBill(null); }}>
@@ -2034,6 +2069,8 @@ const BillingModule = () => {
         onClose={() => setPdfPreview(null)}
         title={pdfPreview?.title || 'Bill Preview'}
         path={pdfPreview?.path || null}
+        filename="invoice.pdf"
+        whatsapp={pdfPreview?.whatsapp || null}
       />
 
       <EditBillDialog

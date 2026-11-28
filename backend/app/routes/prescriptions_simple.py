@@ -59,6 +59,7 @@ class PrescriptionResponse(BaseModel):
     prescription_id: str
     patient_id: str
     patient_name: str
+    patient_phone: Optional[str] = None
     doctor_id: int
     doctor_name: str
     consultation_id: Optional[int]
@@ -126,6 +127,12 @@ def _sync_to_pharmacy_prescription(
             float(item.quantity_dispensed or 0) > 0 for item in linked.items
         ):
             linked.status = "cancelled"
+            # Stop future inpatient MAR slots for the cancelled order
+            from datetime import datetime as _dt
+            from app.services.mar_service import purge_future_scheduled_doses
+            purge_future_scheduled_doses(
+                db, prescription_item_ids=[i.id for i in linked.items], from_time=_dt.now(),
+            )
         return
 
     can_replace = (
@@ -1207,6 +1214,7 @@ def build_prescription_response(prescription: SimplePrescription, db: Session) -
         prescription_id=prescription.prescription_id,
         patient_id=prescription.patient_id,
         patient_name=f"{patient.first_name} {patient.last_name}" if patient else "Unknown",
+        patient_phone=patient.primary_phone if patient else None,
         doctor_id=prescription.doctor_id,
         doctor_name=f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "Unknown",
         consultation_id=prescription.consultation_id,

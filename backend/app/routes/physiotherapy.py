@@ -319,12 +319,19 @@ def _create_physio_bill(
     referred_by: Optional[str] = None,
     payment_method: Optional[str] = None,
     mark_paid: bool = False,
+    amount_paid: Optional[float] = None,
 ) -> Bill:
     from app.services.patient_referral import apply_patient_referral
     referred_by = apply_patient_referral(patient, referred_by)
     line_total = round(float(unit_price) * quantity, 2)
     bill_number = _next_bill_number(db)
-    status = "paid" if mark_paid else ("pending" if line_total > 0 else "paid")
+    # mark_paid collects the full line unless amount_paid gives a part amount.
+    from app.services.service_payments import resolve_initial_amount, derive_status
+    if amount_paid is not None:
+        collected = resolve_initial_amount(line_total, amount_paid)
+    else:
+        collected = line_total if mark_paid else 0.0
+    status = derive_status(line_total, collected)
     bill = Bill(
         bill_number=bill_number,
         patient_id=patient.id,
@@ -353,11 +360,11 @@ def _create_physio_bill(
         unit_price=float(unit_price),
         total_price=line_total,
     ))
-    if mark_paid and line_total > 0:
+    if collected > 0:
         db.add(Payment(
             payment_number=_next_payment_number(db),
             bill_id=bill.id,
-            amount_paid=line_total,
+            amount_paid=collected,
             payment_method_name=(payment_method or "cash"),
             payment_date=datetime.now(),
             received_by_id=user.id,
@@ -594,6 +601,8 @@ class SellPackageIn(BaseModel):
     patient_id: int
     template_id: int
     payment_method: str = "cash"
+    # Amount received now. Omitted -> full package price.
+    amount_paid: Optional[float] = Field(None, ge=0)
     notes: Optional[str] = None
     referred_by: Optional[str] = None
 
@@ -628,6 +637,7 @@ async def sell_package(
         referred_by=data.referred_by,
         payment_method=data.payment_method,
         mark_paid=True,
+        amount_paid=data.amount_paid,
     )
     expires_at = system_now() + timedelta(days=tmpl.validity_days or 90)
     pkg = PhysioPatientPackage(
@@ -868,6 +878,7 @@ class AppointmentIn(BaseModel):
     unit_price: Optional[float] = Field(None, ge=0)
     payment_method: Optional[str] = "cash"
     mark_paid: bool = True
+    amount_paid: Optional[float] = Field(None, ge=0)
 
 
 class CompleteSessionIn(BaseModel):
@@ -879,6 +890,7 @@ class CompleteSessionIn(BaseModel):
     unit_price: Optional[float] = Field(None, ge=0)
     payment_method: Optional[str] = None
     mark_paid: bool = False
+    amount_paid: Optional[float] = Field(None, ge=0)
 
 
 def _ledger_reserved_for_appt(db: Session, appointment_id: int) -> bool:
@@ -1228,6 +1240,7 @@ async def create_appointment(
             referred_by=data.referral_source,
             payment_method=data.payment_method,
             mark_paid=bool(data.mark_paid),
+            amount_paid=(data.amount_paid if data.mark_paid else None),
         )
 
     appt = PhysioAppointment(
@@ -1461,6 +1474,7 @@ async def complete_session(
                 notes=data.session_note,
                 payment_method=data.payment_method,
                 mark_paid=bool(data.mark_paid and data.payment_method),
+                amount_paid=(data.amount_paid if (data.mark_paid and data.payment_method) else None),
             )
             appt.bill_id = bill.id
 
@@ -1494,6 +1508,7 @@ class WalkInIn(BaseModel):
     unit_price: Optional[float] = Field(None, ge=0)
     payment_method: Optional[str] = "cash"
     mark_paid: bool = True
+    amount_paid: Optional[float] = Field(None, ge=0)
     session_note: Optional[str] = None
     referral_source: Optional[str] = None
     chief_complaint: Optional[str] = None
@@ -1524,6 +1539,7 @@ async def walk_in_complete(
         unit_price=data.unit_price,
         payment_method=data.payment_method,
         mark_paid=data.mark_paid,
+        amount_paid=data.amount_paid,
     )
     created = await create_appointment(appt_payload, current_user, db)
     complete_payload = CompleteSessionIn(

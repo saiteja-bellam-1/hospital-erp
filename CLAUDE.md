@@ -47,7 +47,7 @@ cd license-manager/frontend && npm start
 ```
 
 ### Tests
-Only one pytest suite exists today: an end-to-end inpatient smoke test that overrides the DB dependency with a temp SQLite file (see `backend/tests/conftest.py`).
+`backend/tests/` holds ~90 pytest files (billing, pharmacy, lab, inpatient, backup, bootstrap, canteen, physio, etc.). Fixtures in `backend/tests/conftest.py` override the DB dependency with a temp SQLite file.
 ```bash
 cd backend && ./venv/bin/python -m pytest tests/                  # all tests
 cd backend && ./venv/bin/python -m pytest tests/test_inpatient_smoke.py::TestInpatientE2E::test_create_room -v
@@ -79,7 +79,7 @@ These four systems shape how every feature behaves; understand them before addin
 
 **3. License lifecycle.** `.lic` files are base64 JSON + Ed25519 signature, bound to a machine ID. `app/services/license_service.py` verifies signature + machine ID and stores the parsed payload in the DB. The signed payload includes `seller_info` (vendor name/address/phone) which auto-populates the PDF footer ("Powered by KT HEALTH ERP — Sold by {vendor}") and the in-app Support Contact page.
 
-**4. PDF/print pipeline.** All printable output (bills, prescriptions, lab reports, discharge summaries) goes through `backend/app/utils/pdf_service.py` (ReportLab) with a uniform `include_header` toggle. Frontend uses one shared utility — `frontend/src/utils/printPdf.js` — that fetches the PDF as a blob, opens a preview dialog with an iframe, exposes a "Include header" checkbox that re-fetches, and prints via a hidden `iframe.contentWindow.print()`. Preserve this pattern when adding new printable artifacts; do not invent a parallel print path.
+**4. PDF/print pipeline.** All printable output (bills, prescriptions, lab reports, discharge summaries) goes through `backend/app/utils/pdf_service.py` (ReportLab). Letterhead/header comes from Print Settings server-side; don't pass `include_header` unless overriding the hospital default. Frontend uses one shared utility — `frontend/src/utils/printPdf.js` (`printPdfFromUrl`) — that fetches the PDF as a blob and opens it in a real window, falling back to an off-screen iframe if pop-ups are blocked. Preserve this pattern when adding new printable artifacts; do not invent a parallel print path.
 
 ### Backend conventions worth knowing up front
 - Routes live in `backend/app/routes/` (one file per domain, each is a router with a prefix); models in `backend/app/models/`; cross-cutting helpers in `backend/app/utils/`; service-layer business logic in `backend/app/services/`.
@@ -110,7 +110,7 @@ These four systems shape how every feature behaves; understand them before addin
 
 **Source-mode (macOS / Linux dev) has no install flow.** `python main.py` with no `config.json` simply prints "Setup not complete" and exits the startup work — `consume_seed_if_present` is **only** called from `launcher.py` (the Windows-bundled launcher). To bootstrap a dev DB you either need to hand-write `install_seed.json` and drop it into `data/`, or call `db_seed.init_database_and_seed(seed, db_path)` directly from a Python shell.
 
-**dbcheck.exe is built with `sqlalchemy` excluded** (`dbcheck.spec:42`). Anything it imports from the backend must therefore avoid `sqlalchemy.orm` at module-import time. `app.services.license_service` currently violates that (top-level `from sqlalchemy.orm import Session`), so `validate-license` raises `ModuleNotFoundError: No module named 'sqlalchemy'` and the wizard surfaces "License rejected: No module named sqlalchemy". Fix is to keep pure-verification helpers (`inspect_license_file`, `verify_license_machine_binding`, `compute_license_status`) in a Session-free module that both license_service and dbcheck can import.
+**dbcheck.exe is built with `sqlalchemy` excluded** (`dbcheck.spec`). Anything it imports from the backend must avoid `sqlalchemy` at import time. Pure-verification helpers live in the Session-free `app/services/license_inspect.py`, which `dbcheck.py` imports; `license_service.py` re-exports them and keeps the DB-bound code. Don't add SQLAlchemy imports to `license_inspect.py`.
 
 After the wizard, the hospital admin can upload or replace a `.lic` via Dashboard → License Management.
 
@@ -118,6 +118,14 @@ After the wizard, the hospital admin can upload or replace a `.lic` via Dashboar
 SQLite `.backup()` API (not `shutil.copy2`) for safe online copies. A background thread mirrors to configured destination(s) every 60 seconds. Configuration lives in `backend/config.json`.
 
 ## Important Notes
+
+- **Dropped features**: incidents and diet orders tables were removed (`migrate_drop_incidents_diet.py`) — don't reintroduce them.
+- **No standalone `/api/billing` router** (commented out in `main.py`). Bills live in the hospital_admin, pharmacy, lab, inpatient, canteen, physio and catch-up routes; the UI hub is `BillingHub.js`.
+- **Post-install onboarding**: `/dashboard/setup` (super_admin/hospital_admin) is backed by `/api/onboarding` — it is not the removed setup wizard.
+- **Middleware order**: Maintenance (blocks writes) → Audit → License.
+- **Module catalog**: `CANONICAL_SYSTEM_MODULES` in `system_modules.py` (`billing` and `admin` always on). Canteen has grants in `db_seed.py` but is not in that list.
+- **CI**: `.github/workflows/windows-build.yml` builds the installer (tag `vX.Y.Z` publishes a release; version patched into `app/version.py`); `license-manager-build.yml` builds the License Manager exe, which embeds the private signing key — keep its artifacts internal.
+- `.cursor/rules/*.mdc` contain overlapping notes; trust current code over them and over `TODO_*.md`.
 
 - **Brand vs display name**: `KTHEALTHERP` (brand, used in filenames/exe), `KT HEALTH ERP` (display, used in UI strings). README still says "Hospital ERP System" — that is outdated branding.
 - **Two databases visible in `backend/`**: `hospital_erp.db` (legacy) and `kthealth_erp.db` (current). The current code uses `kthealth_erp.db`; the legacy file is kept for old installations.

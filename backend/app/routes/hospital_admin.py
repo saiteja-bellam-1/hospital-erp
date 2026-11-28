@@ -16,6 +16,7 @@ from app.models.hospital import Hospital
 from app.models.permissions import HospitalSettings
 from app.models.patient import Patient
 from app.models.outpatient import Appointment
+from app.services import service_payments as _svc_pay
 from app.models.ehr import Consultation
 from app.models.lab import PatientLabOrder, LabTest, LabTestCategory, LabTestPackage
 from app.models.billing import Bill, BillItem, Payment
@@ -1651,16 +1652,18 @@ def _get_dashboard_data(current_user, db):
         appt_by_status[a.status] = appt_by_status.get(a.status, 0) + 1
 
     # Revenue today from appointments
-    revenue_today = sum(a.final_amount or 0 for a in today_appointments if a.payment_status == 'paid')
-    revenue_pending = sum(a.final_amount or 0 for a in today_appointments if a.payment_status in ('pending', 'partial'))
+    # Partial payments: collected counts what was received, pending the rest.
+    _open_apts = [a for a in today_appointments if a.payment_status in ('paid', 'pending', 'partial')]
+    revenue_today = sum(_svc_pay.effective_paid(_svc_pay.APPOINTMENT, a) for a in _open_apts)
+    revenue_pending = sum(_svc_pay.balance_due(_svc_pay.APPOINTMENT, a) for a in _open_apts)
 
     # Monthly revenue
     month_appointments = db.query(Appointment).filter(
         Appointment.doctor.has(hospital_id=hospital_id),
         cast(Appointment.appointment_date, Date) >= month_start,
-        Appointment.payment_status == 'paid'
+        Appointment.payment_status.in_(('paid', 'partial'))
     ).all()
-    revenue_this_month = sum(a.final_amount or 0 for a in month_appointments)
+    revenue_this_month = sum(_svc_pay.effective_paid(_svc_pay.APPOINTMENT, a) for a in month_appointments)
 
     # Doctor performance today
     doctor_stats = {}
@@ -1671,8 +1674,8 @@ def _get_dashboard_data(current_user, db):
         doctor_stats[doc_name]["appointments"] += 1
         if a.status == 'completed':
             doctor_stats[doc_name]["completed"] += 1
-        if a.payment_status == 'paid':
-            doctor_stats[doc_name]["revenue"] += a.final_amount or 0
+        if a.payment_status in ('paid', 'partial'):
+            doctor_stats[doc_name]["revenue"] += _svc_pay.effective_paid(_svc_pay.APPOINTMENT, a)
 
     # --- Lab Stats ---
     lab_orders_today = db.query(sql_func.count(PatientLabOrder.id)).filter(
@@ -1691,17 +1694,16 @@ def _get_dashboard_data(current_user, db):
         cast(PatientLabOrder.completion_date, Date) == today
     ).scalar() or 0
 
-    lab_revenue_today = db.query(sql_func.coalesce(sql_func.sum(PatientLabOrder.amount), 0)).filter(
+    _lab_month = db.query(PatientLabOrder).filter(
         PatientLabOrder.patient.has(hospital_id=hospital_id),
-        PatientLabOrder.payment_status == "paid",
-        cast(PatientLabOrder.payment_date, Date) == today
-    ).scalar() or 0
-
-    lab_revenue_month = db.query(sql_func.coalesce(sql_func.sum(PatientLabOrder.amount), 0)).filter(
-        PatientLabOrder.patient.has(hospital_id=hospital_id),
-        PatientLabOrder.payment_status == "paid",
+        PatientLabOrder.payment_status.in_(("paid", "partial")),
         cast(PatientLabOrder.payment_date, Date) >= month_start
-    ).scalar() or 0
+    ).all()
+    lab_revenue_month = round(sum(_svc_pay.effective_paid(_svc_pay.LAB_ORDER, o) for o in _lab_month), 2)
+    lab_revenue_today = round(sum(
+        _svc_pay.effective_paid(_svc_pay.LAB_ORDER, o) for o in _lab_month
+        if o.payment_date and o.payment_date.date() == today
+    ), 2)
 
     # --- Consultation Stats ---
     consultations_today = db.query(sql_func.count(Consultation.id)).join(
@@ -2325,6 +2327,8 @@ async def get_all_bills(
             "subtotal": (apt.consultation_fee or 0) + (apt.registration_fee or 0),
             "discount": apt.discount_amount or 0,
             "amount": apt.final_amount or 0,
+            "amount_paid": _svc_pay.effective_paid(_svc_pay.APPOINTMENT, apt),
+            "balance_due": _svc_pay.balance_due(_svc_pay.APPOINTMENT, apt),
             "payment_status": apt.payment_status or "pending",
             "payment_method": apt.payment_method or "",
             "referred_by": apt.referred_by or "",
@@ -2351,8 +2355,6 @@ async def get_all_bills(
         PatientLabOrder.bill_to.is_(None),
         PatientLabOrder.bill_to == "patient",
     ))
-    if payment_status:
-        lab_query = lab_query.filter(PatientLabOrder.payment_status == payment_status)
     if patient_search:
         q = f"%{patient_search}%"
         lab_query = lab_query.filter(
@@ -2402,15 +2404,21 @@ async def get_all_bills(
                 items_text += f" +{len(group_orders) - 3} more"
         # Subtotal/amount: package mode shows package_price; otherwise sum.
         subtotal = sum((o.amount or 0) for o in group_orders)
-        amount = subtotal
-        discount = 0
+        discount = round(sum((o.discount_amount or 0) for o in group_orders), 2)
+        amount = round(subtotal - discount, 2)
         # Status: paid only if every order in the group is paid; cancelled
-        # if every order is cancelled.
+        # if every order is cancelled; otherwise driven by money collected.
         statuses = {o.payment_status for o in group_orders}
+        g_paid = round(sum(_svc_pay.effective_paid(_svc_pay.LAB_ORDER, o) for o in group_orders), 2)
+        g_due = round(sum(_svc_pay.balance_due(_svc_pay.LAB_ORDER, o) for o in group_orders), 2)
         if statuses == {"paid"}:
             payment_status = "paid"
         elif statuses == {"cancelled"}:
             payment_status = "cancelled"
+        elif g_due <= _svc_pay.EPS and statuses & {"paid", "partial"}:
+            payment_status = "paid"
+        elif g_paid > _svc_pay.EPS:
+            payment_status = "partial"
         elif "pending" in statuses:
             payment_status = "pending"
         else:
@@ -2435,6 +2443,8 @@ async def get_all_bills(
             "subtotal": subtotal,
             "discount": discount,
             "amount": amount,
+            "amount_paid": g_paid,
+            "balance_due": g_due,
             "payment_status": payment_status,
             "payment_method": first.payment_method or "",
             "referred_by": first.referred_by or "",
@@ -2444,10 +2454,15 @@ async def get_all_bills(
         }
 
     for gid, group_orders in grouped.items():
-        bills.append(_row_for_group(group_orders))
+        _grow = _row_for_group(group_orders)
+        if payment_status and _grow["payment_status"] != payment_status:
+            continue
+        bills.append(_grow)
 
     # Backward-compat: legacy ungrouped orders still surface as one row each.
     for lo in ungrouped:
+        if payment_status and (lo.payment_status or "pending") != payment_status:
+            continue
         p = db.query(Patient).filter(Patient.id == lo.patient_id).first()
         test = db.query(LabTest).filter(LabTest.id == lo.test_id).first()
         lab_doctor = db.query(User).filter(User.id == lo.doctor_id).first() if lo.doctor_id else None
@@ -2467,8 +2482,10 @@ async def get_all_bills(
             "reference": lo.order_number,
             "items": f"{test.name if test else 'Lab Test'} ({source})",
             "subtotal": lo.amount or 0,
-            "discount": 0,
-            "amount": lo.amount or 0,
+            "discount": lo.discount_amount or 0,
+            "amount": _svc_pay.total_for(_svc_pay.LAB_ORDER, lo),
+            "amount_paid": _svc_pay.effective_paid(_svc_pay.LAB_ORDER, lo),
+            "balance_due": _svc_pay.balance_due(_svc_pay.LAB_ORDER, lo),
             "payment_status": lo.payment_status or "pending",
             "payment_method": lo.payment_method or "",
             "referred_by": lo.referred_by or "",
@@ -2500,16 +2517,8 @@ async def get_all_bills(
         if payment_status:
             if payment_status == "cancelled":
                 pharmacy_query = pharmacy_query.filter(PharmacySale.status == "voided")
-            elif payment_status == "paid":
-                pharmacy_query = pharmacy_query.filter(
-                    PharmacySale.status == "completed",
-                    PharmacySale.payment_type == "cash",
-                )
-            elif payment_status == "pending":
-                pharmacy_query = pharmacy_query.filter(
-                    PharmacySale.status == "completed",
-                    PharmacySale.payment_type == "credit",
-                )
+            elif payment_status in ("paid", "pending", "partial"):
+                pharmacy_query = pharmacy_query.filter(PharmacySale.status == "completed")
             else:
                 pharmacy_query = pharmacy_query.filter(False)
 
@@ -2522,11 +2531,9 @@ async def get_all_bills(
             items_text = ", ".join(medicine_names)
             if len(sale.items) > 3:
                 items_text += f" +{len(sale.items) - 3} more"
-            sale_status = (
-                "cancelled" if sale.status == "voided"
-                else "pending" if sale.payment_type == "credit"
-                else "paid"
-            )
+            sale_status = _svc_pay.payment_state(_svc_pay.PHARMACY_SALE, sale)
+            if payment_status and sale_status != payment_status:
+                continue
             bills.append({
                 "id": f"PHARM-{sale.id}",
                 "bill_id": sale.id,
@@ -2542,6 +2549,8 @@ async def get_all_bills(
                 "subtotal": float(sale.subtotal or 0),
                 "discount": float(sale.discount_total or 0),
                 "amount": float(sale.grand_total or 0),
+                "amount_paid": _svc_pay.effective_paid(_svc_pay.PHARMACY_SALE, sale),
+                "balance_due": _svc_pay.balance_due(_svc_pay.PHARMACY_SALE, sale),
                 "payment_status": sale_status,
                 "payment_method": sale.payment_type or "",
                 "referred_by": "",
@@ -2575,6 +2584,9 @@ async def get_all_bills(
         for sale in canteen_query.order_by(CanteenSale.sale_date.desc()).all():
             if sale.id in linked_canteen:
                 continue
+            can_status = _svc_pay.payment_state(_svc_pay.CANTEEN_SALE, sale)
+            if payment_status and can_status != payment_status:
+                continue
             item_names = [item.item_name for item in (sale.items or [])[:3] if item.item_name]
             items_text = ", ".join(item_names)
             if len(sale.items or []) > 3:
@@ -2594,7 +2606,9 @@ async def get_all_bills(
                 "subtotal": float(sale.subtotal or 0),
                 "discount": float(sale.discount_amount or 0),
                 "amount": float(sale.grand_total or 0),
-                "payment_status": "paid",
+                "amount_paid": _svc_pay.effective_paid(_svc_pay.CANTEEN_SALE, sale),
+                "balance_due": _svc_pay.balance_due(_svc_pay.CANTEEN_SALE, sale),
+                "payment_status": can_status,
                 "payment_method": sale.payment_type or "cash",
                 "referred_by": "",
                 "cancel_reason": "",
@@ -3007,7 +3021,17 @@ async def get_all_bills(
         (b.get("amount_paid") if b["type"] == "admission" else b["amount"])
         for b in active_bills if b["payment_status"] == "paid"
     )
-    total_pending = sum(b["amount"] for b in active_bills if b["payment_status"] in ("pending", "partial"))
+    # Part-paid rows: count what was actually collected as paid and only the
+    # remaining balance as pending.
+    total_paid += sum(
+        float(b.get("amount_paid") or 0)
+        for b in active_bills if b["payment_status"] == "partial"
+    )
+    total_pending = sum(
+        (float(b["balance_due"]) if (b["payment_status"] == "partial" and b.get("balance_due") is not None)
+         else b["amount"])
+        for b in active_bills if b["payment_status"] in ("pending", "partial")
+    )
     cancelled_count = sum(1 for b in bills if b["payment_status"] == "cancelled")
     apt_count = sum(1 for b in bills if b["type"] == "consultation")
     lab_count = sum(1 for b in bills if b["type"] == "lab")
@@ -4106,18 +4130,20 @@ async def update_consultation_bill(
     new_total = round(subtotal - discount, 2)
 
     old_total = float(apt.final_amount or 0)
+    # Snapshot what was collected before the fee changes (legacy rows derive
+    # it from status) so the new status reflects real money.
+    # A reduction below what was collected stays "paid" (refund separately).
+    paid_before = _svc_pay.effective_paid(_svc_pay.APPOINTMENT, apt)
     apt.consultation_fee = consult
     apt.registration_fee = regist
     apt.discount_amount = discount
     apt.final_amount = new_total
 
-    # Paid consults that are increased leave a balance; reductions stay paid
-    # because this ledger has no separate amount_paid column.
     status = apt.payment_status or "pending"
-    if status == "paid" and new_total > old_total + 0.01:
-        apt.payment_status = "partial"
-    elif status == "partial" and new_total <= 0.01:
-        apt.payment_status = "paid"
+    if status in ("paid", "partial", "pending"):
+        if apt.amount_paid is None:
+            apt.amount_paid = paid_before
+        apt.payment_status = _svc_pay.derive_status(new_total, apt.amount_paid)
 
     db.commit()
 
@@ -5644,6 +5670,28 @@ async def report_gst_audit_xlsx(
 # Consolidated billing — combine multiple OPD + lab charges into one Bill
 # ---------------------------------------------------------------------------
 
+def _consolidate_amount_apt(a: Appointment) -> float:
+    """What a consolidated bill should charge for this consultation.
+
+    Ledger rows (amount_paid set) carry only the outstanding balance, so money
+    already collected is not billed twice. Legacy rows keep the historical
+    gross consultation + registration amount.
+    """
+    if a.amount_paid is not None:
+        return _svc_pay.balance_due(_svc_pay.APPOINTMENT, a)
+    return float((a.consultation_fee or 0) + (a.registration_fee or 0))
+
+
+def _consolidate_amount_lab(o: PatientLabOrder, test) -> float:
+    if o.amount_paid is not None:
+        return _svc_pay.balance_due(_svc_pay.LAB_ORDER, o)
+    # Snapshotted order.amount wins. Older rows that never stored it fall back to the catalog price.
+    amount = float(o.amount or 0)
+    if amount <= 0 and not getattr(o, "rate_card_id", None) and test:
+        amount = float(test.cost or 0)
+    return amount
+
+
 @router.get("/billing/consolidate/preview")
 async def consolidate_preview(
     patient_id: int,
@@ -5671,10 +5719,11 @@ async def consolidate_preview(
             "date": a.appointment_date.isoformat() if a.appointment_date else None,
             "consultation_fee": float(a.consultation_fee or 0),
             "registration_fee": float(a.registration_fee or 0),
-            "total": float((a.consultation_fee or 0) + (a.registration_fee or 0)),
+            "total": _consolidate_amount_apt(a),
+            "amount_paid": _svc_pay.effective_paid(_svc_pay.APPOINTMENT, a) if a.amount_paid is not None else 0.0,
             "payment_status": a.payment_status,
         }
-        for a in appts if (a.consultation_fee or 0) + (a.registration_fee or 0) > 0
+        for a in appts if _consolidate_amount_apt(a) > 0
     ]
 
     lab_orders = db.query(PatientLabOrder).filter(
@@ -5686,10 +5735,7 @@ async def consolidate_preview(
         if getattr(o, "bill_to", None) == "partner":
             continue
         test = db.query(LabTest).filter(LabTest.id == o.test_id).first()
-        # Snapshotted order.amount wins. Older rows that never stored it fall back to the catalog price.
-        amount = float(o.amount or 0)
-        if amount <= 0 and not getattr(o, "rate_card_id", None) and test:
-            amount = float(test.cost or 0)
+        amount = _consolidate_amount_lab(o, test)
         if not test or amount <= 0:
             continue
         labs.append({
@@ -5774,7 +5820,7 @@ async def create_consolidated_bill(
             continue
         if a.payment_status not in ("pending", "partial"):
             continue
-        amount = float((a.consultation_fee or 0) + (a.registration_fee or 0))
+        amount = _consolidate_amount_apt(a)
         if amount <= 0:
             continue
         db.add(BillItem(
@@ -5799,9 +5845,7 @@ async def create_consolidated_bill(
         if getattr(o, "bill_to", None) == "partner":
             continue
         test = db.query(LabTest).filter(LabTest.id == o.test_id).first()
-        amount = float(o.amount or 0)
-        if amount <= 0 and not getattr(o, "rate_card_id", None) and test:
-            amount = float(test.cost or 0)
+        amount = _consolidate_amount_lab(o, test)
         if not test or amount <= 0:
             continue
         db.add(BillItem(
@@ -6187,3 +6231,136 @@ async def credit_note_pdf(
     from fastapi.responses import Response
     return Response(content=pdf_buffer.getvalue(), media_type="application/pdf",
                     headers={"Content-Disposition": f'inline; filename="{cn.bill_number}.pdf"'})
+
+# ---------------------------------------------------------------------------
+# Collect payment on non-Bill rows of the central billing list
+# (APT-*, LBG-*, LAB-*, PHARM-*, CAN-*). Bill-table rows keep using
+# POST /billing/bills/{bill_id}/payment.
+# ---------------------------------------------------------------------------
+
+class ServiceRowPaymentIn(BaseModel):
+    amount: float = Field(..., gt=0)
+    payment_method: str = Field(default="cash", max_length=50)
+    reference: Optional[str] = Field(None, max_length=100)
+    notes: Optional[str] = Field(None, max_length=500)
+
+
+def _require_collect_role(current_user: User) -> None:
+    if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin', 'receptionist', 'frontdesk', 'billing_admin']):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+
+def _service_row_targets(db: Session, row_id: str, hospital_id: int):
+    """Resolve a billing-list row id to (source_type, [objects], label)."""
+    prefix, _, key = (row_id or "").partition("-")
+    if not key:
+        raise HTTPException(status_code=400, detail="Unknown bill row")
+    if prefix == "APT":
+        apt = db.query(Appointment).join(Patient).filter(
+            Appointment.id == int(key), Patient.hospital_id == hospital_id,
+        ).first()
+        if not apt:
+            raise HTTPException(status_code=404, detail="Consultation bill not found")
+        return _svc_pay.APPOINTMENT, [apt], apt.appointment_number
+    if prefix in ("LBG", "LAB"):
+        q = db.query(PatientLabOrder).join(Patient).filter(Patient.hospital_id == hospital_id)
+        if prefix == "LBG":
+            orders = q.filter(PatientLabOrder.lab_bill_group_id == key).order_by(PatientLabOrder.id).all()
+        else:
+            orders = q.filter(PatientLabOrder.id == int(key)).all()
+        orders = [
+            o for o in orders
+            if (o.bill_to or "patient") == "patient" and o.admission_id is None
+        ]
+        if not orders:
+            raise HTTPException(status_code=404, detail="Lab bill not found")
+        return _svc_pay.LAB_ORDER, orders, (orders[0].lab_bill_number or orders[0].order_number)
+    if prefix == "PHARM":
+        sale = db.query(PharmacySale).filter(
+            PharmacySale.id == int(key), PharmacySale.hospital_id == hospital_id,
+        ).first()
+        if not sale:
+            raise HTTPException(status_code=404, detail="Pharmacy sale not found")
+        if (sale.billing_mode or "cash_at_pharmacy") != "cash_at_pharmacy":
+            raise HTTPException(status_code=400, detail="Inpatient sales are settled on the admission bill")
+        return _svc_pay.PHARMACY_SALE, [sale], sale.sale_number
+    if prefix == "CAN":
+        from app.models.canteen import CanteenSale
+        sale = db.query(CanteenSale).filter(
+            CanteenSale.id == int(key), CanteenSale.hospital_id == hospital_id,
+        ).first()
+        if not sale:
+            raise HTTPException(status_code=404, detail="Canteen sale not found")
+        return _svc_pay.CANTEEN_SALE, [sale], sale.sale_number
+    raise HTTPException(status_code=400, detail="This bill uses the standard bill payment endpoint")
+
+
+def _service_row_payload(db: Session, row_id: str, source_type: str, objs, label: str) -> dict:
+    total = round(sum(_svc_pay.total_for(source_type, o) for o in objs), 2)
+    paid = round(sum(_svc_pay.effective_paid(source_type, o) for o in objs), 2)
+    due = round(sum(_svc_pay.balance_due(source_type, o) for o in objs), 2)
+    rows = _svc_pay.payments_for(db, source_type, [o.id for o in objs])
+    merged = {}
+    for r in rows:
+        k = (r.payment_date, r.payment_method, r.reference)
+        if k in merged:
+            merged[k]["amount"] = round(merged[k]["amount"] + float(r.amount or 0), 2)
+        else:
+            merged[k] = _svc_pay.payment_rows_json([r])[0]
+    if due <= _svc_pay.EPS:
+        state = "paid"
+    elif paid > _svc_pay.EPS:
+        state = "partial"
+    else:
+        state = "pending"
+    states = {_svc_pay.payment_state(source_type, o) for o in objs}
+    if states and states <= {"cancelled", "refunded"}:
+        state = "cancelled"
+    return {
+        "row_id": row_id,
+        "reference": label,
+        "source_type": source_type,
+        "total_amount": total,
+        "amount_paid": min(paid, total) if total > 0 else paid,
+        "balance_due": due,
+        "payment_state": state,
+        "payments": list(merged.values()),
+    }
+
+
+@router.get("/billing/rows/{row_id}/payments")
+async def get_service_row_payments(
+    row_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Paid / balance / receipts for a consultation, lab, pharmacy or canteen row."""
+    _require_collect_role(current_user)
+    st, objs, label = _service_row_targets(db, row_id, current_user.hospital_id)
+    return _service_row_payload(db, row_id, st, objs, label)
+
+
+@router.post("/billing/rows/{row_id}/payments")
+async def collect_service_row_payment(
+    row_id: str,
+    req: ServiceRowPaymentIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Collect full or partial payment on a consultation, lab, pharmacy or canteen row."""
+    _require_collect_role(current_user)
+    st, objs, label = _service_row_targets(db, row_id, current_user.hospital_id)
+    if st == _svc_pay.CANTEEN_SALE and req.payment_method not in ("cash", "upi", "card"):
+        raise HTTPException(status_code=400, detail="Canteen accepts cash, UPI or card")
+    kw = dict(
+        method=req.payment_method, received_by_id=current_user.id,
+        hospital_id=current_user.hospital_id, when=datetime.now(),
+        reference=req.reference, notes=req.notes,
+    )
+    if len(objs) > 1:
+        _svc_pay.record_group_payment(db, st, objs, req.amount, **kw)
+    else:
+        _svc_pay.record_payment(db, st, objs[0], req.amount, **kw)
+    db.commit()
+    _svc_pay.audit_collection(db, current_user, st, objs[0].id, label, req.amount, req.payment_method)
+    return _service_row_payload(db, row_id, st, objs, label)

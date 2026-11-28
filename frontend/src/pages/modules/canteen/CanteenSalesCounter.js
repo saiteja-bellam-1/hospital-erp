@@ -27,6 +27,8 @@ export default function CanteenSalesCounter({ canCreate = true, canViewSales = t
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [paymentType, setPaymentType] = useState('cash');
+  // Blank = full amount; a smaller figure leaves a balance to collect later.
+  const [amountReceived, setAmountReceived] = useState('');
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [discount, setDiscount] = useState('');
@@ -100,18 +102,29 @@ export default function CanteenSalesCounter({ canCreate = true, canViewSales = t
       toast({ variant: 'destructive', title: 'Cart is empty' });
       return;
     }
+    if (amountReceived !== '' && (Number(amountReceived) < 0 || Number(amountReceived) > grandTotal + 0.009)) {
+      toast({ variant: 'destructive', title: 'Check amount received', description: `Enter between ₹0 and ₹${grandTotal.toFixed(2)}` });
+      return;
+    }
     setBusy(true);
     try {
       const res = await axios.post('/api/canteen/sales', {
         payment_type: paymentType,
+        ...(amountReceived !== '' ? { amount_paid: Math.round(Number(amountReceived) * 100) / 100 } : {}),
         customer_name: customerName || null,
         customer_phone: customerPhone || null,
         discount_amount: discountAmt,
         notes: notes || null,
         items: cartLines.map((l) => ({ item_id: l.id, quantity: l.quantity })),
       });
-      toast({ title: 'Sale completed', description: res.data.sale_number });
+      toast({
+        title: 'Sale completed',
+        description: Number(res.data?.balance_due) > 0
+          ? `${res.data.sale_number} · balance ₹${Number(res.data.balance_due).toFixed(2)} pending`
+          : res.data.sale_number,
+      });
       clearCart();
+      setAmountReceived('');
       if (canViewSales && res.data?.id) setPreviewSaleId(res.data.id);
     } catch (e) {
       toast({ variant: 'destructive', title: 'Sale failed', description: errMsg(e) });
@@ -268,10 +281,24 @@ export default function CanteenSalesCounter({ canCreate = true, canViewSales = t
               <div className="flex justify-between font-semibold">
                 <span>Total</span><span>₹{grandTotal.toFixed(2)}</span>
               </div>
+              {grandTotal > 0 && (
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <Label className="text-xs">Received now (₹)</Label>
+                  <Input className="h-8 w-28 text-xs text-right" type="number" min="0" step="0.01"
+                    value={amountReceived} placeholder={grandTotal.toFixed(2)}
+                    onChange={(e) => setAmountReceived(e.target.value)} disabled={!canCreate} />
+                </div>
+              )}
+              {amountReceived !== '' && Number(amountReceived) < grandTotal && (
+                <p className="text-xs font-semibold text-amber-700 text-right">
+                  Balance ₹{Math.max(0, grandTotal - (Number(amountReceived) || 0)).toFixed(2)} to collect later
+                </p>
+              )}
             </div>
 
             <Button className="w-full" onClick={checkout} disabled={!canCreate || busy || !cartLines.length}>
-              {busy ? 'Processing…' : `Collect ₹${grandTotal.toFixed(2)}`}
+              {busy ? 'Processing…'
+                : `Collect ₹${(amountReceived === '' ? grandTotal : Math.min(Number(amountReceived) || 0, grandTotal)).toFixed(2)}`}
             </Button>
           </CardContent>
         </Card>

@@ -136,9 +136,8 @@ async def migrate_database_location(
 
 @router.get("/storage")
 async def get_data_storage(current_user: User = Depends(get_current_user)):
-    """File and folder sizes for the data directory. Super admin only."""
-    if "super_admin" not in (current_user.role_names or []):
-        raise HTTPException(status_code=403, detail="Super admin access required")
+    """File and folder sizes plus analytics for the data directory. Admin only."""
+    _require_admin(current_user)
     from app.services.data_folder import describe_storage
     return describe_storage()
 

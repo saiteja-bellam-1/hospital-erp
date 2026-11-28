@@ -32,7 +32,24 @@ export function isAppointmentSubmitDisabled(form, { loading = false, selectedPat
 
 /** Normalize form fields for POST /api/appointments/ — empty time becomes null. */
 export function buildAppointmentCreatePayload(form, { patient_id } = {}) {
-  const payload = { ...form };
+  const { payment, ...rest } = form || {};
+  const payload = { ...rest };
+  // `payment` comes from <PaymentCollectionFields>: full / partial / pay later.
+  if (payment) {
+    const mode = payment.mode || 'full';
+    payload.payment_method = payment.method || payload.payment_method || 'cash';
+    if (payment.reference) payload.payment_reference = payment.reference;
+    if (mode === 'later') {
+      payload.payment_status = 'pending';
+      payload.amount_paid = 0;
+    } else if (mode === 'partial') {
+      payload.payment_status = 'partial';
+      payload.amount_paid = Math.round((Number(payment.amount) || 0) * 100) / 100;
+    } else {
+      payload.payment_status = 'paid';
+      delete payload.amount_paid;
+    }
+  }
   if (patient_id) payload.patient_id = patient_id;
   if (!payload.appointment_time) {
     payload.appointment_time = null;

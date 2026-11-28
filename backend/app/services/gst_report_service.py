@@ -13,6 +13,7 @@ from typing import Optional
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func as sql_func
 
+from app.services import service_payments as _svc_pay
 from app.models.billing import Bill, BillItem, Payment
 from app.models.patient import Patient
 from app.models.outpatient import Appointment
@@ -345,9 +346,8 @@ def collect_sales_invoices(db: Session, hospital_id: int, d_from: date, d_to: da
         billed = _money(a.final_amount) if a.final_amount else _money(
             (a.consultation_fee or 0) + (a.registration_fee or 0) - (a.discount_amount or 0)
         )
-        collected = billed if (a.payment_status or "") == "paid" else 0.0
-        if (a.payment_status or "") == "partial":
-            collected = 0.0
+        # Money actually collected (partial payments count what was received).
+        collected = _money(min(_svc_pay.effective_paid(_svc_pay.APPOINTMENT, a), billed))
         p = a.patient
         name = f"{p.first_name} {p.last_name}" if p else ""
         gstin = getattr(p, "gstin", None) if p else None
@@ -378,14 +378,15 @@ def collect_sales_invoices(db: Session, hospital_id: int, d_from: date, d_to: da
             ungrouped.append(lo)
 
     def _lab_row(orders, number, when):
-        billed = _money(sum(float(o.amount or 0) for o in orders))
+        billed = _money(sum(_svc_pay.total_for(_svc_pay.LAB_ORDER, o) for o in orders))
         status = orders[0].payment_status
-        collected = billed if status == "paid" else 0.0
+        collected = _money(min(sum(_svc_pay.effective_paid(_svc_pay.LAB_ORDER, o) for o in orders), billed))
+        disc = _money(sum(float(o.discount_amount or 0) for o in orders))
         p = orders[0].patient
         name = f"{p.first_name} {p.last_name}" if p else ""
         gstin = getattr(p, "gstin", None) if p else None
         rows.append(_invoice_row(
-            "lab", _as_date(when), number, billed, 0, 0, collected,
+            "lab", _as_date(when), number, billed, disc, 0, collected,
             party=name, gstin=gstin or "", hsn=SAC_HEALTHCARE,
             patient_id=orders[0].patient_id,
             extra={"tax_category": TAX_EXEMPT, "status": status},
@@ -466,9 +467,10 @@ def collect_sales_invoices(db: Session, hospital_id: int, d_from: date, d_to: da
         mode = s.billing_mode or "cash_at_pharmacy"
         module = "pharmacy_ip" if mode == "inpatient_bill" else "pharmacy"
         billed = _money(s.grand_total)
-        collected = billed if module == "pharmacy" and (s.payment_type or "cash") != "credit" else 0.0
-        if module == "pharmacy" and (s.payment_type or "cash") == "credit":
-            collected = 0.0
+        collected = (
+            _money(min(_svc_pay.effective_paid(_svc_pay.PHARMACY_SALE, s), billed))
+            if module == "pharmacy" else 0.0
+        )
         gstin = s.customer_gstin or ""
         tax = _money(s.tax_total or 0)
         taxable = _money(max(billed - tax, 0))

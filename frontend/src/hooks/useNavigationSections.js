@@ -8,7 +8,7 @@ import {
   DownloadCloud, Pill, ShoppingCart, Boxes, Truck, BookOpen, LayoutGrid, Plus,
   Warehouse, Tags, Layers, Ruler, Percent, Link2, ArrowLeftRight, Store, Droplets,
   UtensilsCrossed, IndianRupee, Settings2, Undo2, UserCheck, PanelTop, Settings,
-  CreditCard, Heart, Wallet,
+  CreditCard, Heart, Wallet, MessageCircle,
 } from 'lucide-react';
 import { PHARMACY_ROLE_NAMES } from './usePharmacyPermissions';
 import { CANTEEN_ROLE_NAMES } from './useCanteenPermissions';
@@ -353,6 +353,12 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
       add(items, make('Prices', BookOpen, '/dashboard/art/catalog'));
     }
     add(items, make('Donor bank', Heart, '/dashboard/art/bank'));
+    if (hasAnyRole('hospital_admin', 'super_admin', 'art_embryologist', 'art_bank_officer')) {
+      add(items, make('Cryo storage', Boxes, '/dashboard/art/cryo'));
+    }
+    if (hasAnyRole('hospital_admin', 'super_admin')) {
+      add(items, make('Registers', ClipboardList, '/dashboard/art/registers'));
+    }
     if (hasAnyRole('hospital_admin', 'super_admin', 'billing_admin', 'art_clinician', 'art_embryologist', 'art_bank_officer')) {
       add(items, make('Results', BarChart3, '/dashboard/art/reports'));
     }
@@ -398,6 +404,7 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     add(admin, make('Doctor Profiles', UserCheck, '/dashboard/hospital-admin/doctors'));
     add(admin, make('Hospital Info', Building2, '/dashboard/hospital-admin/info'));
     add(admin, make('Appearance', PanelTop, '/dashboard/hospital-admin/appearance'));
+    add(admin, make('WhatsApp', MessageCircle, '/dashboard/admin/whatsapp'));
     add(admin, make('Customisations', Printer, '/dashboard/print-settings'));
     add(admin, make('Guided Setup', ClipboardList, '/dashboard/setup'));
     if (admin.length > 0) sections.push({ label: 'Administration', items: admin });

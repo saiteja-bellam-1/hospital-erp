@@ -368,6 +368,7 @@ const InpatientModule = () => {
   const VITALS_BLANK = {
     shift: 'morning', bp_systolic: '', bp_diastolic: '', heart_rate: '', respiratory_rate: '',
     temperature_c: '', spo2: '', blood_glucose: '', pain_score: '', gcs_score: '',
+    consciousness: '', on_supplemental_o2: false,
     weight_kg: '', height_cm: '', position: '', notes: '',
   };
   const [vitalsForm, setVitalsForm] = useState(VITALS_BLANK);
@@ -5135,6 +5136,7 @@ const InpatientModule = () => {
                                   <th className="px-2 py-2">SpO₂</th>
                                   <th className="px-2 py-2">Glu</th>
                                   <th className="px-2 py-2">Pain</th>
+                                  <th className="px-2 py-2" title="National Early Warning Score 2">NEWS2</th>
                                   <th className="px-2 py-2">By</th>
                                   <th className="px-2 py-2"></th>
                                 </tr>
@@ -5159,11 +5161,22 @@ const InpatientModule = () => {
                                       {cell('spo2', v.spo2, '%')}
                                       {cell('blood_glucose', v.blood_glucose)}
                                       {cell('pain_score', v.pain_score)}
+                                      <td className="px-2 py-1.5" title={v.news2_escalation || ''}>
+                                        {v.news2_score != null ? (
+                                          <span className={`inline-block rounded px-1.5 py-0.5 font-semibold ${
+                                            v.news2_risk === 'high' ? 'bg-red-600 text-white'
+                                            : v.news2_risk === 'medium' ? 'bg-orange-500 text-white'
+                                            : v.news2_risk === 'low_medium' ? 'bg-yellow-300 text-yellow-900'
+                                            : 'bg-green-100 text-green-800'}`}>
+                                            {v.news2_score}
+                                          </span>
+                                        ) : '–'}
+                                      </td>
                                       <td className="px-2 py-1.5">{v.recorded_by_name || '–'}</td>
                                       <td className="px-2 py-1.5">
                                         {canRecordVitals && (
                                           <Button variant="ghost" size="sm" className="h-6 w-6 p-0"
-                                            onClick={() => setConfirmState({ open: true, title: 'Delete vitals?', description: 'This entry will be removed.', onConfirm: () => { setConfirmState({ open: false }); handleDeleteVitals(v.id); } })}>
+                                            onClick={() => setConfirmState({ open: true, title: 'Delete vitals?', description: 'This entry will be removed. A copy is kept in the audit log.', onConfirm: () => { setConfirmState({ open: false }); handleDeleteVitals(v.id); } })}>
                                             <Trash2 className="h-3.5 w-3.5 text-red-500" />
                                           </Button>
                                         )}
@@ -7096,6 +7109,26 @@ const InpatientModule = () => {
               <div>
                 <Label>GCS (3-15)</Label>
                 <Input type="number" min="3" max="15" value={vitalsForm.gcs_score} onChange={e => setVitalsForm(p => ({ ...p, gcs_score: e.target.value }))} />
+              </div>
+              <div>
+                <Label>Consciousness (AVPU)</Label>
+                <select className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                  value={vitalsForm.consciousness}
+                  onChange={e => setVitalsForm(p => ({ ...p, consciousness: e.target.value }))}>
+                  <option value="">Not assessed</option>
+                  <option value="alert">Alert</option>
+                  <option value="confusion">New confusion</option>
+                  <option value="voice">Responds to voice</option>
+                  <option value="pain">Responds to pain</option>
+                  <option value="unresponsive">Unresponsive</option>
+                </select>
+              </div>
+              <div className="flex items-end pb-2">
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={!!vitalsForm.on_supplemental_o2}
+                    onChange={e => setVitalsForm(p => ({ ...p, on_supplemental_o2: e.target.checked }))} />
+                  On supplemental oxygen
+                </label>
               </div>
               <div>
                 <Label>Weight (kg)</Label>

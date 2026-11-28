@@ -115,3 +115,31 @@ class Payment(Base):
 
     bill = relationship("Bill", back_populates="payments")
     payment_method = relationship("PaymentMethod", back_populates="payments")
+
+class ServicePayment(Base):
+    """Payment ledger for invoices that do not live in the ``bills`` table.
+
+    OP appointments, reception lab orders, pharmacy counter sales and canteen
+    sales keep their own header rows. Each money collection against one of
+    them (at booking or later) is one row here, so partial payments and
+    multi-day / multi-method collections are reported on the day and method
+    they were actually received. Refunds are negative rows.
+
+    The parent row caches the running total in its ``amount_paid`` column.
+    ``amount_paid IS NULL`` on the parent means the row predates this ledger
+    and its collection is derived from ``payment_status`` (legacy rule).
+    """
+    __tablename__ = "service_payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=True, index=True)
+    # appointment | lab_order | pharmacy_sale | canteen_sale
+    source_type = Column(String(30), nullable=False, index=True)
+    source_id = Column(Integer, nullable=False, index=True)
+    amount = Column(Float, nullable=False)
+    payment_method = Column(String(50), default="cash")
+    payment_date = Column(DateTime, nullable=False, default=system_now, index=True)
+    reference = Column(String(100), nullable=True)
+    notes = Column(Text, nullable=True)
+    received_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=system_now)

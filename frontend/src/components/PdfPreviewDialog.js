@@ -4,7 +4,9 @@ import { Link } from 'react-router-dom';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
-import { Download, Printer } from 'lucide-react';
+import { Download, Printer, MessageCircle } from 'lucide-react';
+import WhatsAppSendDialog from './WhatsAppSendDialog';
+import useWhatsAppStatus from '../hooks/useWhatsAppStatus';
 import {
   resolveIncludeHeaderForReport,
   usePdfPrintSettings,
@@ -23,6 +25,8 @@ import {
  *   filename string — optional download filename (defaults to document.pdf)
  *   letterheadReportType string|null — when set (e.g. "lab_report"), show
  *     Include letterhead checkbox that re-fetches with include_header
+ *   whatsapp object|null — { kind, phone, patientName, patientId, context }. When set and
+ *     WhatsApp is enabled + linked, shows a "WhatsApp" button that sends this exact PDF.
  */
 const PdfPreviewDialog = ({
   open,
@@ -32,7 +36,10 @@ const PdfPreviewDialog = ({
   params = {},
   filename = 'document.pdf',
   letterheadReportType = null,
+  whatsapp = null,
 }) => {
+  const wa = useWhatsAppStatus();
+  const [waOpen, setWaOpen] = useState(false);
   const [pdfUrl, setPdfUrl] = useState(null);
   const [loading, setLoading] = useState(false);
   const { settings, isLoading: settingsLoading } = usePdfPrintSettings();
@@ -186,9 +193,32 @@ const PdfPreviewDialog = ({
             >
               <Printer className="h-4 w-4 mr-2" /> Print
             </Button>
+            {whatsapp && wa.available && (
+              <Button
+                variant="outline"
+                onClick={() => setWaOpen(true)}
+                disabled={!pdfUrl || loading}
+                className="flex-1 border-green-300 text-green-700 hover:bg-green-50"
+              >
+                <MessageCircle className="h-4 w-4 mr-2" /> WhatsApp
+              </Button>
+            )}
           </div>
         </div>
       </DialogContent>
+      {whatsapp && (
+        <WhatsAppSendDialog
+          open={waOpen}
+          onClose={() => setWaOpen(false)}
+          kind={whatsapp.kind}
+          phone={whatsapp.phone}
+          patientName={whatsapp.patientName}
+          patientId={whatsapp.patientId}
+          context={whatsapp.context}
+          filename={filename}
+          getFile={async () => (pdfUrl ? (await fetch(pdfUrl)).blob() : null)}
+        />
+      )}
     </Dialog>
   );
 };

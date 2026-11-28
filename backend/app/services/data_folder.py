@@ -313,6 +313,77 @@ def _scan_directory(root: str) -> list[dict]:
     return entries
 
 
+_TYPE_GROUPS = {
+    "Database": {".db", ".sqlite", ".sqlite3", ".db-wal", ".db-shm", ".db-journal"},
+    "PDF documents": {".pdf"},
+    "Images": {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tif", ".tiff"},
+    "Spreadsheets": {".xlsx", ".xls", ".csv"},
+    "Word documents": {".doc", ".docx", ".txt", ".rtf"},
+    "Logs": {".log"},
+    "Backups / archives": {".bak", ".zip", ".7z", ".gz"},
+}
+
+
+def _type_group(name: str) -> str:
+    ext = os.path.splitext(name)[1].lower()
+    for group, exts in _TYPE_GROUPS.items():
+        if ext in exts:
+            return group
+    return "Other"
+
+
+def _analyze(paths: list[str], top_n: int = 10) -> dict:
+    """One pass over the measured paths: size by file type, largest files, age."""
+    import time
+    by_type: dict[str, dict] = {}
+    files: list[tuple[int, float, str]] = []
+    now = time.time()
+    last_30 = 0
+    oldest = newest = None
+
+    def visit(fp: str) -> None:
+        nonlocal last_30, oldest, newest
+        if os.path.islink(fp):
+            return
+        try:
+            st = os.stat(fp)
+        except OSError:
+            return
+        group = by_type.setdefault(_type_group(fp), {"file_count": 0, "bytes": 0})
+        group["file_count"] += 1
+        group["bytes"] += st.st_size
+        files.append((st.st_size, st.st_mtime, fp))
+        if now - st.st_mtime <= 30 * 86400:
+            last_30 += 1
+        oldest = st.st_mtime if oldest is None else min(oldest, st.st_mtime)
+        newest = st.st_mtime if newest is None else max(newest, st.st_mtime)
+
+    for path in paths:
+        if os.path.isfile(path):
+            visit(path)
+        elif os.path.isdir(path) and not os.path.islink(path):
+            for root, _dirs, names in os.walk(path, followlinks=False):
+                for name in names:
+                    visit(os.path.join(root, name))
+
+    from datetime import datetime
+    iso = lambda ts: datetime.fromtimestamp(ts).isoformat() if ts else None
+    files.sort(reverse=True)
+    return {
+        "by_type": sorted(
+            ({"type": k, **v} for k, v in by_type.items()),
+            key=lambda item: item["bytes"], reverse=True,
+        ),
+        "largest_files": [
+            {"name": os.path.basename(fp), "path": fp, "bytes": size, "modified": iso(mtime)}
+            for size, mtime, fp in files[:top_n]
+        ],
+        "modified_last_30_days": last_30,
+        "oldest_file": iso(oldest),
+        "newest_file": iso(newest),
+    }
+
+
 def describe_storage(data_root: str | None = None, db_path: str | None = None) -> dict:
     """Size of the data folder, including hidden files.
 
@@ -355,6 +426,7 @@ def describe_storage(data_root: str | None = None, db_path: str | None = None) -
         "total_bytes": total_bytes,
         "total_files": total_files,
         "entries": entries,
+        "analytics": _analyze([item["path"] for item in entries]),
         "note": (
             "Development checkout. These are the hospital files, not the source tree."
             if source_tree else ""

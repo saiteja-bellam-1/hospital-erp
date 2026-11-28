@@ -31,6 +31,7 @@ const BackupManagement = () => {
   const { user } = useAuth();
   const roleNames = (user?.roles || []).map((role) => (typeof role === 'string' ? role : role?.name)).filter(Boolean);
   const isSuperAdmin = roleNames.includes('super_admin');
+  const canSeeStorage = isSuperAdmin || roleNames.includes('hospital_admin');
   const [loading, setLoading] = useState(true);
   const [systemInfo, setSystemInfo] = useState(null);
   const [locations, setLocations] = useState([]);
@@ -145,10 +146,10 @@ const BackupManagement = () => {
     fetchGdriveStatus();
     fetchGdriveLive();
     fetchLogErrors({ openPopup: true });
-    if (isSuperAdmin) fetchStorage();
+    if (canSeeStorage) fetchStorage();
     const interval = setInterval(() => { fetchMirrorStatus(); fetchSnapshotStatus(); fetchGdriveStatus(); }, 15000);
     return () => clearInterval(interval);
-  }, [isSuperAdmin]);
+  }, [canSeeStorage]);
 
   const browseFolder = async (callback) => {
     setBrowsing(true);
@@ -423,7 +424,7 @@ const BackupManagement = () => {
         )}
       </div>
 
-      {isSuperAdmin && (
+      {canSeeStorage && (
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between gap-2">
@@ -447,6 +448,42 @@ const BackupManagement = () => {
                   <p className="text-sm font-semibold">{formatBytes(storage.total_bytes)} <span className="font-normal text-gray-500">· {storage.total_files} file{storage.total_files === 1 ? '' : 's'}</span></p>
                 </div>
                 {storage.note && <p className="text-xs text-gray-500">{storage.note}</p>}
+                {storage.analytics && (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="border rounded-lg p-2.5">
+                      <p className="text-xs font-semibold text-gray-700 mb-2">Storage by file type</p>
+                      <div className="space-y-1.5">
+                        {storage.analytics.by_type.map((t) => {
+                          const pct = storage.total_bytes ? (t.bytes / storage.total_bytes) * 100 : 0;
+                          return (
+                            <div key={t.type}>
+                              <div className="flex justify-between text-xs">
+                                <span>{t.type} <span className="text-gray-400">({t.file_count})</span></span>
+                                <span className="tabular-nums">{formatBytes(t.bytes)}</span>
+                              </div>
+                              <div className="h-1 bg-gray-100 rounded"><div className="h-1 bg-blue-500 rounded" style={{ width: `${Math.min(100, pct)}%` }} /></div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div className="border rounded-lg p-2.5">
+                      <p className="text-xs font-semibold text-gray-700 mb-2">Largest files</p>
+                      <div className="space-y-1">
+                        {storage.analytics.largest_files.map((f) => (
+                          <div key={f.path} className="flex justify-between gap-3 text-xs text-gray-600" title={f.path}>
+                            <span className="truncate">{f.name}</span>
+                            <span className="tabular-nums shrink-0">{formatBytes(f.bytes)}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-2 pt-2 border-t text-[11px] text-gray-500 space-y-0.5">
+                        <p>{storage.analytics.modified_last_30_days} file{storage.analytics.modified_last_30_days === 1 ? '' : 's'} changed in the last 30 days</p>
+                        {storage.analytics.oldest_file && <p>Oldest: {new Date(storage.analytics.oldest_file).toLocaleDateString()} · Newest: {new Date(storage.analytics.newest_file).toLocaleDateString()}</p>}
+                      </div>
+                    </div>
+                  </div>
+                )}
                 {storage.entries?.length === 0 ? (
                   <p className="text-sm text-gray-500">The data folder is empty.</p>
                 ) : (

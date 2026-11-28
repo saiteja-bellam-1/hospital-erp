@@ -19,6 +19,8 @@ from app.utils.auth import Modules
 from app.utils.pdf_service import pdf_service
 from app.utils.patient_age import format_patient_age, patient_age_years_int
 from app.services.availability_service import AvailabilityService
+from app.services.service_payments import ServicePaymentIn
+from app.services import service_payments as _sp
 
 router = APIRouter()
 
@@ -47,6 +49,10 @@ class AppointmentCreate(BaseModel):
     # Payment fields
     payment_status: str = Field(default="pending")
     payment_method: Optional[str] = Field(None, pattern="^(cash|card|upi|cheque|online|insurance)$")
+    # Amount received at booking. Omitted -> derived from payment_status
+    # (paid = full fee, pending = nothing). Less than the fee -> "partial".
+    amount_paid: Optional[float] = Field(None, ge=0)
+    payment_reference: Optional[str] = Field(None, max_length=100)
     discount_amount: float = Field(default=0.0, ge=0)
     payment_notes: Optional[str] = None
     referred_by: Optional[str] = Field(None, max_length=100)
@@ -90,6 +96,8 @@ class AppointmentResponse(BaseModel):
     payment_notes: Optional[str] = None
     discount_amount: float = 0.0
     final_amount: float = 0.0
+    amount_paid: Optional[float] = None
+    balance_due: Optional[float] = None
     referred_by: Optional[str] = None
     override_availability: bool = False
     override_reason: Optional[str] = None
@@ -449,6 +457,8 @@ def _enrich_appointment_dict(apt: Appointment) -> dict:
         "payment_notes": apt.payment_notes,
         "discount_amount": apt.discount_amount or 0.0,
         "final_amount": apt.final_amount or 0.0,
+        "amount_paid": _sp.effective_paid(_sp.APPOINTMENT, apt),
+        "balance_due": _sp.balance_due(_sp.APPOINTMENT, apt),
         "referred_by": apt.referred_by,
         "override_availability": bool(apt.override_availability),
         "override_reason": apt.override_reason,
@@ -577,6 +587,19 @@ async def create_appointment(
     )
     
     db.add(appointment)
+    db.flush()
+    if (appointment_data.payment_status or "").lower() not in ("waived", "cancelled"):
+        from app.services import service_payments as sp
+        initial = sp.resolve_initial_amount(
+            final_amount, appointment_data.amount_paid, appointment_data.payment_status,
+        )
+        sp.set_initial_payment(
+            db, sp.APPOINTMENT, appointment, initial,
+            method=appointment_data.payment_method or "cash",
+            received_by_id=current_user.id,
+            hospital_id=current_user.hospital_id,
+            reference=appointment_data.payment_reference,
+        )
     db.commit()
     db.refresh(appointment)
 
@@ -695,6 +718,22 @@ async def update_appointment(
     
     # Update fields
     update_data = {k: v for k, v in appointment_update.dict().items() if v is not None}
+
+    # Marking a part-paid / unpaid ledger appointment "paid" records the
+    # outstanding balance as a real collection so reports see the money.
+    from app.services import service_payments as sp
+    if (
+        update_data.get("payment_status") == "paid"
+        and appointment.amount_paid is not None
+        and sp.balance_due(sp.APPOINTMENT, appointment) > sp.EPS
+    ):
+        sp.record_payment(
+            db, sp.APPOINTMENT, appointment, sp.balance_due(sp.APPOINTMENT, appointment),
+            method=update_data.get("payment_method") or appointment.payment_method or "cash",
+            received_by_id=current_user.id,
+            hospital_id=current_user.hospital_id,
+        )
+        update_data.pop("payment_status")
 
     for field, value in update_data.items():
         setattr(appointment, field, value)
@@ -969,6 +1008,18 @@ async def reschedule_appointment(
     )
 
     db.add(new_appointment)
+    db.flush()
+    # Money already collected moves with the booking, so it is reported once.
+    if appointment.amount_paid is not None:
+        from app.models.billing import ServicePayment
+        db.query(ServicePayment).filter(
+            ServicePayment.source_type == _sp.APPOINTMENT,
+            ServicePayment.source_id == appointment.id,
+        ).update({ServicePayment.source_id: new_appointment.id}, synchronize_session=False)
+        new_appointment.amount_paid = appointment.amount_paid
+        new_appointment.payment_date = appointment.payment_date
+        appointment.amount_paid = 0.0
+        appointment.payment_status = "cancelled"
     db.commit()
     db.refresh(new_appointment)
 
@@ -1402,7 +1453,9 @@ async def get_daily_summary(
     total_collected = 0.0
     payment_methods = {}
 
+    from app.services import service_payments as sp
     for apt in appointments:
+        apt_paid = sp.effective_paid(sp.APPOINTMENT, apt) if apt.payment_status not in ("cancelled", "refunded", "waived") else 0.0
         # Status counts
         by_status[apt.status] = by_status.get(apt.status, 0) + 1
 
@@ -1412,24 +1465,22 @@ async def get_daily_summary(
             by_doctor[doctor_name] = {"count": 0, "revenue": 0.0, "collected": 0.0}
         by_doctor[doctor_name]["count"] += 1
         by_doctor[doctor_name]["revenue"] += apt.final_amount or 0.0
-        if apt.payment_status == "paid":
-            by_doctor[doctor_name]["collected"] += apt.final_amount or 0.0
+        by_doctor[doctor_name]["collected"] += apt_paid
 
         # Type counts
         by_type[apt.appointment_type or "consultation"] = by_type.get(apt.appointment_type or "consultation", 0) + 1
 
         # Revenue
         total_revenue += apt.final_amount or 0.0
-        if apt.payment_status == "paid":
-            total_collected += apt.final_amount or 0.0
+        total_collected += apt_paid
 
         # Payment methods
-        if apt.payment_status == "paid" and apt.payment_method:
+        if apt_paid > 0 and apt.payment_method:
             method = apt.payment_method
             if method not in payment_methods:
                 payment_methods[method] = {"count": 0, "amount": 0.0}
             payment_methods[method]["count"] += 1
-            payment_methods[method]["amount"] += apt.final_amount or 0.0
+            payment_methods[method]["amount"] += apt_paid
 
     return {
         "date": target_date.isoformat(),
@@ -1469,6 +1520,57 @@ async def delete_appointment(
     db.commit()
     
     return None
+
+def _get_hospital_appointment(db: Session, appointment_id: int, user: User) -> Appointment:
+    appointment = db.query(Appointment).join(Patient).filter(
+        Appointment.id == appointment_id,
+        Patient.hospital_id == user.hospital_id,
+    ).first()
+    if not appointment:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+    return appointment
+
+
+@router.get("/{appointment_id}/payments")
+async def list_appointment_payments(
+    appointment_id: int,
+    current_user: User = Depends(require_permission(Modules.OUTPATIENT, "read")),
+    db: Session = Depends(get_db),
+):
+    """Payment summary + every collection against this appointment's bill."""
+    from app.services import service_payments as sp
+    appointment = _get_hospital_appointment(db, appointment_id, current_user)
+    return {
+        **sp.summary(sp.APPOINTMENT, appointment),
+        "payments": sp.payment_rows_json(sp.payments_for(db, sp.APPOINTMENT, [appointment.id])),
+    }
+
+
+@router.post("/{appointment_id}/payments")
+async def collect_appointment_payment(
+    appointment_id: int,
+    body: ServicePaymentIn,
+    current_user: User = Depends(require_permission(Modules.OUTPATIENT, "write")),
+    db: Session = Depends(get_db),
+):
+    """Collect full or partial payment against an appointment's consultation bill."""
+    from app.services import service_payments as sp
+    appointment = _get_hospital_appointment(db, appointment_id, current_user)
+    sp.record_payment(
+        db, sp.APPOINTMENT, appointment, body.amount,
+        method=body.payment_method, received_by_id=current_user.id,
+        hospital_id=current_user.hospital_id,
+        reference=body.reference, notes=body.notes,
+    )
+    db.commit()
+    db.refresh(appointment)
+    sp.audit_collection(db, current_user, sp.APPOINTMENT, appointment.id,
+                        appointment.appointment_number, body.amount, body.payment_method)
+    return {
+        **sp.summary(sp.APPOINTMENT, appointment),
+        "payments": sp.payment_rows_json(sp.payments_for(db, sp.APPOINTMENT, [appointment.id])),
+    }
+
 
 @router.get("/{appointment_id}/bill")
 async def get_appointment_bill(
@@ -1536,16 +1638,22 @@ async def get_appointment_bill(
         "discount_amount": appointment.discount_amount or 0.0,
         "tax_amount": 0.0,
         "total_amount": appointment.final_amount or 0.0,
-        "amount_paid": appointment.final_amount if appointment.payment_status == "paid" else 0.0,
-        "balance_due": 0.0 if appointment.payment_status == "paid" else appointment.final_amount or 0.0
     }
-    
-    # Add payment receipt if payment was made
-    if appointment.payment_status == "paid":
+    from app.services import service_payments as sp
+    pay = sp.summary(sp.APPOINTMENT, appointment)
+    bill_data["amount_paid"] = pay["amount_paid"]
+    bill_data["balance_due"] = pay["balance_due"]
+    bill_data["payment_status"] = pay["payment_state"]
+    bill_data["payments"] = sp.payment_rows_json(
+        sp.payments_for(db, sp.APPOINTMENT, [appointment.id])
+    )
+
+    # Add payment receipt if any payment was made
+    if pay["amount_paid"] > 0:
         bill_data["payment_receipt"] = {
             "receipt_number": f"RCP-{appointment.appointment_number}",
             "payment_date": appointment.payment_date.isoformat() if appointment.payment_date else appointment.created_at.isoformat(),
-            "amount_paid": appointment.final_amount or 0.0,
+            "amount_paid": pay["amount_paid"],
             "payment_method": appointment.payment_method or "cash",
             "transaction_reference": appointment.appointment_number
         }
@@ -1636,9 +1744,12 @@ async def download_appointment_bill(
         "subtotal": (appointment.consultation_fee or 0.0) + (getattr(appointment, 'registration_fee', 0.0) or 0.0),
         "discount_amount": appointment.discount_amount or 0.0,
         "total_amount": appointment.final_amount or 0.0,
-        "amount_paid": appointment.final_amount if appointment.payment_status == "paid" else 0.0,
-        "balance_due": 0.0 if appointment.payment_status == "paid" else appointment.final_amount or 0.0
     }
+    from app.services import service_payments as sp
+    pay = sp.summary(sp.APPOINTMENT, appointment)
+    bill_data["amount_paid"] = pay["amount_paid"]
+    bill_data["balance_due"] = pay["balance_due"]
+    bill_data["payment_status"] = pay["payment_state"]
 
     # Generate PDF
     from app.utils.pdf_layout import stamp_patient_pdf_fields

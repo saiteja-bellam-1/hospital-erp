@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import WhatsAppPdfButton from '../../../components/WhatsAppPdfButton';
 import { useSearchParams } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
@@ -26,6 +27,12 @@ import { patientReferralName } from '../../../utils/patientReferral';
 import { printPdfFromUrl } from '../../../utils/printPdf';
 import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
 import PatientFileLabelDialog from '../../../components/PatientFileLabelDialog';
+import PaymentCollectionFields, {
+  defaultPaymentValue, validatePayment, DEFAULT_PAYMENT_METHODS,
+} from '../../../components/billing/PaymentCollectionFields';
+import LabBalanceDueList from '../../../components/billing/LabBalanceDueList';
+import CollectPaymentDialog from '../../../components/billing/CollectPaymentDialog';
+
 import {
   Calendar,
   Clock,
@@ -53,6 +60,8 @@ import {
   Activity
 } from 'lucide-react';
 
+const APPOINTMENT_PAYMENT_METHODS = [...DEFAULT_PAYMENT_METHODS, { value: 'insurance', label: 'Insurance' }];
+
 const ReceptionAppointmentsPage = () => {
   const { toast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -76,6 +85,10 @@ const ReceptionAppointmentsPage = () => {
   const [pendingLabOrders, setPendingLabOrders] = useState([]);
   const [labPaymentLoading, setLabPaymentLoading] = useState(false);
   const [labPaymentMethod, setLabPaymentMethod] = useState('cash');
+  // Pay & Download: full / partial / generate bill without collecting.
+  const [labPayment, setLabPayment] = useState(defaultPaymentValue('cash'));
+  const [collectAppointment, setCollectAppointment] = useState(null);
+
   const [labBillPdfUrl, setLabBillPdfUrl] = useState(null);
   const [labBillOrderIds, setLabBillOrderIds] = useState([]);
   const [showLabBillPreview, setShowLabBillPreview] = useState(false);
@@ -147,6 +160,7 @@ const ReceptionAppointmentsPage = () => {
     priority: 'normal',
     payment_status: 'paid',
     payment_method: 'cash',
+    payment: defaultPaymentValue('cash'),
     discount_amount: 0,
     payment_notes: '',
     referred_by: '',
@@ -427,7 +441,10 @@ const ReceptionAppointmentsPage = () => {
       });
       if (res.ok) {
         const orders = await res.json();
-        setPendingLabOrders(orders.filter((o) => o.payment_status !== 'paid' && o.status !== 'cancelled'));
+        // Unbilled orders go on a new bill; part-paid ones already belong to a
+        // bill and collect their balance against it.
+        setPendingLabOrders(orders.filter((o) => o.payment_status === 'pending' && o.status !== 'cancelled' && o.bill_to !== 'partner'));
+        setLabPayment(defaultPaymentValue(labPaymentMethod));
         setAllLabOrders(Array.isArray(orders) ? orders : []);
       }
     } catch (err) {
@@ -439,8 +456,9 @@ const ReceptionAppointmentsPage = () => {
 
   const labReportOrders = allLabOrders.filter((o) => o.has_report);
   const labInProgressOrders = allLabOrders.filter(
-    (o) => o.payment_status === 'paid' && o.status !== 'completed' && o.status !== 'cancelled'
+    (o) => ['paid', 'partial'].includes(o.payment_status) && o.status !== 'completed' && o.status !== 'cancelled'
   );
+  const pendingLabTotal = pendingLabOrders.reduce((sum, o) => sum + Number(o.balance_due ?? o.amount ?? 0), 0);
 
   const collectLabPayment = async (orderId) => {
     try {
@@ -517,13 +535,22 @@ const ReceptionAppointmentsPage = () => {
     if (pendingLabOrders.length === 0) return;
     if (labPaymentLoading) return;
     const patientId = pendingLabOrders[0].patient_id;
+    const payErr = validatePayment(labPayment, pendingLabTotal);
+    if (payErr) {
+      toast({ variant: 'destructive', title: 'Check payment', description: payErr });
+      return;
+    }
     setLabPaymentLoading(true);
     try {
       const token = localStorage.getItem('token');
+      const body = { payment_method: labPayment.method || 'cash' };
+      if (labPayment.reference) body.payment_reference = labPayment.reference;
+      if (labPayment.mode === 'partial') body.amount_paid = Math.round(Number(labPayment.amount) * 100) / 100;
+      if (labPayment.mode === 'later') body.amount_paid = 0;
       const res = await fetch(`/api/lab/orders/patient/${patientId}/bill`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payment_method: labPaymentMethod })
+        body: JSON.stringify(body)
       });
       if (res.ok) {
         const orderIdsHeader = res.headers.get('X-Order-Ids');
@@ -580,7 +607,9 @@ const ReceptionAppointmentsPage = () => {
   const createAppointment = async () => {
     if (!selectedPatient) return;
 
-    const validationError = validateAppointmentBooking(appointmentForm, { selectedPatient: true });
+    // Over-total partial amounts are rejected by the server, which knows the real fee.
+    const validationError = validateAppointmentBooking(appointmentForm, { selectedPatient: true })
+      || validatePayment(appointmentForm.payment, Number.MAX_SAFE_INTEGER);
     if (validationError) {
       toast({ variant: 'destructive', title: 'Cannot book', description: validationError });
       return;
@@ -632,6 +661,7 @@ const ReceptionAppointmentsPage = () => {
           priority: 'normal',
           payment_status: 'paid',
           payment_method: 'cash',
+          payment: defaultPaymentValue('cash'),
           discount_amount: 0,
           payment_notes: '',
           referred_by: '',
@@ -1344,6 +1374,15 @@ const ReceptionAppointmentsPage = () => {
                             <Badge variant={appointment.payment_status === 'paid' ? 'success' : 'secondary'} className="mt-0.5">
                               {appointment.payment_status}
                             </Badge>
+                            {['pending', 'partial'].includes(appointment.payment_status) && Number(appointment.balance_due) > 0 && (
+                              <div className="mt-1 flex items-center gap-1">
+                                <span className="text-xs text-amber-700">Due ₹{Number(appointment.balance_due).toFixed(2)}</span>
+                                <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]"
+                                  onClick={() => setCollectAppointment(appointment)}>
+                                  Collect
+                                </Button>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -1557,67 +1596,74 @@ const ReceptionAppointmentsPage = () => {
                 </Select>
               </div>
 
-              <div>
-                <Label htmlFor="payment_method">Payment Method</Label>
-                <Select value={appointmentForm.payment_method} onValueChange={(value) => setAppointmentForm({...appointmentForm, payment_method: value})}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="cash">Cash</SelectItem>
-                    <SelectItem value="card">Card</SelectItem>
-                    <SelectItem value="upi">UPI</SelectItem>
-                    <SelectItem value="online">Online</SelectItem>
-                    <SelectItem value="insurance">Insurance</SelectItem>
-                    <SelectItem value="cheque">Cheque</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
               {selectedPatient && appointmentForm.doctor_id && (
-                <div className="col-span-2 md:col-span-3 lg:col-span-4 bg-gray-50 rounded-lg p-3 border text-sm">
-                  <h4 className="font-medium mb-2">Fee Summary</h4>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                    {(() => {
-                      const doctor = doctors.find(d => d.id.toString() === appointmentForm.doctor_id.toString());
-                      const isFollowup = appointmentForm.appointment_type === 'followup';
-                      const isEmergency = appointmentForm.priority === 'emergency';
-                      const parseFee = (v) => v ? parseFloat(String(v).replace('₹', '').replace(',', '').trim()) || 0 : 0;
-                      const baseFee = parseFee(doctor?.consultation_fee_inr);
-                      const emergencyFee = parseFee(doctor?.emergency_fee_inr);
-                      const consultFee = isEmergency ? (emergencyFee || baseFee) : (isFollowup ? 0 : baseFee);
-                      const regFee = patientFeeInfo.is_new_patient ? patientFeeInfo.registration_fee : 0;
-                      const total = consultFee + regFee - (parseFloat(appointmentForm.discount_amount) || 0);
-                      return (
-                        <>
-                          <div className={isEmergency ? 'text-red-700 font-medium' : ''}>
-                            {isEmergency ? 'Emergency' : `Consultation${isFollowup ? ' (free)' : ''}`}: ₹{consultFee.toFixed(2)}
-                          </div>
-                          {patientFeeInfo.is_new_patient && (
-                            <div className={regFee > 0 ? 'text-blue-600' : 'text-gray-400'}>
-                              Registration: ₹{regFee.toFixed(2)}
+                <div className="col-span-2 md:col-span-3 lg:col-span-4 bg-gray-50 rounded-lg p-4 border text-sm">
+                  {(() => {
+                    const doctor = doctors.find(d => d.id.toString() === appointmentForm.doctor_id.toString());
+                    const isFollowup = appointmentForm.appointment_type === 'followup';
+                    const isEmergency = appointmentForm.priority === 'emergency';
+                    const parseFee = (v) => v ? parseFloat(String(v).replace('₹', '').replace(',', '').trim()) || 0 : 0;
+                    const baseFee = parseFee(doctor?.consultation_fee_inr);
+                    const emergencyFee = parseFee(doctor?.emergency_fee_inr);
+                    const consultFee = isEmergency ? (emergencyFee || baseFee) : (isFollowup ? 0 : baseFee);
+                    const regFee = patientFeeInfo.is_new_patient ? patientFeeInfo.registration_fee : 0;
+                    const total = Math.max(0, consultFee + regFee - (parseFloat(appointmentForm.discount_amount) || 0));
+                    return (
+                      <div className="grid gap-5 md:grid-cols-2">
+                        {/* Fee breakdown */}
+                        <div>
+                          <h4 className="font-medium mb-2">Fee Summary</h4>
+                          <div className="space-y-1.5">
+                            <div className={`flex justify-between ${isEmergency ? 'text-red-700 font-medium' : ''}`}>
+                              <span>{isEmergency ? 'Emergency consultation' : `Consultation${isFollowup ? ' (free)' : ''}`}</span>
+                              <span>₹{consultFee.toFixed(2)}</span>
                             </div>
-                          )}
-                          <div className="flex items-center gap-1">
-                            <span>Discount ₹</span>
-                            <Input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              value={appointmentForm.discount_amount || ''}
-                              onChange={(e) => setAppointmentForm({...appointmentForm, discount_amount: parseFloat(e.target.value) || 0})}
-                              placeholder="0"
-                              className="w-24 h-7 text-right text-sm"
-                            />
+                            {patientFeeInfo.is_new_patient && (
+                              <div className={`flex justify-between ${regFee > 0 ? 'text-blue-600' : 'text-gray-400'}`}>
+                                <span>Registration</span>
+                                <span>₹{regFee.toFixed(2)}</span>
+                              </div>
+                            )}
+                            <div className="flex items-center justify-between">
+                              <span>Discount</span>
+                              <div className="flex items-center gap-1">
+                                <span className="text-gray-400">₹</span>
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={appointmentForm.discount_amount || ''}
+                                  onChange={(e) => setAppointmentForm({...appointmentForm, discount_amount: parseFloat(e.target.value) || 0})}
+                                  placeholder="0"
+                                  className="w-24 h-7 text-right text-sm bg-white"
+                                />
+                              </div>
+                            </div>
+                            <div className="flex justify-between border-t pt-2 text-base font-semibold">
+                              <span>Total</span>
+                              <span>₹{total.toFixed(2)}</span>
+                            </div>
+                            {isEmergency && emergencyFee === 0 && baseFee > 0 && (
+                              <p className="text-xs text-amber-600">No emergency rate set for this doctor — regular fee applied.</p>
+                            )}
                           </div>
-                          <div className="font-semibold">Total: ₹{total.toFixed(2)}</div>
-                          {isEmergency && emergencyFee === 0 && baseFee > 0 && (
-                            <p className="col-span-2 md:col-span-4 text-xs text-amber-600">No emergency rate set for this doctor — regular fee applied.</p>
-                          )}
-                        </>
-                      );
-                    })()}
-                  </div>
+                        </div>
+
+                        {/* Payment */}
+                        {total > 0 ? (
+                          <PaymentCollectionFields
+                            className="md:border-l md:pl-5"
+                            total={total}
+                            value={appointmentForm.payment}
+                            methods={APPOINTMENT_PAYMENT_METHODS}
+                            onChange={(payment) => setAppointmentForm({ ...appointmentForm, payment, payment_method: payment.method })}
+                          />
+                        ) : (
+                          <p className="text-xs text-gray-500 md:border-l md:pl-5 self-center">No payment due for this visit.</p>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
 
@@ -1803,6 +1849,14 @@ const ReceptionAppointmentsPage = () => {
             </div>
             <div className="flex justify-end gap-2 pt-4">
               <Button variant="outline" onClick={closePrescriptionPreview}>Close</Button>
+              <WhatsAppPdfButton
+                size="default"
+                kind="prescription"
+                phone={prescriptionData?.patient_phone}
+                patientName={prescriptionData?.patient_name}
+                blobUrl={prescriptionPdfUrl}
+                filename="prescription.pdf"
+              />
               <Button onClick={printPrescription} className="bg-purple-600 hover:bg-purple-700">
                 <Printer className="h-4 w-4 mr-2" />
                 Print
@@ -1811,6 +1865,16 @@ const ReceptionAppointmentsPage = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+      <CollectPaymentDialog
+        open={!!collectAppointment}
+        onOpenChange={(o) => { if (!o) setCollectAppointment(null); }}
+        infoUrl={collectAppointment ? `/api/appointments/${collectAppointment.id}/payments` : null}
+        postUrl={collectAppointment ? `/api/appointments/${collectAppointment.id}/payments` : null}
+        subtitle={collectAppointment ? `${collectAppointment.patient_name || ''} · ${collectAppointment.appointment_number || ''}` : ''}
+        methods={APPOINTMENT_PAYMENT_METHODS}
+        onSuccess={() => { toast({ title: 'Payment recorded' }); fetchAppointmentsByRange(filterDate, filterDateTo); }}
+      />
 
       {/* Lab Payment Dialog */}
       <Dialog open={showLabPaymentDialog} onOpenChange={setShowLabPaymentDialog}>
@@ -1840,7 +1904,7 @@ const ReceptionAppointmentsPage = () => {
                     <div className="flex items-center justify-between">
                       <p className="text-sm font-medium text-gray-700">Pending Payment ({pendingLabOrders.length})</p>
                       <p className="font-semibold text-green-700">
-                        Total: ₹{pendingLabOrders.reduce((sum, o) => sum + (o.amount || 0), 0).toFixed(2)}
+                        Total: ₹{pendingLabTotal.toFixed(2)}
                       </p>
                     </div>
 
@@ -1923,29 +1987,36 @@ const ReceptionAppointmentsPage = () => {
                       })()}
                     </div>
 
-                    <div className="flex items-center gap-3">
-                      <div className="flex-1">
-                        <Label className="text-xs">Payment Method</Label>
-                        <Select value={labPaymentMethod} onValueChange={setLabPaymentMethod}>
-                          <SelectTrigger className="h-8">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="cash">Cash</SelectItem>
-                            <SelectItem value="card">Card</SelectItem>
-                            <SelectItem value="upi">UPI</SelectItem>
-                            <SelectItem value="online">Online</SelectItem>
-                            <SelectItem value="insurance">Insurance</SelectItem>
-                            <SelectItem value="cheque">Cheque</SelectItem>
-                          </SelectContent>
-                        </Select>
+                    <div className="space-y-2">
+                      <PaymentCollectionFields
+                        total={pendingLabTotal}
+                        value={labPayment}
+                        methods={APPOINTMENT_PAYMENT_METHODS}
+                        onChange={(v) => { setLabPayment(v); setLabPaymentMethod(v.method); }}
+                      />
+                      <div className="flex justify-end">
+                        <Button onClick={collectAllLabPayments}
+                          disabled={labPaymentLoading || !!validatePayment(labPayment, pendingLabTotal)}>
+                          {labPaymentLoading ? 'Generating Bill...'
+                            : labPayment.mode === 'later' ? 'Generate Bill (collect later)'
+                            : `Generate Bill & Collect ₹${(labPayment.mode === 'partial' ? Number(labPayment.amount) || 0 : pendingLabTotal).toFixed(2)}`}
+                        </Button>
                       </div>
-                      <Button className="mt-4" onClick={collectAllLabPayments} disabled={labPaymentLoading}>
-                        {labPaymentLoading ? 'Generating Bill...' : `Pay & Download Bill (₹${pendingLabOrders.reduce((sum, o) => sum + (o.amount || 0), 0).toFixed(2)})`}
-                      </Button>
                     </div>
                   </>
                 )}
+
+                {/* Part-paid lab bills — collect the remaining balance */}
+                <LabBalanceDueList
+                  orders={allLabOrders}
+                  showDivider={pendingLabOrders.length > 0}
+                  onPaid={(_, g) => {
+                    toast({ title: 'Payment recorded' });
+                    const pid = g?.orders?.[0]?.patient_id;
+                    if (pid) openLabPaymentDialog(pid);
+                    fetchTodayAppointments();
+                  }}
+                />
 
                 {/* Paid, in progress */}
                 {labInProgressOrders.length > 0 && (

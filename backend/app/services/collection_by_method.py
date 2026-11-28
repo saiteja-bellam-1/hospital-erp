@@ -11,7 +11,7 @@ from typing import Optional
 from sqlalchemy import and_, func as sql_func, or_
 from sqlalchemy.orm import Session
 
-from app.models.billing import Bill, Payment
+from app.models.billing import Bill, Payment, ServicePayment
 from app.models.canteen import CanteenSale
 from app.models.inpatient import Admission, AdmissionDeposit
 from app.models.lab import PatientLabOrder
@@ -183,6 +183,68 @@ def _patient_name_filter(first, last, phone, patient_search: Optional[str]):
     return or_(first.ilike(q), last.ilike(q), phone.ilike(q))
 
 
+_CLOSED_PAYMENT_STATUSES = ("cancelled", "refunded", "deleted")
+
+
+def _ledger_pass(
+    q_base, model, source_type: str, d_from: date, d_to: date,
+    by_day: dict, methods_seen: set, *, skip=None, primary=None, fallback=None,
+) -> None:
+    """Add receipts for rows on the service_payments ledger.
+
+    ``q_base`` carries the caller's patient / doctor / referral filters but
+    no status or date filter. Each ledger row is counted on its own day with
+    its own method, so a part payment today and the balance tomorrow land on
+    their real dates. Rows that some older code path flipped to ``paid``
+    without a ledger entry contribute the missing amount on their
+    ``payment_date`` (``primary``/``fallback``) so nothing is lost.
+    """
+    from app.services import service_payments as sp
+
+    q_led = q_base.filter(model.amount_paid.isnot(None))
+    if hasattr(model, "payment_status"):
+        q_led = q_led.filter(or_(
+            model.payment_status.is_(None),
+            model.payment_status.notin_(_CLOSED_PAYMENT_STATUSES),
+        ))
+    else:
+        q_led = q_led.filter(model.status == "completed")
+
+    rows = (
+        q_led.join(ServicePayment, and_(
+            ServicePayment.source_type == source_type,
+            ServicePayment.source_id == model.id,
+        ))
+        .filter(_in_range(ServicePayment.payment_date, d_from, d_to))
+        .add_entity(ServicePayment)
+        .all()
+    )
+    for obj, pay in rows:
+        if skip is not None and skip(obj):
+            continue
+        _add(by_day, methods_seen, pay.payment_date, normalize_method(pay.payment_method), pay.amount)
+
+    if primary is None or not hasattr(model, "payment_status"):
+        return
+    flipped = q_base.filter(
+        model.amount_paid.isnot(None),
+        model.payment_status == "paid",
+        _receipt_day_filter(primary, fallback, d_from, d_to),
+    ).all()
+    if not flipped:
+        return
+    got = {}
+    for pay in sp.payments_for(q_base.session, source_type, [o.id for o in flipped]):
+        got[pay.source_id] = got.get(pay.source_id, 0.0) + float(pay.amount or 0)
+    for obj in flipped:
+        if skip is not None and skip(obj):
+            continue
+        short = round(sp.total_for(source_type, obj) - got.get(obj.id, 0.0), 2)
+        if short > sp.EPS:
+            when = getattr(obj, primary.key, None) or getattr(obj, fallback.key, None)
+            _add(by_day, methods_seen, when, normalize_method(obj.payment_method), short)
+
+
 def _method_for_payment(payment: Payment, bill: Bill) -> Optional[str]:
     notes = (payment.notes or "").lower()
     if (bill.bill_type or "") == "admission":
@@ -320,11 +382,7 @@ def _add_appointments(
     q = (
         db.query(Appointment)
         .join(Patient, Appointment.patient_id == Patient.id)
-        .filter(
-            Patient.hospital_id == hospital_id,
-            Appointment.payment_status == "paid",
-            _receipt_day_filter(Appointment.payment_date, Appointment.created_at, d_from, d_to),
-        )
+        .filter(Patient.hospital_id == hospital_id)
     )
     if patient_id:
         q = q.filter(Appointment.patient_id == patient_id)
@@ -337,6 +395,16 @@ def _add_appointments(
     )
     if name_filter is not None:
         q = q.filter(name_filter)
+    _ledger_pass(
+        q, Appointment, "appointment", d_from, d_to, by_day, methods_seen,
+        skip=lambda a: a.id in linked,
+        primary=Appointment.payment_date, fallback=Appointment.created_at,
+    )
+    q = q.filter(
+        Appointment.amount_paid.is_(None),
+        Appointment.payment_status == "paid",
+        _receipt_day_filter(Appointment.payment_date, Appointment.created_at, d_from, d_to),
+    )
     for apt in q.all():
         if apt.id in linked:
             continue
@@ -365,11 +433,9 @@ def _add_lab_orders(
         .join(Patient, PatientLabOrder.patient_id == Patient.id)
         .filter(
             Patient.hospital_id == hospital_id,
-            PatientLabOrder.payment_status == "paid",
             PatientLabOrder.admission_id.is_(None),
             PatientLabOrder.status != "cancelled",
             or_(PatientLabOrder.bill_to.is_(None), PatientLabOrder.bill_to == "patient"),
-            _receipt_day_filter(PatientLabOrder.payment_date, PatientLabOrder.order_date, d_from, d_to),
         )
     )
     if patient_id:
@@ -383,10 +449,24 @@ def _add_lab_orders(
     )
     if name_filter is not None:
         q = q.filter(name_filter)
+
+    def _skip_lab(order):
+        return order.id in linked_ids or bool(
+            order.lab_bill_group_id and order.lab_bill_group_id in linked_groups
+        )
+
+    _ledger_pass(
+        q, PatientLabOrder, "lab_order", d_from, d_to, by_day, methods_seen,
+        skip=_skip_lab,
+        primary=PatientLabOrder.payment_date, fallback=PatientLabOrder.order_date,
+    )
+    q = q.filter(
+        PatientLabOrder.amount_paid.is_(None),
+        PatientLabOrder.payment_status == "paid",
+        _receipt_day_filter(PatientLabOrder.payment_date, PatientLabOrder.order_date, d_from, d_to),
+    )
     for order in q.all():
-        if order.id in linked_ids:
-            continue
-        if order.lab_bill_group_id and order.lab_bill_group_id in linked_groups:
+        if _skip_lab(order):
             continue
         when = order.payment_date or order.order_date
         _add(by_day, methods_seen, when, normalize_method(order.payment_method), order.amount)
@@ -396,12 +476,10 @@ def _add_pharmacy_sales(db, hospital_id, d_from, d_to, by_day, methods_seen, *, 
     linked = _linked_reference_ids(db, hospital_id, "pharmacy")
     q = db.query(PharmacySale).filter(
         PharmacySale.hospital_id == hospital_id,
-        PharmacySale.status == "completed",
         or_(
             PharmacySale.billing_mode == "cash_at_pharmacy",
             PharmacySale.billing_mode.is_(None),
         ),
-        _in_range(PharmacySale.sale_date, d_from, d_to),
     )
     if patient_search:
         qtext = f"%{patient_search.strip()}%"
@@ -409,6 +487,15 @@ def _add_pharmacy_sales(db, hospital_id, d_from, d_to, by_day, methods_seen, *, 
             PharmacySale.patient_name.ilike(qtext),
             PharmacySale.patient_phone.ilike(qtext),
         ))
+    _ledger_pass(
+        q, PharmacySale, "pharmacy_sale", d_from, d_to, by_day, methods_seen,
+        skip=lambda s_: s_.id in linked,
+    )
+    q = q.filter(
+        PharmacySale.amount_paid.is_(None),
+        PharmacySale.status == "completed",
+        _in_range(PharmacySale.sale_date, d_from, d_to),
+    )
     for sale in q.all():
         if sale.id in linked:
             continue
@@ -420,17 +507,22 @@ def _add_pharmacy_sales(db, hospital_id, d_from, d_to, by_day, methods_seen, *, 
 
 def _add_canteen_sales(db, hospital_id, d_from, d_to, by_day, methods_seen, *, patient_search) -> None:
     linked = _linked_reference_ids(db, hospital_id, "canteen")
-    q = db.query(CanteenSale).filter(
-        CanteenSale.hospital_id == hospital_id,
-        CanteenSale.status == "completed",
-        _in_range(CanteenSale.sale_date, d_from, d_to),
-    )
+    q = db.query(CanteenSale).filter(CanteenSale.hospital_id == hospital_id)
     if patient_search:
         qtext = f"%{patient_search.strip()}%"
         q = q.filter(or_(
             CanteenSale.customer_name.ilike(qtext),
             CanteenSale.customer_phone.ilike(qtext),
         ))
+    _ledger_pass(
+        q, CanteenSale, "canteen_sale", d_from, d_to, by_day, methods_seen,
+        skip=lambda s_: s_.id in linked,
+    )
+    q = q.filter(
+        CanteenSale.amount_paid.is_(None),
+        CanteenSale.status == "completed",
+        _in_range(CanteenSale.sale_date, d_from, d_to),
+    )
     for sale in q.all():
         if sale.id in linked:
             continue

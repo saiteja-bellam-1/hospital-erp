@@ -12,6 +12,7 @@ import { useToast } from '../../../../hooks/use-toast';
 import { Plus, RefreshCw, Ban, Printer, Pencil, Upload, RotateCcw } from 'lucide-react';
 import { errMsg } from '../../PharmacyModule';
 import PdfPreviewDialog from '../../../../components/PdfPreviewDialog';
+import CollectPaymentDialog from '../../../../components/billing/CollectPaymentDialog';
 import MappedImportDialog, { SALE_MAP_FIELDS } from '../../../../components/pharmacy/MappedImportDialog';
 import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
 import { usePharmacyPermissions } from '../../../../hooks/usePharmacyPermissions';
@@ -30,6 +31,7 @@ export default function SalesTab() {
   const [voidReason, setVoidReason] = useState('');
   const [previewSaleId, setPreviewSaleId] = useState(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [collectSale, setCollectSale] = useState(null);
 
   const dateFrom = searchParams.get('date_from') || '';
   const dateTo = searchParams.get('date_to') || '';
@@ -113,15 +115,28 @@ export default function SalesTab() {
                       {s.patient_phone && <div className="text-xs text-gray-500">{s.patient_phone}</div>}
                     </td>
                     <td className="py-2 pr-4 text-xs">{s.doctor_name || '—'}</td>
-                    <td className="py-2 pr-4 text-xs">{s.payment_type}</td>
+                    <td className="py-2 pr-4 text-xs">
+                      {s.payment_state === 'partial' ? 'part paid' : s.payment_type}
+                    </td>
                     <td className="py-2 pr-4">{s.items?.length || 0}</td>
-                    <td className="py-2 pr-4 font-medium">₹{s.grand_total?.toFixed(2)}</td>
+                    <td className="py-2 pr-4 font-medium">
+                      ₹{s.grand_total?.toFixed(2)}
+                      {s.status === 'completed' && s.billing_mode !== 'inpatient_bill' && Number(s.balance_due) > 0 && (
+                        <p className="text-[10px] font-normal text-amber-700">Due ₹{Number(s.balance_due).toFixed(2)}</p>
+                      )}
+                    </td>
                     <td className="py-2 pr-4">
                       <Badge variant="outline" className={`text-xs ${s.status==='voided' ? 'text-red-600' : 'text-green-700'}`}>
                         {s.status}
                       </Badge>
                     </td>
                     <td className="py-2 text-right space-x-1">
+                      {s.status === 'completed' && s.billing_mode !== 'inpatient_bill' && Number(s.balance_due) > 0 && hasPerm('create_sale') && (
+                        <Button size="sm" variant="ghost" className="text-green-700 text-xs" title="Collect payment"
+                          onClick={() => setCollectSale(s)}>
+                          Collect
+                        </Button>
+                      )}
                       <Button size="sm" variant="ghost" title="Preview & print invoice"
                         onClick={() => setPreviewSaleId(s.id)}>
                         <Printer className="h-3 w-3" />
@@ -151,6 +166,15 @@ export default function SalesTab() {
           )}
       </CardContent>
 
+      <CollectPaymentDialog
+        open={!!collectSale}
+        onOpenChange={(o) => { if (!o) setCollectSale(null); }}
+        infoUrl={collectSale ? `/api/pharmacy/sales/${collectSale.id}/payments` : null}
+        postUrl={collectSale ? `/api/pharmacy/sales/${collectSale.id}/payments` : null}
+        subtitle={collectSale ? `${collectSale.sale_number} · ${collectSale.patient_name || 'Walk-in'}` : ''}
+        onSuccess={() => { toast({ title: 'Payment recorded' }); load(); }}
+      />
+
       <Dialog open={voidOpen} onOpenChange={setVoidOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>Void Sale {voidTarget?.sale_number}</DialogTitle></DialogHeader>
@@ -175,6 +199,11 @@ export default function SalesTab() {
         onClose={() => setPreviewSaleId(null)}
         title="Sale Invoice Preview"
         path={previewSaleId ? `/api/pharmacy/sales/${previewSaleId}/invoice/pdf` : null}
+        filename="pharmacy-invoice.pdf"
+        whatsapp={(() => {
+          const sale = rows.find((r) => r.id === previewSaleId);
+          return sale ? { kind: 'pharmacy_invoice', phone: sale.patient_phone, patientName: sale.patient_name } : null;
+        })()}
       />
 
       <MappedImportDialog

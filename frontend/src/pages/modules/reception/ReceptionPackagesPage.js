@@ -16,6 +16,11 @@ import { canSeeLabTestRates, normalizeUserRoles } from '../../../hooks/useNaviga
 import PatientSearchPicker from '../../../components/PatientSearchPicker';
 import ReferralSelectWithCreate from '../../../components/ReferralSelectWithCreate';
 import { patientReferralName } from '../../../utils/patientReferral';
+import PaymentCollectionFields, {
+  defaultPaymentValue, validatePayment, paymentRequestFields, DEFAULT_PAYMENT_METHODS,
+} from '../../../components/billing/PaymentCollectionFields';
+
+const PACKAGE_PAYMENT_METHODS = [...DEFAULT_PAYMENT_METHODS, { value: 'insurance', label: 'Insurance' }];
 
 const ReceptionPackagesPage = () => {
   const { toast } = useToast();
@@ -31,7 +36,7 @@ const ReceptionPackagesPage = () => {
   const [showBookingDialog, setShowBookingDialog] = useState(false);
   const [selectedPackage, setSelectedPackage] = useState(null);
   const [selectedPatient, setSelectedPatient] = useState(null);
-  const [paymentMethod, setPaymentMethod] = useState('cash');
+  const [payment, setPayment] = useState(defaultPaymentValue('cash'));
   const [priority, setPriority] = useState('normal');
   const [notes, setNotes] = useState('');
   const [referredBy, setReferredBy] = useState('');
@@ -85,7 +90,7 @@ const ReceptionPackagesPage = () => {
   const openBooking = (pkg) => {
     setSelectedPackage(pkg);
     setSelectedPatient(null);
-    setPaymentMethod('cash');
+    setPayment(defaultPaymentValue('cash'));
     setPriority('normal');
     setNotes('');
     setReferredBy('');
@@ -132,7 +137,7 @@ const ReceptionPackagesPage = () => {
         priority,
         notes: notes || null,
         referred_by: referredBy || null,
-        payment_method: paymentMethod,
+        ...paymentRequestFields(payment),
         discount_amount: extraDiscount,
         force: force,
       }, { responseType: 'blob' });
@@ -322,21 +327,7 @@ const ReceptionPackagesPage = () => {
 
               {/* Options */}
               <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label>Payment Method *</Label>
-                  <Select value={paymentMethod} onValueChange={setPaymentMethod}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="cash">Cash</SelectItem>
-                      <SelectItem value="card">Card</SelectItem>
-                      <SelectItem value="upi">UPI</SelectItem>
-                      <SelectItem value="online">Online</SelectItem>
-                      <SelectItem value="insurance">Insurance</SelectItem>
-                      <SelectItem value="cheque">Cheque</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
+                <div className="col-span-2 sm:col-span-1">
                   <Label>Priority</Label>
                   <Select value={priority} onValueChange={setPriority}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
@@ -405,6 +396,15 @@ const ReceptionPackagesPage = () => {
                   <span>Amount to Pay</span>
                   <span>Rs. {amountToPay.toFixed(2)}</span>
                 </div>
+                {amountToPay > 0 && (
+                  <PaymentCollectionFields
+                    className="pt-2 border-t"
+                    total={amountToPay}
+                    value={payment}
+                    methods={PACKAGE_PAYMENT_METHODS}
+                    onChange={setPayment}
+                  />
+                )}
               </div>
 
               {/* Duplicate Warning */}
@@ -435,8 +435,8 @@ const ReceptionPackagesPage = () => {
                 <div className="flex items-center gap-3">
                   <Button variant="outline" onClick={() => setShowBookingDialog(false)} className="flex-1">Cancel</Button>
                   <Button onClick={() => bookPackage()} className="flex-1"
-                    disabled={bookingLoading || !selectedPatient}>
-                    {bookingLoading ? 'Booking...' : 'Book & Pay'}
+                    disabled={bookingLoading || !selectedPatient || !!validatePayment(payment, amountToPay)}>
+                    {bookingLoading ? 'Booking...' : payment.mode === 'later' ? 'Book (pay later)' : payment.mode === 'partial' ? 'Book & Collect Part' : 'Book & Pay'}
                   </Button>
                 </div>
               )}

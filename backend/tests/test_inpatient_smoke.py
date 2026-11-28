@@ -34,7 +34,7 @@ class TestInpatientE2E:
                 "department": "General Ward",
                 "bed_count": 4,
                 "room_charge_per_day": 500.0,
-                "amenities": "AC, TV",
+                "amenities": ["ac", "tv"],
             },
             headers=auth_headers,
         )
@@ -652,7 +652,7 @@ class TestInpatientPhase2:
                 if adm.get("status") == "admitted":
                     client.post(
                         f"/api/inpatient/admissions/{adm['id']}/discharge",
-                        json={"discharge_type": "normal", "condition_on_discharge": "stable",
+                        json={"discharge_type": "against_advice", "condition_on_discharge": "stable",
                               "discharge_summary": "Auto-discharged for Phase 2 setup",
                               "force_outstanding_balance": True, "force_unacknowledged_alerts": True, "force_missing_consents": True, "override_reason": "test cleanup"},
                         headers=auth_headers,
@@ -1057,7 +1057,7 @@ class TestInpatientPhase3:
                 if adm.get("status") == "admitted":
                     client.post(
                         f"/api/inpatient/admissions/{adm['id']}/discharge",
-                        json={"discharge_type": "normal", "condition_on_discharge": "stable",
+                        json={"discharge_type": "against_advice", "condition_on_discharge": "stable",
                               "discharge_summary": "Auto-discharged for Phase 3 setup",
                               "force_outstanding_balance": True, "force_unacknowledged_alerts": True, "force_missing_consents": True, "override_reason": "test cleanup"},
                         headers=auth_headers,
@@ -1328,7 +1328,7 @@ class TestInpatientPhase4:
                 if adm.get("status") == "admitted":
                     client.post(
                         f"/api/inpatient/admissions/{adm['id']}/discharge",
-                        json={"discharge_type": "normal", "condition_on_discharge": "stable",
+                        json={"discharge_type": "against_advice", "condition_on_discharge": "stable",
                               "discharge_summary": "Auto-discharged for Phase 4 setup",
                               "force_outstanding_balance": True, "force_unacknowledged_alerts": True, "force_missing_consents": True, "override_reason": "test cleanup"},
                         headers=auth_headers,
@@ -1988,7 +1988,7 @@ class TestIcuAddons:
                 if adm.get("status") == "admitted":
                     client.post(
                         f"/api/inpatient/admissions/{adm['id']}/discharge",
-                        json={"discharge_type": "normal", "condition_on_discharge": "stable",
+                        json={"discharge_type": "against_advice", "condition_on_discharge": "stable",
                               "discharge_summary": "Auto-discharge for ICU setup",
                               "force_outstanding_balance": True, "force_unacknowledged_alerts": True, "force_missing_consents": True, "override_reason": "test cleanup"},
                         headers=auth_headers,
@@ -3186,7 +3186,7 @@ class TestBillingSplitDashboardSync:
                     client.post(
                         f"/api/inpatient/admissions/{adm['id']}/discharge",
                         json={
-                            "discharge_type": "normal",
+                            "discharge_type": "against_advice",
                             "condition_on_discharge": "stable",
                             "discharge_summary": "Cleanup for billing split test",
                             "force_outstanding_balance": True,

@@ -433,24 +433,25 @@ async def get_all_users(
 
 
 _USER_EXPORT_HEADERS = [
-    "Username",
-    "Email",
-    "First Name",
-    "Last Name",
-    "Phone",
-    "Primary Role",
-    "Additional Roles",
-    "Status",
-    "License Number",
-    "Specialization",
-    "Qualification",
-    "Experience Years",
-    "Consultation Fee (INR)",
-    "Inpatient Fee (INR)",
-    "Inpatient Fee Mode",
-    "Emergency Fee (INR)",
-    "Must Change Password",
-    "Created At",
+    "username",
+    "email",
+    "first_name",
+    "last_name",
+    "phone",
+    "role",
+    "additional_roles",
+    "password",
+    "status",
+    "license_number",
+    "specialization",
+    "qualification",
+    "experience_years",
+    "consultation_fee_inr",
+    "inpatient_fee_inr",
+    "inpatient_fee_charge_mode",
+    "emergency_fee_inr",
+    "must_change_password",
+    "created_at",
 ]
 
 
@@ -507,6 +508,7 @@ def _build_users_workbook(users):
             user.phone or "",
             primary,
             additional,
+            "",  # password: blank on export; fill in to set one on import
             "Active" if user.is_active else "Inactive",
             user.license_number or "",
             user.specialization or "",
@@ -524,7 +526,7 @@ def _build_users_workbook(users):
 
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = f"A1:{get_column_letter(len(_USER_EXPORT_HEADERS))}{max(sheet.max_row, 1)}"
-    widths = [18, 28, 16, 16, 16, 20, 28, 12, 20, 22, 24, 18, 22, 20, 20, 20, 22, 20]
+    widths = [18, 28, 16, 16, 16, 20, 28, 14, 12, 20, 22, 24, 18, 22, 20, 20, 20, 22, 20]
     for idx, width in enumerate(widths, start=1):
         sheet.column_dimensions[get_column_letter(idx)].width = width
 
@@ -1175,6 +1177,45 @@ async def bulk_import_staff(
     return {"ok": True, "created": result["created"], "usernames": result["usernames"], "errors": []}
 
 
+@router.post("/users/bulk-import")
+async def bulk_import_users_mixed(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_admin_access),
+    db: Session = Depends(get_db),
+):
+    """Bulk-create users of any non-super_admin role from one sheet.
+
+    Accepts the file produced by ``GET /users/export/xlsx``. Required columns:
+    username, email, first_name, last_name, role. ``password`` is optional —
+    blank rows get a generated temporary password (returned once in
+    ``generated_passwords``). Doctor rows also need specialization and
+    license_number. All-or-nothing: any row error blocks the whole batch.
+    """
+    from app.services.user_csv_import import apply_mixed, parse_and_validate_mixed
+
+    csv_text = await _read_csv_upload(file)
+    existing_usernames = [u for (u,) in db.query(User.username).all()]
+    existing_emails = [e for (e,) in db.query(User.email).all()]
+    rows, errors = parse_and_validate_mixed(
+        csv_text, existing_usernames=existing_usernames, existing_emails=existing_emails,
+    )
+    if errors:
+        return {"ok": False, "created": 0, "errors": [e.as_dict() for e in errors]}
+    try:
+        result = apply_mixed(db, rows, _resolve_hospital_id(db))
+    except ValueError as e:
+        return {"ok": False, "created": 0, "errors": [{"line": None, "field": None, "message": str(e)}]}
+    try:
+        from app.services.audit_service import log_action
+        log_action(db, current_user, "bulk_import_users", "admin", "User", None,
+                   f"Bulk-imported {result['created']} user(s)",
+                   details={"usernames": result["usernames"]})
+    except Exception:
+        pass
+    return {"ok": True, "created": result["created"], "usernames": result["usernames"],
+            "generated_passwords": result["generated_passwords"], "errors": []}
+
+
 @router.get("/users/bulk-import-sample/{role}")
 async def bulk_import_sample(
     role: str,
@@ -1183,7 +1224,18 @@ async def bulk_import_sample(
     """Return a sample CSV body for the given role. Used by the in-app
     importer UI to give operators a known-good template they can edit."""
     from fastapi import Response
-    if role == "doctor":
+    if role == "all":
+        body = (
+            "username,email,first_name,last_name,role,password,phone,additional_roles,"
+            "specialization,license_number,qualification,consultation_fee_inr,"
+            "inpatient_fee_inr,emergency_fee_inr,experience_years\n"
+            "drravi,drravi@hospital.in,Ravi,Kumar,doctor,,9876543210,,"
+            "Cardiology,MCI-12345,MBBS MD,800,2000,1500,12\n"
+            "asha,asha.n@hospital.in,Asha,Menon,nurse,,9876543220,,,,,,,,\n"
+            "neha,neha@hospital.in,Neha,Iyer,receptionist,Welcome@123,9876543212,frontdesk,,,,,,,\n"
+        )
+        filename = "users_sample.csv"
+    elif role == "doctor":
         body = (
             "username,email,first_name,last_name,password,phone,"
             "specialization,license_number,qualification,consultation_fee_inr,"

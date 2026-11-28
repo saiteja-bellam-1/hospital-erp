@@ -54,6 +54,8 @@ _LABEL_HTML_HEADERS = {
 from app.models.user import User
 from datetime import date, datetime, timedelta
 
+from app.services import service_payments as _svc_pay
+from app.services.service_payments import ServicePaymentIn
 from app.models.pharmacy import (
     MedicineCategory,
     Medicine,
@@ -3921,6 +3923,11 @@ class SaleItemOut(BaseModel):
 
 class SaleIn(BaseModel):
     payment_type: str = Field("cash", pattern="^(cash|credit)$")
+    # Amount received at the counter. Omitted -> payment_type decides
+    # (cash = full, credit = nothing). Part amount -> partial, balance on credit.
+    amount_paid: Optional[float] = Field(None, ge=0)
+    payment_method: Optional[str] = Field(None, max_length=30)  # cash | upi | card ...
+    payment_reference: Optional[str] = Field(None, max_length=100)
     prescription_id: Optional[int] = None
     store_id: Optional[int] = None
     tax_mode: str = Field("inclusive", pattern="^(exclusive|inclusive)$")
@@ -3974,6 +3981,9 @@ class SaleOut(BaseModel):
     inpatient_bill_id: Optional[int] = None
     store_id: Optional[int] = None
     stock_affected: bool = True
+    amount_paid: float = 0.0
+    balance_due: float = 0.0
+    payment_state: str = "paid"
     items: List[SaleItemOut] = Field(default_factory=list)
     created_at: datetime
 
@@ -4190,6 +4200,9 @@ def _shape_sale(s: PharmacySale, db: Session) -> SaleOut:
         inpatient_bill_id=getattr(s, "inpatient_bill_id", None),
         store_id=getattr(s, "store_id", None),
         stock_affected=bool(getattr(s, "stock_affected", True)),
+        amount_paid=_svc_pay.effective_paid(_svc_pay.PHARMACY_SALE, s),
+        balance_due=_svc_pay.balance_due(_svc_pay.PHARMACY_SALE, s),
+        payment_state=_svc_pay.payment_state(_svc_pay.PHARMACY_SALE, s),
     )
 
 
@@ -4769,6 +4782,16 @@ def create_sale(
     sale.bill_discount_amount = round(bill_disc, 2)
     sale.tax_total = round(tax_total, 2)
     sale.grand_total = round(grand, 2)
+    if billing_mode == "cash_at_pharmacy":
+        initial = _svc_pay.resolve_initial_amount(
+            sale.grand_total, data.amount_paid,
+            "pending" if data.payment_type == "credit" else "paid",
+        )
+        _svc_pay.set_initial_payment(
+            db, _svc_pay.PHARMACY_SALE, sale, initial,
+            method=data.payment_method or "cash", received_by_id=current_user.id,
+            hospital_id=current_user.hospital_id, reference=data.payment_reference,
+        )
     if linked_rx:
         _apply_pos_prescription_sale(db, linked_rx, data, sale, current_user)
     db.commit(); db.refresh(sale)
@@ -4865,6 +4888,21 @@ def edit_sale(
     sale.bill_discount_amount = round(bill_disc, 2)
     sale.tax_total = round(tax_total, 2)
     sale.grand_total = round(grand, 2)
+    if billing_mode != "cash_at_pharmacy":
+        sale.amount_paid = None
+    elif sale.amount_paid is not None:
+        # Ledger sale: "cash" means settle now — collect any new balance.
+        due = _svc_pay.balance_due(_svc_pay.PHARMACY_SALE, sale)
+        if data.payment_type == "cash" and due > _svc_pay.EPS:
+            _svc_pay.record_payment(
+                db, _svc_pay.PHARMACY_SALE, sale, due, method="cash",
+                received_by_id=current_user.id, hospital_id=current_user.hospital_id,
+                notes=f"Balance on edit: {reason}",
+            )
+        else:
+            sale.payment_type = (
+                "cash" if _svc_pay.balance_due(_svc_pay.PHARMACY_SALE, sale) <= _svc_pay.EPS else "credit"
+            )
     db.commit(); db.refresh(sale)
     _audit(
         db, current_user, "edit_sale", "pharmacy_sale", sale.id,
@@ -6354,6 +6392,16 @@ def daily_closeout_report(
         bucket["disc"] += s.discount_total or 0
         bucket["tax"] += s.tax_total or 0
         bucket["net"] += s.grand_total or 0
+        if s.amount_paid is not None and (s.billing_mode or "cash_at_pharmacy") == "cash_at_pharmacy":
+            # Part-paid sale: the collected part is cash in hand, the rest is credit.
+            paid = _svc_pay.effective_paid(_svc_pay.PHARMACY_SALE, s)
+            due = _svc_pay.balance_due(_svc_pay.PHARMACY_SALE, s)
+            for pt, amt in (("cash", paid), ("credit", due)):
+                if amt > _svc_pay.EPS:
+                    pb = bucket["by_pay"].setdefault(pt, {"count": 0, "total": 0.0})
+                    pb["count"] += 1
+                    pb["total"] += amt
+            continue
         pt = s.payment_type or "cash"
         pb = bucket["by_pay"].setdefault(pt, {"count": 0, "total": 0.0})
         pb["count"] += 1
@@ -6863,12 +6911,12 @@ def _enrich_sale_invoice_payload(sale: PharmacySale, shaped: dict, db: Session) 
     shaped["sgst_tax"] = sgst_tax
     shaped["cgst_tax"] = cgst_tax
 
-    payment = (shaped.get("payment_type") or "cash").lower()
     grand = float(shaped.get("grand_total") or 0)
-    if billing_mode == "inpatient_bill" or payment == "credit":
+    if billing_mode == "inpatient_bill":
         shaped["paid_amt"] = 0.0
     else:
-        shaped["paid_amt"] = grand
+        shaped["paid_amt"] = _svc_pay.effective_paid(_svc_pay.PHARMACY_SALE, sale)
+        shaped["balance_due"] = _svc_pay.balance_due(_svc_pay.PHARMACY_SALE, sale)
 
     # Total Amt ≈ sum of line totals; Net Amt = grand_total (may differ by rounding)
     line_sum = sum(float(it.get("line_total") or 0) for it in (shaped.get("items") or []))
@@ -6886,6 +6934,57 @@ def _pdf_response(buffer, filename: str) -> StreamingResponse:
         buffer, media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{filename}"'},
     )
+
+
+def _hospital_sale(db: Session, sid: int, user: User) -> PharmacySale:
+    sale = db.query(PharmacySale).filter(
+        PharmacySale.id == sid,
+        PharmacySale.hospital_id == user.hospital_id,
+    ).first()
+    if not sale:
+        raise HTTPException(status_code=404, detail="Sale not found")
+    return sale
+
+
+def _sale_payment_payload(db: Session, sale: PharmacySale) -> dict:
+    return {
+        **_svc_pay.summary(_svc_pay.PHARMACY_SALE, sale),
+        "sale_id": sale.id,
+        "sale_number": sale.sale_number,
+        "payments": _svc_pay.payment_rows_json(_svc_pay.payments_for(db, _svc_pay.PHARMACY_SALE, [sale.id])),
+    }
+
+
+@router.get("/sales/{sid}/payments")
+def list_sale_payments(
+    sid: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_sales")),
+):
+    """Paid / balance and every collection against a counter sale."""
+    return _sale_payment_payload(db, _hospital_sale(db, sid, current_user))
+
+
+@router.post("/sales/{sid}/payments")
+def collect_sale_payment(
+    sid: int,
+    body: ServicePaymentIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "create_sale")),
+):
+    """Collect full or partial payment against a credit / part-paid counter sale."""
+    sale = _hospital_sale(db, sid, current_user)
+    if (sale.billing_mode or "cash_at_pharmacy") != "cash_at_pharmacy":
+        raise HTTPException(status_code=400, detail="Inpatient sales are settled on the admission bill")
+    _svc_pay.record_payment(
+        db, _svc_pay.PHARMACY_SALE, sale, body.amount,
+        method=body.payment_method, received_by_id=current_user.id,
+        hospital_id=current_user.hospital_id, reference=body.reference, notes=body.notes,
+    )
+    db.commit(); db.refresh(sale)
+    _svc_pay.audit_collection(db, current_user, _svc_pay.PHARMACY_SALE, sale.id,
+                              sale.sale_number, body.amount, body.payment_method)
+    return _sale_payment_payload(db, sale)
 
 
 @router.get("/sales/{sid}/invoice/pdf")

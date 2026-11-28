@@ -20,6 +20,9 @@ from app.services.trial import clear_isolated_store, use_isolated_store
 from app.utils.auth import create_access_token, get_password_hash
 
 
+MALE_NAMES = {"Arun", "Dev", "Nikhil"}
+
+
 def _headers(username):
     token = create_access_token(data={"sub": username})
     return {"Authorization": f"Bearer {token}"}
@@ -31,7 +34,7 @@ def _patient(client, headers, first, phone, dob="1992-04-02"):
         "last_name": "Fertility",
         "primary_phone": phone,
         "date_of_birth": dob,
-        "gender": "female" if first != "Arun" else "male",
+        "gender": "male" if first in MALE_NAMES else "female",
     })
     assert res.status_code == 200, res.text
     return res.json()["id"]
@@ -63,6 +66,18 @@ def _user(db, hospital_id, username, role_name, permissions):
         db.add(user)
     db.commit()
     return user
+
+
+@pytest.fixture(autouse=True)
+def _doctor_can_witness(seed_data, db_session):
+    """The seeded doctor acts as the second-person witness in these flows."""
+    doctor = db_session.query(User).filter(User.id == seed_data["doctor_user_id"]).one()
+    grant = db_session.query(RoleModulePermission).filter_by(role_id=doctor.role_id, module_name="art").first()
+    if grant is None:
+        db_session.add(RoleModulePermission(role_id=doctor.role_id, module_name="art", permissions=["view_art", "witness_lab"]))
+    else:
+        grant.permissions = sorted(set(grant.permissions or []) | {"view_art", "witness_lab"})
+    db_session.commit()
 
 
 def test_phase1_frontdesk_case_cycle_and_billing(client, seed_data, db_session):
@@ -185,6 +200,23 @@ def test_phase1_frontdesk_case_cycle_and_billing(client, seed_data, db_session):
     assert pdf.status_code == 200, pdf.text
     assert pdf.content.startswith(b"%PDF")
 
+    stim = client.post(f"/api/art/cycles/{cycle_id}/stimulation", headers=admin, json={
+        "day_number": 8,
+        "drugs": [{"name": "Gonadotropin", "dose": "75 IU", "route": "SC"}],
+        "follicles_left": [14, 16],
+        "follicles_right": [15],
+        "endometrium_mm": 8.2,
+        "e2": 420,
+        "lh": 4.1,
+        "progesterone": 0.4,
+    })
+    assert stim.status_code == 200, stim.text
+    trigger = client.post(f"/api/art/cycles/{cycle_id}/trigger", headers=admin, json={
+        "drug": "hCG 5000",
+        "trigger_at": datetime.now().isoformat(),
+    })
+    assert trigger.status_code == 200, trigger.text
+
     # Consent gates the IUI booking.
     blocked = client.post("/api/art/appointments", headers=desk, json={
         "case_id": case_id, "cycle_id": cycle_id, "kind": "iui", "scheduled_date": date.today().isoformat(),
@@ -217,22 +249,6 @@ def test_phase1_frontdesk_case_cycle_and_billing(client, seed_data, db_session):
     done = client.post(f"/api/art/appointments/{appt_id}/complete", headers=desk)
     assert done.status_code == 200, done.text
 
-    stim = client.post(f"/api/art/cycles/{cycle_id}/stimulation", headers=admin, json={
-        "day_number": 8,
-        "drugs": [{"name": "Gonadotropin", "dose": "75 IU", "route": "SC"}],
-        "follicles_left": [14, 16],
-        "follicles_right": [15],
-        "endometrium_mm": 8.2,
-        "e2": 420,
-        "lh": 4.1,
-        "progesterone": 0.4,
-    })
-    assert stim.status_code == 200, stim.text
-    trigger = client.post(f"/api/art/cycles/{cycle_id}/trigger", headers=admin, json={
-        "drug": "hCG 5000",
-        "trigger_at": datetime.now().isoformat(),
-    })
-    assert trigger.status_code == 200, trigger.text
 
     covered = client.post(f"/api/art/cycles/{cycle_id}/charges", headers=desk, json={
         "service_code": "SCAN", "kind": "service",
@@ -257,20 +273,12 @@ def test_phase1_frontdesk_case_cycle_and_billing(client, seed_data, db_session):
         "billing_mode": "itemised", "reason": "  ",
     })
     assert missing_reason.status_code == 400
+    # The advance is already paid, so switching to itemised is refused (cancel refunds it instead).
     switched = client.post(f"/api/art/cycles/{cycle_id}/billing-mode", headers=admin, json={
         "billing_mode": "itemised", "reason": "Patient asked to pay each visit",
     })
-    assert switched.status_code == 200, switched.text
-    assert switched.json()["billing_mode"] == "itemised"
-    assert switched.json()["estimate_snapshot"]["billing_mode"] == "package"
-
-    # Switch back so cancellation uses the package refund rule on a package cycle.
-    # The original estimate stays the first snapshot.
-    back = client.post(f"/api/art/cycles/{cycle_id}/billing-mode", headers=admin, json={
-        "billing_mode": "package", "reason": "Restored package", "package_template_id": package_id,
-    })
-    assert back.status_code == 200, back.text
-    assert back.json()["estimate_snapshot"]["agreed_price"] == 50000
+    assert switched.status_code == 400, switched.text
+    assert "advance has been paid" in switched.json()["detail"]
 
     cancelled = client.post(f"/api/art/cycles/{cycle_id}/cancel", headers=admin, json={
         "reason": "Patient postponed",
@@ -423,6 +431,14 @@ def test_phase2_embryology_witness_and_cryo(client, seed_data, db_session):
     assert cycle.status_code == 200, cycle.text
     cycle_id = cycle.json()["id"]
 
+    early = client.post(f"/api/art/cycles/{cycle_id}/retrieval", headers=admin, json={
+        "witness_id": seed_data["doctor_user_id"], "oocytes_retrieved": 8,
+    })
+    assert early.status_code == 400
+    assert "trigger" in early.json()["detail"].lower()
+    assert client.post(f"/api/art/cycles/{cycle_id}/trigger", headers=admin, json={
+        "drug": "hCG 10000", "trigger_at": datetime.now().isoformat(),
+    }).status_code == 200
     no_consent = client.post(f"/api/art/cycles/{cycle_id}/retrieval", headers=admin, json={
         "operator_id": seed_data["admin_user_id"],
         "witness_id": seed_data["doctor_user_id"],
@@ -732,13 +748,37 @@ def test_phase4_outcomes_kpis_equipment_grievance(client, seed_data, db_session)
     })
     assert cycle.status_code == 200, cycle.text
     cycle_id = cycle.json()["id"]
-    client.post(f"/api/art/cycles/{cycle_id}/fertilisation", headers=admin, json={
+    from app.models.art import ArtCycle
+    db_session.query(ArtCycle).filter(ArtCycle.culture_open == True).update({"culture_open": False})  # noqa: E712
+    db_session.commit()
+    witness = {"witness_id": seed_data["doctor_user_id"]}
+    for form in ("oocyte_retrieval", "couple_treatment"):
+        client.post(f"/api/art/cases/{case.json()['id']}/consents", headers=admin, json={
+            "form_code": form, "signed_by_name": "Meera Fertility",
+        })
+    assert client.post(f"/api/art/cycles/{cycle_id}/trigger", headers=admin, json={
+        "drug": "hCG", "trigger_at": datetime.now().isoformat(),
+    }).status_code == 200
+    assert client.post(f"/api/art/cycles/{cycle_id}/retrieval", headers=admin, json={
+        **witness, "follicles_aspirated": 12, "oocytes_retrieved": 10, "mature_mii": 9,
+    }).status_code == 200
+    fert = client.post(f"/api/art/cycles/{cycle_id}/fertilisation", headers=admin, json={
         "method": "ivf",
         "oocytes_inseminated": 10,
         "normally_fertilised": 7,
         "operator_id": seed_data["admin_user_id"],
-        "witness_id": seed_data["doctor_user_id"],
+        **witness,
     })
+    assert fert.status_code == 200, fert.text
+    early = client.post(f"/api/art/cycles/{cycle_id}/outcome", headers=admin, json={"clinical_pregnancy": True})
+    assert early.status_code == 400
+    assert client.post(f"/api/art/cycles/{cycle_id}/culture/open", headers=admin).status_code == 200
+    embryo = client.post(f"/api/art/cycles/{cycle_id}/specimens", headers=admin, json={"sample_type": "embryo"})
+    assert embryo.status_code == 200, embryo.text
+    moved = client.post(f"/api/art/specimens/{embryo.json()['id']}/dispose", headers=admin, json={
+        **witness, "disposition": "transfer",
+    })
+    assert moved.status_code == 200, moved.text
     outcome = client.post(f"/api/art/cycles/{cycle_id}/outcome", headers=admin, json={
         "beta_hcg_value": 240,
         "beta_hcg_positive": True,

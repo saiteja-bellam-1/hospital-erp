@@ -8,7 +8,7 @@ from .hospital import Hospital, HospitalModule
 from .patient import Patient, PatientContact, PatientMedicalHistory
 from .lab import LabTest, LabTestCategory, LabReport, LabReportTemplate, PatientLabOrder
 from .pharmacy import Medicine, MedicineCategory, Prescription, PrescriptionItem, PharmacyInventory
-from .billing import Bill, BillItem, PaymentMethod, Payment
+from .billing import Bill, BillItem, PaymentMethod, Payment, ServicePayment
 from .ehr import Consultation, Diagnosis, TreatmentPlan, MedicalNote
 from .outpatient import Appointment, OutpatientVisit
 from .inpatient import Admission, RoomManagement, DischargeRecord
@@ -33,7 +33,7 @@ __all__ = [
     "Patient", "PatientContact", "PatientMedicalHistory",
     "LabTest", "LabTestCategory", "LabReport", "LabReportTemplate", "PatientLabOrder",
     "Medicine", "MedicineCategory", "Prescription", "PrescriptionItem", "PharmacyInventory",
-    "Bill", "BillItem", "PaymentMethod", "Payment",
+    "Bill", "BillItem", "PaymentMethod", "Payment", "ServicePayment",
     "Consultation", "Diagnosis", "TreatmentPlan", "MedicalNote",
     "Appointment", "OutpatientVisit",
     "Admission", "RoomManagement", "DischargeRecord",

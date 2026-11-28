@@ -53,7 +53,7 @@ from app.models.settlement import Settlement, SettlementConfig  # noqa: F401
 from app.models.expense import FrontDeskExpense  # noqa: F401
 
 # Import route modules
-from app.routes import auth, patients, admin, system, module_admin, hospital_admin, onboarding, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, backup, referrals, audit, inpatient, outpatient_procedures, pharmacy, canteen, catch_up, physiotherapy, art, expenses
+from app.routes import auth, patients, admin, system, module_admin, hospital_admin, onboarding, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, backup, referrals, audit, inpatient, outpatient_procedures, pharmacy, canteen, catch_up, physiotherapy, art, expenses, whatsapp
 from app.middleware.license_middleware import LicenseMiddleware
 from app.middleware.audit_middleware import AuditMiddleware
 from app.middleware.maintenance import MaintenanceMiddleware
@@ -249,6 +249,28 @@ async def startup_event():
         start_website_server(erp_login_port())
     except Exception as e:
         print(f"Website note: {e}")
+
+    # WhatsApp sidecar: resume the linked session if the admin enabled it.
+    try:
+        from config.database import SessionLocal
+        from app.services import whatsapp_service
+        _db = SessionLocal()
+        try:
+            if whatsapp_service.is_enabled(_db):
+                whatsapp_service.ensure_sidecar_running()
+        finally:
+            _db.close()
+    except Exception as e:
+        print(f"WhatsApp note: {e}")
+
+
+@app.on_event("shutdown")
+async def _stop_whatsapp_sidecar():
+    try:
+        from app.services import whatsapp_service
+        whatsapp_service.stop_sidecar()
+    except Exception:
+        pass
 
 
 def _ensure_role_permissions():
@@ -520,6 +542,7 @@ app.include_router(audit.router, prefix="/api/audit", tags=["Audit Logs"])
 app.include_router(inpatient.router, prefix="/api/inpatient", tags=["Inpatient"])
 app.include_router(canteen.router, prefix="/api/canteen", tags=["Canteen"])
 app.include_router(physiotherapy.router, prefix="/api/physiotherapy", tags=["Physiotherapy"])
+app.include_router(whatsapp.router, prefix="/api/whatsapp", tags=["WhatsApp"])
 app.include_router(art.router, prefix="/api/art", tags=["Fertility ART"])
 app.include_router(catch_up.router, prefix="/api/admin/catch-up", tags=["Catch-up Bills"])
 app.include_router(outpatient_procedures.router, prefix="/api/outpatient", tags=["Outpatient Procedures"])

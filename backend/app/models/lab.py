@@ -168,6 +168,9 @@ class PatientLabOrder(Base):
     payment_status = Column(String(20), default="pending")  # pending, paid
     payment_method = Column(String(50), nullable=True)  # cash, card, online
     payment_date = Column(DateTime, nullable=True)
+    amount_paid = Column(Float, nullable=True)  # running total from service_payments; NULL = legacy row
+    # Share of a reception bill-level discount. Net due = amount - discount_amount.
+    discount_amount = Column(Float, nullable=True)
     sample_id = Column(String(50), nullable=True, index=True)
     sample_ean13 = Column(String(13), nullable=True, index=True)
     referred_by = Column(String(100), nullable=True)

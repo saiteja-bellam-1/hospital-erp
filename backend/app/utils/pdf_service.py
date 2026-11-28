@@ -1658,6 +1658,23 @@ class PDFService:
                 Paragraph('<b>Total Amt</b>', cell_value_sm),
                 Paragraph(f"{net_total:.2f}", cell_value_right),
             ])
+        # Compact layouts normally omit Paid/Balance. A bill that still has
+        # money owed must show it, otherwise it reads as fully settled.
+        try:
+            _bal_f = float(balance or 0)
+        except (TypeError, ValueError):
+            _bal_f = 0.0
+        if not detailed_billing and not hide_payment_summary and _bal_f > 0.005:
+            payment_data.append([
+                Paragraph('', cell_value_sm),
+                Paragraph('<b>Paid Amt</b>', cell_value_sm),
+                Paragraph(f"{float(paid_amt or 0):.2f}", cell_value_right),
+            ])
+            payment_data.append([
+                Paragraph('', cell_value_sm),
+                Paragraph('<b>Balance</b>', cell_value_sm),
+                Paragraph(f"{_bal_f:.2f}", cell_value_right),
+            ])
 
         payment_table = Table(payment_data, colWidths=[summary_label_w, code_w, rate_w])
         payment_table.setStyle(_table_style([
@@ -6222,6 +6239,12 @@ class PDFService:
             Paragraph(f"<b>Net Amt :</b> {net_amt:.2f}", cell),
             Paragraph(f"<b>Paid Amt :</b> {paid_amt:.2f}", cell),
         ])
+        try:
+            _ph_bal = float(sale_data.get('balance_due') or 0)
+        except (TypeError, ValueError):
+            _ph_bal = 0.0
+        if _ph_bal > 0.005:
+            right_lines.append(Paragraph(f"<b>Balance :</b> {_ph_bal:.2f}", cell))
         tot_tbl = Table(
             [[left_tot, right_lines]],
             colWidths=[page_width * 0.55, page_width * 0.45],
@@ -6978,7 +7001,10 @@ class PDFService:
                 [Paragraph("<b>Subtotal</b>", cell), Paragraph(f"₹{float(sale_data.get('subtotal') or 0):.2f}", cell)],
                 [Paragraph("Discount", cell), Paragraph(f"₹{float(sale_data.get('discount_amount') or 0):.2f}", cell)],
                 [Paragraph("<b>Grand Total</b>", cell), Paragraph(f"<b>₹{float(sale_data.get('grand_total') or 0):.2f}</b>", cell)],
-            ],
+            ] + ([
+                [Paragraph("Paid", cell), Paragraph(f"₹{float(sale_data.get('amount_paid') or 0):.2f}", cell)],
+                [Paragraph("<b>Balance</b>", cell), Paragraph(f"<b>₹{float(sale_data.get('balance_due') or 0):.2f}</b>", cell)],
+            ] if float(sale_data.get('balance_due') or 0) > 0.005 else []),
             colWidths=[page_width - 100, 100],
         )
         totals.setStyle(_table_style([

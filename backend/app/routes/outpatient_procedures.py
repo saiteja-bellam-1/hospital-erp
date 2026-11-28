@@ -173,6 +173,10 @@ class ProcedureBillIn(BaseModel):
     tax_percentage: float = Field(0.0, ge=0, le=100)
     notes: Optional[str] = None
     payment_method: str = "cash"
+    # Amount received now. Omitted -> payment_status decides (default: full).
+    amount_paid: Optional[float] = Field(None, ge=0)
+    payment_status: Optional[str] = Field(None, pattern="^(paid|partial|pending)$")
+    payment_reference: Optional[str] = Field(None, max_length=100)
     referred_by: Optional[str] = Field(None, max_length=100)
 
 
@@ -239,9 +243,11 @@ async def create_procedure_bill(
     seq = (int(last.bill_number.split("-")[-1]) + 1) if last else 1
     bill_number = f"{prefix}{seq:04d}"
 
-    # Day-care services are collected at point of sale, so the bill is marked
-    # paid on creation and a matching Payment row is written so the central
-    # billing ledger / dashboard / reports stay consistent.
+    # Collect whatever the patient pays now (full by default). The Payment
+    # row keeps the central ledger / dashboard / reports consistent; any
+    # balance is collected later from Billing.
+    from app.services.service_payments import resolve_initial_amount, derive_status
+    collected = resolve_initial_amount(total, data.amount_paid, data.payment_status)
     bill = Bill(
         bill_number=bill_number,
         patient_id=patient.id,
@@ -252,7 +258,7 @@ async def create_procedure_bill(
         tax_amount=tax,
         discount_amount=discount,
         total_amount=total,
-        status="paid",
+        status=derive_status(total, collected),
         bill_date=datetime.now(),
         created_by_id=current_user.id,
         hospital_id=current_user.hospital_id,
@@ -273,19 +279,21 @@ async def create_procedure_bill(
             total_price=row["total"],
         ))
 
-    # Auto-payment matching the bill total (sequence: PAY-YYYYMMDD-NNNN)
-    pay_prefix = f"PAY-{today_str}-"
-    last_pay = db.query(Payment).filter(Payment.payment_number.like(f"{pay_prefix}%")).order_by(Payment.id.desc()).first()
-    pay_seq = (int(last_pay.payment_number.split("-")[-1]) + 1) if last_pay else 1
-    db.add(Payment(
-        payment_number=f"{pay_prefix}{pay_seq:04d}",
-        bill_id=bill.id,
-        amount_paid=total,
-        payment_method_name=(data.payment_method or "cash"),
-        payment_date=datetime.now(),
-        received_by_id=current_user.id,
-        notes=f"Auto-collected at bill creation ({bill_number})",
-    ))
+    # Payment for what was collected at the counter (sequence: PAY-YYYYMMDD-NNNN)
+    if collected > 0:
+        pay_prefix = f"PAY-{today_str}-"
+        last_pay = db.query(Payment).filter(Payment.payment_number.like(f"{pay_prefix}%")).order_by(Payment.id.desc()).first()
+        pay_seq = (int(last_pay.payment_number.split("-")[-1]) + 1) if last_pay else 1
+        db.add(Payment(
+            payment_number=f"{pay_prefix}{pay_seq:04d}",
+            bill_id=bill.id,
+            amount_paid=collected,
+            payment_method_name=(data.payment_method or "cash"),
+            payment_date=datetime.now(),
+            transaction_reference=data.payment_reference,
+            received_by_id=current_user.id,
+            notes=f"Collected at bill creation ({bill_number})",
+        ))
 
     db.commit()
     db.refresh(bill)
@@ -304,6 +312,9 @@ async def create_procedure_bill(
         "discount_amount": discount,
         "tax_amount": tax,
         "total_amount": total,
+        "amount_paid": collected,
+        "balance_due": round(total - collected, 2),
+        "status": bill.status,
         "patient_name": f"{patient.first_name} {patient.last_name}",
         "items_count": len(resolved),
     }

@@ -6,7 +6,6 @@ import { Badge } from '../../../components/ui/badge';
 import { Input } from '../../../components/ui/input';
 import { Label } from '../../../components/ui/label';
 import { Textarea } from '../../../components/ui/textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../../components/ui/dialog';
 import { useToast } from '../../../hooks/use-toast';
 import { useAuth } from '../../../contexts/AuthContext';
@@ -26,6 +25,12 @@ import {
 import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
 import { localDateString, localDateStringOffset } from '../../../utils/localDate';
 import { matchesLabOrderSearch } from '../../../utils/barcodeSearch';
+import PaymentCollectionFields, {
+  defaultPaymentValue, validatePayment, DEFAULT_PAYMENT_METHODS,
+} from '../../../components/billing/PaymentCollectionFields';
+import LabBalanceDueList from '../../../components/billing/LabBalanceDueList';
+
+const LAB_PAYMENT_METHODS = [...DEFAULT_PAYMENT_METHODS, { value: 'insurance', label: 'Insurance' }];
 
 const STATUS_FILTERS = [
   { id: 'all', label: 'All' },
@@ -103,8 +108,9 @@ const ReceptionLabOrdersPage = () => {
   const [showLabPaymentDialog, setShowLabPaymentDialog] = useState(false);
   const [pendingLabOrders, setPendingLabOrders] = useState([]);
   const [labPaymentLoading, setLabPaymentLoading] = useState(false);
-  const [labPaymentMethod, setLabPaymentMethod] = useState('cash');
   const [labDiscount, setLabDiscount] = useState('');
+  const [labPayment, setLabPayment] = useState(defaultPaymentValue('cash'));
+  const [partialLabOrders, setPartialLabOrders] = useState([]);
   const [labBillPdfUrl, setLabBillPdfUrl] = useState(null);
   const [showLabBillPreview, setShowLabBillPreview] = useState(false);
   const [showLabCancelDialog, setShowLabCancelDialog] = useState(false);
@@ -155,16 +161,21 @@ const ReceptionLabOrdersPage = () => {
     setSearchParams(next, { replace: true });
   };
 
-  const openReportPreview = (reportId, orderNumber, packageBookingId = null) => {
+  const openReportPreview = (reportId, orderNumber, packageBookingId = null, who = null) => {
+    const whatsapp = who
+      ? { kind: 'lab_report', phone: who.patient_phone, patientName: who.patient_name, patientId: who.patient_id }
+      : null;
     if (packageBookingId) {
       setReportPreview({
         path: `/api/lab/reports/package/${packageBookingId}/download`,
         title: `${orderNumber} — All Reports`,
+        whatsapp,
       });
     } else {
       setReportPreview({
         path: `/api/lab/reports/${reportId}/download`,
         title: `Lab Report — ${orderNumber}`,
+        whatsapp,
       });
     }
   };
@@ -173,14 +184,20 @@ const ReceptionLabOrdersPage = () => {
     setLabPaymentLoading(true);
     setShowLabPaymentDialog(true);
     setPendingLabOrders([]);
+    setPartialLabOrders([]);
     setLabDiscount('');
-    setLabPaymentMethod('cash');
+    setLabPayment(defaultPaymentValue('cash'));
     try {
       const token = localStorage.getItem('token');
       const res = await fetch(`/api/lab/orders/patient/${patientId}/pending-payment`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (res.ok) setPendingLabOrders(await res.json());
+      if (res.ok) {
+        // Part-paid orders already belong to a bill; collect their balance separately.
+        const rows = await res.json();
+        setPendingLabOrders(rows.filter((o) => o.payment_status === 'pending'));
+        setPartialLabOrders(rows.filter((o) => o.payment_status === 'partial'));
+      }
     } catch (err) {
       console.error('Failed to fetch pending lab payments:', err);
       toast({ variant: 'destructive', title: 'Error', description: 'Failed to load pending payments' });
@@ -192,13 +209,22 @@ const ReceptionLabOrdersPage = () => {
   const collectAllLabPayments = async () => {
     if (pendingLabOrders.length === 0 || labPaymentLoading) return;
     const patientId = pendingLabOrders[0].patient_id;
+    const payErr = validatePayment(labPayment, payableTotal);
+    if (payErr) {
+      toast({ variant: 'destructive', title: 'Check payment', description: payErr });
+      return;
+    }
     setLabPaymentLoading(true);
     try {
       const token = localStorage.getItem('token');
+      const body = { payment_method: labPayment.method || 'cash', discount_amount: parseFloat(labDiscount) || 0 };
+      if (labPayment.reference) body.payment_reference = labPayment.reference;
+      if (labPayment.mode === 'partial') body.amount_paid = Math.round(Number(labPayment.amount) * 100) / 100;
+      if (labPayment.mode === 'later') body.amount_paid = 0;
       const res = await fetch(`/api/lab/orders/patient/${patientId}/bill`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payment_method: labPaymentMethod, discount_amount: parseFloat(labDiscount) || 0 }),
+        body: JSON.stringify(body),
       });
       if (res.ok) {
         const blob = await res.blob();
@@ -208,7 +234,12 @@ const ReceptionLabOrdersPage = () => {
         setShowLabBillPreview(true);
         setShowLabPaymentDialog(false);
         setPendingLabOrders([]);
-        toast({ title: 'Payment collected', description: 'Lab bill is ready to print' });
+        toast({
+          title: labPayment.mode === 'later' ? 'Bill generated' : 'Payment recorded',
+          description: labPayment.mode === 'later' ? 'Payment pending — collect it from Billing or here later'
+            : labPayment.mode === 'partial' ? 'Part payment recorded; lab bill is ready to print'
+            : 'Lab bill is ready to print',
+        });
         fetchOrders(searchTerm);
       } else {
         const err = await res.json().catch(() => ({}));
@@ -322,7 +353,7 @@ const ReceptionLabOrdersPage = () => {
           size="sm"
           variant="outline"
           className="h-8 text-xs"
-          onClick={() => openReportPreview(order.report_id, order.order_number)}
+          onClick={() => openReportPreview(order.report_id, order.order_number, null, order)}
         >
           <Printer className="h-3 w-3 mr-1" /> View Report
         </Button>
@@ -496,7 +527,7 @@ const ReceptionLabOrdersPage = () => {
                         size="sm"
                         variant="outline"
                         className="h-7 text-xs border-indigo-300 text-indigo-700"
-                        onClick={() => openReportPreview(null, pkg.name, bookingId)}
+                        onClick={() => openReportPreview(null, pkg.name, bookingId, pkg.orders?.[0] || { patient_name: pkg.patient_name, patient_id: pkg.patient_id })}
                       >
                         <Printer className="h-3 w-3 mr-1" /> All Reports
                       </Button>
@@ -563,13 +594,24 @@ const ReceptionLabOrdersPage = () => {
                 <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2" />
                 Loading...
               </div>
-            ) : pendingLabOrders.length === 0 ? (
+            ) : pendingLabOrders.length === 0 && partialLabOrders.length === 0 ? (
               <div className="text-center py-8 text-gray-400">
                 <TestTube className="h-10 w-10 mx-auto mb-2 text-gray-300" />
                 <p>No pending lab payments for this patient.</p>
               </div>
             ) : (
               <>
+                <LabBalanceDueList
+                  orders={partialLabOrders}
+                  onPaid={(_, g) => {
+                    toast({ title: 'Payment recorded' });
+                    const pid = g?.orders?.[0]?.patient_id;
+                    if (pid) openLabPaymentDialog(pid);
+                    fetchOrders(searchTerm);
+                  }}
+                />
+                {pendingLabOrders.length > 0 && (<>
+                {partialLabOrders.length > 0 && <hr className="my-2" />}
                 <div className="flex items-center justify-between">
                   <p className="text-sm font-medium text-gray-700">Pending payment ({pendingLabOrders.length})</p>
                   <p className="font-semibold text-green-700">Total: ₹{pendingTotal.toFixed(2)}</p>
@@ -627,25 +669,19 @@ const ReceptionLabOrdersPage = () => {
                     <span>₹{payableTotal.toFixed(2)}</span>
                   </div>
                 </div>
-                <div>
-                  <Label className="text-xs">Payment method</Label>
-                  <Select value={labPaymentMethod} onValueChange={setLabPaymentMethod}>
-                    <SelectTrigger className="h-8">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="cash">Cash</SelectItem>
-                      <SelectItem value="card">Card</SelectItem>
-                      <SelectItem value="upi">UPI</SelectItem>
-                      <SelectItem value="online">Online</SelectItem>
-                      <SelectItem value="insurance">Insurance</SelectItem>
-                      <SelectItem value="cheque">Cheque</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <Button className="w-full" onClick={collectAllLabPayments} disabled={labPaymentLoading}>
-                  {labPaymentLoading ? 'Generating bill...' : `Pay & download bill (₹${payableTotal.toFixed(2)})`}
+                <PaymentCollectionFields
+                  total={Math.max(0, payableTotal)}
+                  value={labPayment}
+                  methods={LAB_PAYMENT_METHODS}
+                  onChange={setLabPayment}
+                />
+                <Button className="w-full" onClick={collectAllLabPayments}
+                  disabled={labPaymentLoading || !!validatePayment(labPayment, payableTotal)}>
+                  {labPaymentLoading ? 'Generating bill...'
+                    : labPayment.mode === 'later' ? 'Generate bill (collect later)'
+                    : `Generate bill & collect ₹${(labPayment.mode === 'partial' ? Number(labPayment.amount) || 0 : payableTotal).toFixed(2)}`}
                 </Button>
+                </>)}
               </>
             )}
           </div>
@@ -739,6 +775,8 @@ const ReceptionLabOrdersPage = () => {
         title={reportPreview?.title || 'Lab Report Preview'}
         path={reportPreview?.path || null}
         letterheadReportType="lab_report"
+        filename="lab-report.pdf"
+        whatsapp={reportPreview?.whatsapp || null}
       />
     </div>
   );

@@ -11,6 +11,8 @@ import io
 
 from config.database import get_db
 from app.utils.pdf_settings import bill_pdf_gen_kwargs, pdf_gen_kwargs, get_lab_label_settings
+from app.services.service_payments import ServicePaymentIn
+from app.services import service_payments as _sp
 from app.utils.pdf_layout import extra_patient_pdf_fields, stamp_patient_pdf_fields
 from app.services.barcode_service import (
     ensure_patient_mrn_ean13,
@@ -283,6 +285,7 @@ class OrderResponse(BaseModel):
     order_number: str
     patient_id: int
     patient_name: Optional[str] = None
+    patient_phone: Optional[str] = None
     test_id: int
     test_name: Optional[str] = None
     test_code: Optional[str] = None
@@ -304,6 +307,11 @@ class OrderResponse(BaseModel):
     payment_status: str = "pending"
     payment_method: Optional[str] = None
     payment_date: Optional[datetime] = None
+    discount_amount: Optional[float] = None
+    amount_paid: Optional[float] = None
+    balance_due: Optional[float] = None
+    lab_bill_group_id: Optional[str] = None
+    lab_bill_number: Optional[str] = None
     package_id: Optional[int] = None
     package_name: Optional[str] = None
     package_booking_id: Optional[str] = None
@@ -483,6 +491,9 @@ class PackageBooking(BaseModel):
     referred_by: Optional[str] = Field(None, max_length=100)
     payment_method: str = Field(..., pattern="^(cash|card|upi|cheque|online|insurance)$")
     discount_amount: float = Field(default=0.0, ge=0)
+    amount_paid: Optional[float] = Field(None, ge=0)
+    payment_status: Optional[str] = Field(None, pattern="^(paid|partial|pending)$")
+    payment_reference: Optional[str] = Field(None, max_length=100)
     force: bool = False
 
 # ============================================================
@@ -655,6 +666,7 @@ def _build_order_response(order: PatientLabOrder, db: Session) -> dict:
         "order_number": order.order_number,
         "patient_id": order.patient_id,
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else None,
+        "patient_phone": patient.primary_phone if patient else None,
         "test_id": order.test_id,
         "test_name": test.name if test else None,
         "test_code": test.test_code if test else None,
@@ -685,6 +697,9 @@ def _build_order_response(order: PatientLabOrder, db: Session) -> dict:
         "patient_mrn_ean13": patient.mrn_ean13 if patient else None,
         "lab_bill_group_id": getattr(order, "lab_bill_group_id", None),
         "lab_bill_number": getattr(order, "lab_bill_number", None),
+        "discount_amount": order.discount_amount or 0.0,
+        "amount_paid": _sp.effective_paid(_sp.LAB_ORDER, order),
+        "balance_due": _sp.balance_due(_sp.LAB_ORDER, order),
         "sample_type_name": (
             test.sample_type_ref.name if test and test.sample_type_id and test.sample_type_ref
             else (test.sample_type if test else None)
@@ -1394,7 +1409,8 @@ def _lab_tech_payment_gate_applies(current_user: User) -> bool:
 def _apply_lab_tech_payment_gate(query):
     return query.filter(
         or_(
-            PatientLabOrder.payment_status == "paid",
+            # Any money collected (full or part) releases the order to the lab.
+            PatientLabOrder.payment_status.in_(("paid", "partial")),
             PatientLabOrder.admission_id.isnot(None),
             # Samples sent in by a partner lab are billed to that lab, not the patient.
             PatientLabOrder.bill_to == "partner",
@@ -1424,6 +1440,30 @@ def _pricing_for(db: Session, hospital_id: int, test: LabTest, data) -> dict:
         partner_cost=getattr(data, "partner_cost", None),
         partner_reference=getattr(data, "partner_reference", None),
     )
+
+def _lab_pay_fields(db: Session, orders) -> dict:
+    """Paid / balance / status for a set of orders printed on one bill."""
+    from app.services import service_payments as sp
+    paid = round(sum(sp.effective_paid(sp.LAB_ORDER, o) for o in orders), 2)
+    due = round(sum(sp.balance_due(sp.LAB_ORDER, o) for o in orders), 2)
+    net = round(sum(sp.total_for(sp.LAB_ORDER, o) for o in orders), 2)
+    states = {sp.payment_state(sp.LAB_ORDER, o) for o in orders}
+    if states <= {"cancelled", "refunded"} and states:
+        state = "cancelled"
+    elif due <= sp.EPS:
+        state = "paid"
+    elif paid > sp.EPS:
+        state = "partial"
+    else:
+        state = "pending"
+    return {
+        "amount_paid": min(paid, net) if net > 0 else paid,
+        "balance_due": due,
+        "net_total": net,
+        "payment_status": state,
+        "bill_discount": round(sum((o.discount_amount or 0) for o in orders), 2),
+    }
+
 
 _LAB_READ_PERMISSIONS = frozenset({
     "view_appointments", "view_patients", "view_schedules", "read",
@@ -1607,6 +1647,10 @@ class ReceptionLabBooking(BaseModel):
     patient_id: int
     test_ids: List[int] = Field(..., min_length=1)
     payment_method: str = Field(..., pattern="^(cash|card|upi|cheque|online|insurance)$")
+    # Amount received now. Omitted -> payment_status decides (default: full).
+    amount_paid: Optional[float] = Field(None, ge=0)
+    payment_status: Optional[str] = Field(None, pattern="^(paid|partial|pending)$")
+    payment_reference: Optional[str] = Field(None, max_length=100)
     doctor_id: Optional[int] = None
     referred_by: Optional[str] = None
     discount_amount: float = Field(default=0.0, ge=0)
@@ -1684,9 +1728,8 @@ async def reception_book_lab_tests(
             notes=data.notes,
             status="ordered",
             order_date=now,
-            payment_status="paid",
+            payment_status="pending",
             payment_method=data.payment_method,
-            payment_date=now,
             lab_bill_group_id=bill_group_id,
             lab_bill_number=bill_number,
             **pricing,
@@ -1695,6 +1738,17 @@ async def reception_book_lab_tests(
         orders.append(order)
         total += pricing["amount"]
 
+    db.flush()
+    from app.services import service_payments as sp
+    sp.spread_discount(orders, data.discount_amount)
+    net_total = round(total - data.discount_amount, 2)
+    initial = sp.resolve_initial_amount(net_total, data.amount_paid, data.payment_status)
+    sp.set_group_initial_payment(
+        db, sp.LAB_ORDER, orders, initial,
+        method=data.payment_method, received_by_id=current_user.id,
+        hospital_id=current_user.hospital_id, when=now,
+        reference=data.payment_reference,
+    )
     db.commit()
 
     # Audit log
@@ -1739,10 +1793,11 @@ async def reception_book_lab_tests(
         "items": [{"item_name": o.test.name, "item_code": o.test.test_code, "total_price": o.amount} for o in orders if o.test],
         "subtotal": total,
         "discount_amount": data.discount_amount,
-        "amount_paid": round(total - data.discount_amount, 2),
-        "balance_due": 0,
         "prepared_by": f"{current_user.first_name} {current_user.last_name}",
     }
+    _pay = _lab_pay_fields(db, orders)
+    bill_data.update(amount_paid=_pay["amount_paid"], balance_due=_pay["balance_due"],
+                     payment_status=_pay["payment_status"])
 
     from fastapi.responses import StreamingResponse
     order_ids = ",".join(str(o.id) for o in orders)
@@ -2287,9 +2342,10 @@ async def download_order_bill(
         "payment_method": (order.payment_method or "cash").capitalize(),
         "items": [{"item_name": test.name if test else "Lab Test", "item_code": test.test_code if test else "", "total_price": order.amount or 0}],
         "subtotal": order.amount or 0,
-        "discount_amount": 0,
-        "amount_paid": order.amount or 0,
-        "balance_due": 0,
+        "discount_amount": order.discount_amount or 0,
+        "amount_paid": _lab_pay_fields(db, [order])["amount_paid"],
+        "balance_due": _lab_pay_fields(db, [order])["balance_due"],
+        "payment_status": _lab_pay_fields(db, [order])["payment_status"],
         "prepared_by": "",
     }
 
@@ -2343,7 +2399,8 @@ async def regenerate_lab_bill(
 
     # Package bills: one line at actual_price; paid = sum of stored order amounts
     # (package price minus any extra operator discount applied at booking).
-    discount = 0.0
+    _pay = _lab_pay_fields(db, orders)
+    discount = _pay["bill_discount"]
     pkg = None
     if orders[0].package_id:
         pkg = db.query(LabTestPackage).filter(LabTestPackage.id == orders[0].package_id).first()
@@ -2377,8 +2434,9 @@ async def regenerate_lab_bill(
         "items": items,
         "subtotal": total,
         "discount_amount": discount,
-        "amount_paid": round(total - discount, 2),
-        "balance_due": 0,
+        "amount_paid": _pay["amount_paid"],
+        "balance_due": _pay["balance_due"],
+        "payment_status": _pay["payment_status"],
         "prepared_by": "",
     }
 
@@ -2445,8 +2503,7 @@ async def download_grouped_lab_bill(
         }]
         subtotal = pkg.actual_price
         # Paid is whatever was stored on orders (package price − any extra discount).
-        amount_paid = round(sum(o.amount or 0.0 for o in orders), 2)
-        discount = round(pkg.actual_price - amount_paid, 2)
+        discount = round(pkg.actual_price - sum(o.amount or 0.0 for o in orders), 2)
     else:
         items = []
         subtotal = 0.0
@@ -2458,8 +2515,7 @@ async def download_grouped_lab_bill(
                 "total_price": o.amount or 0.0,
             })
             subtotal += o.amount or 0.0
-        discount = 0.0
-        amount_paid = round(subtotal, 2)
+        discount = round(sum((o.discount_amount or 0) for o in orders), 2)
 
     bill_date = orders[0].payment_date or orders[0].order_date or datetime.now()
     bill_number = orders[0].lab_bill_number or f"LB-GROUP-{group_id[:8]}"
@@ -2483,10 +2539,11 @@ async def download_grouped_lab_bill(
         "items": items,
         "subtotal": subtotal,
         "discount_amount": discount,
-        "amount_paid": amount_paid,
-        "balance_due": 0,
         "prepared_by": "",
     }
+    _pay = _lab_pay_fields(db, orders)
+    bill_data.update(amount_paid=_pay["amount_paid"], balance_due=_pay["balance_due"],
+                     payment_status=_pay["payment_status"])
     if pkg:
         bill_data["package_name"] = pkg.name
 
@@ -2499,9 +2556,85 @@ async def download_grouped_lab_bill(
         headers={"Content-Disposition": f"attachment; filename={filename}"})
 
 
+def _group_orders(db: Session, group_id: str, user: User):
+    orders = db.query(PatientLabOrder).join(Patient).filter(
+        PatientLabOrder.lab_bill_group_id == group_id,
+        Patient.hospital_id == user.hospital_id,
+    ).order_by(PatientLabOrder.id.asc()).all()
+    if not orders:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    return orders
+
+
+def _group_payment_payload(db: Session, orders) -> dict:
+    from app.services import service_payments as sp
+    pay = _lab_pay_fields(db, orders)
+    rows = sp.payments_for(db, sp.LAB_ORDER, [o.id for o in orders])
+    # One collection split across orders shows as one receipt line.
+    merged = {}
+    for r in rows:
+        key = (r.payment_date, r.payment_method, r.reference)
+        if key in merged:
+            merged[key]["amount"] = round(merged[key]["amount"] + float(r.amount or 0), 2)
+        else:
+            merged[key] = sp.payment_rows_json([r])[0]
+    return {
+        "lab_bill_group_id": orders[0].lab_bill_group_id,
+        "bill_number": orders[0].lab_bill_number,
+        "total_amount": pay["net_total"],
+        "amount_paid": pay["amount_paid"],
+        "balance_due": pay["balance_due"],
+        "payment_state": pay["payment_status"],
+        "order_ids": [o.id for o in orders],
+        "payments": list(merged.values()),
+    }
+
+
+@router.get("/bills/{group_id}/payments")
+async def list_lab_bill_payments(
+    group_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Paid / balance and every collection against one lab bill."""
+    return _group_payment_payload(db, _group_orders(db, group_id, current_user))
+
+
+@router.post("/bills/{group_id}/payments")
+async def collect_lab_bill_payment(
+    group_id: str,
+    body: ServicePaymentIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Collect full or partial payment against a lab bill (all orders in the group)."""
+    _assert_reception_lab_book_role(current_user)
+    from app.services import service_payments as sp
+    orders = [
+        o for o in _group_orders(db, group_id, current_user)
+        if (o.bill_to or "patient") == "patient" and o.admission_id is None
+    ]
+    if not orders:
+        raise HTTPException(status_code=400, detail="This bill has no patient-payable orders")
+    sp.record_group_payment(
+        db, sp.LAB_ORDER, orders, body.amount,
+        method=body.payment_method, received_by_id=current_user.id,
+        hospital_id=current_user.hospital_id, when=datetime.now(),
+        reference=body.reference, notes=body.notes,
+    )
+    db.commit()
+    sp.audit_collection(db, current_user, sp.LAB_ORDER, orders[0].id,
+                        orders[0].lab_bill_number or group_id, body.amount, body.payment_method)
+    return _group_payment_payload(db, orders)
+
+
 class LabPaymentUpdate(BaseModel):
     payment_method: str = Field(..., pattern="^(cash|card|upi|cheque|online|insurance)$")
     discount_amount: float = Field(default=0.0, ge=0)
+    # Amount received now. Omitted -> the full balance (old behaviour).
+    # 0 -> generate the bill without collecting anything (pay later).
+    amount_paid: Optional[float] = Field(None, ge=0)
+    payment_reference: Optional[str] = Field(None, max_length=100)
 @router.put("/orders/{order_id}/payment")
 async def update_order_payment(
     order_id: int,
@@ -2522,13 +2655,30 @@ async def update_order_payment(
     if getattr(order, "bill_to", None) == "partner":
         raise HTTPException(status_code=400, detail="This order is billed to a partner lab, not the patient")
 
-    if order.payment_status == 'paid':
+    from app.services import service_payments as sp
+    if sp.balance_due(sp.LAB_ORDER, order) <= sp.EPS:
         raise HTTPException(status_code=400, detail="Payment already collected")
 
     now = datetime.now()
-    order.payment_status = "paid"
-    order.payment_method = data.payment_method
-    order.payment_date = now
+    if data.discount_amount:
+        if order.amount_paid is None:
+            order.amount_paid = sp.effective_paid(sp.LAB_ORDER, order)
+        if data.discount_amount > sp.balance_due(sp.LAB_ORDER, order) + sp.EPS:
+            raise HTTPException(status_code=400, detail="Discount cannot exceed the balance due")
+        sp.spread_discount([order], data.discount_amount)
+    amount = data.amount_paid if data.amount_paid is not None else sp.balance_due(sp.LAB_ORDER, order)
+    if amount > sp.EPS:
+        sp.record_payment(
+            db, sp.LAB_ORDER, order, amount,
+            method=data.payment_method, received_by_id=current_user.id,
+            hospital_id=current_user.hospital_id, when=now,
+            reference=data.payment_reference,
+        )
+    elif order.amount_paid is None:
+        sp.set_initial_payment(db, sp.LAB_ORDER, order, 0.0, method=data.payment_method)
+    else:
+        # Discount alone may settle the order.
+        order.payment_status = sp.payment_state(sp.LAB_ORDER, order)
     # Single-order payment still gets a bill grouping so the Billing
     # dashboard can render it as one row and the regenerate endpoint can
     # reproduce a bill PDF for it.
@@ -2544,8 +2694,8 @@ async def update_order_payment(
         test = db.query(LabTest).filter(LabTest.id == order.test_id).first()
         patient_name = f"{patient.first_name} {patient.last_name}" if patient else "Unknown"
         log_action(db, current_user, "collect_lab_payment", "billing", "LabOrder", order.id,
-            f"Collected lab payment ₹{order.amount} for {patient_name} — {test.name if test else 'test'}, Method: {data.payment_method}",
-            details={"patient": patient_name, "test": test.name if test else "", "amount": order.amount, "method": data.payment_method})
+            f"Collected lab payment ₹{amount} for {patient_name} — {test.name if test else 'test'}, Method: {data.payment_method}",
+            details={"patient": patient_name, "test": test.name if test else "", "amount": amount, "method": data.payment_method})
     except Exception:
         pass
 
@@ -2580,17 +2730,26 @@ async def generate_lab_bill(
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
 
-    # Mark all orders as paid and stamp them with a shared bill grouping
-    # so the Billing dashboard collapses them into one row and the bill PDF
-    # can be regenerated later from the group id.
+    # Stamp the orders with a shared bill grouping so the Billing dashboard
+    # collapses them into one row and the bill PDF can be regenerated later
+    # from the group id. Collect whatever the patient paid now (full by
+    # default, partial, or nothing) against the group.
+    from app.services import service_payments as sp
     now = datetime.now()
     bill_group_id, bill_number = _new_lab_bill_group("LB")
     for order in orders:
-        order.payment_status = "paid"
         order.payment_method = data.payment_method
-        order.payment_date = now
         order.lab_bill_group_id = bill_group_id
         order.lab_bill_number = bill_number
+    sp.spread_discount(orders, data.discount_amount)
+    net_due = round(sum(sp.total_for(sp.LAB_ORDER, o) for o in orders), 2)
+    initial = sp.resolve_initial_amount(net_due, data.amount_paid, None)
+    sp.set_group_initial_payment(
+        db, sp.LAB_ORDER, orders, initial,
+        method=data.payment_method, received_by_id=current_user.id,
+        hospital_id=current_user.hospital_id, when=now,
+        reference=data.payment_reference,
+    )
 
     db.commit()
 
@@ -2651,10 +2810,11 @@ async def generate_lab_bill(
         "items": items,
         "subtotal": total,
         "discount_amount": data.discount_amount,
-        "amount_paid": round(total - data.discount_amount, 2),
-        "balance_due": 0,
         "prepared_by": f"{current_user.first_name} {current_user.last_name}",
     }
+    _pay = _lab_pay_fields(db, orders)
+    bill_data.update(amount_paid=_pay["amount_paid"], balance_due=_pay["balance_due"],
+                     payment_status=_pay["payment_status"])
 
     try:
         order_ids_str = ",".join(str(o.id) for o in orders)
@@ -2680,12 +2840,14 @@ async def get_pending_payment_orders(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get lab orders pending payment for a patient. For reception to collect fees."""
+    """Get lab orders pending payment for a patient. For reception to collect fees.
+
+    Includes part-paid orders so their balance can be collected."""
     orders = _patient_billable(
         db.query(PatientLabOrder).join(Patient).filter(
             PatientLabOrder.patient_id == patient_id,
             Patient.hospital_id == current_user.hospital_id,
-            PatientLabOrder.payment_status == "pending",
+            PatientLabOrder.payment_status.in_(("pending", "partial")),
             PatientLabOrder.status != "cancelled",
         )
     ).order_by(PatientLabOrder.order_date.desc()).all()
@@ -3303,7 +3465,7 @@ async def get_lab_stats(
             .join(Patient)
             .filter(
                 Patient.hospital_id == hid,
-                PatientLabOrder.payment_status == "pending",
+                PatientLabOrder.payment_status.in_(("pending", "partial")),
                 PatientLabOrder.admission_id.is_(None),
                 PatientLabOrder.status != "cancelled",
             )
@@ -3773,15 +3935,23 @@ async def book_package(
             status="ordered",
             order_date=now,
             amount=amount,
-            payment_status="paid",
+            payment_status="pending",
             payment_method=data.payment_method,
-            payment_date=now,
             lab_bill_group_id=bill_group_id,
             lab_bill_number=bill_number,
         )
         db.add(order)
         orders.append(order)
 
+    db.flush()
+    from app.services import service_payments as sp
+    initial = sp.resolve_initial_amount(net_payable, data.amount_paid, data.payment_status)
+    sp.set_group_initial_payment(
+        db, sp.LAB_ORDER, orders, initial,
+        method=data.payment_method, received_by_id=current_user.id,
+        hospital_id=current_user.hospital_id, when=now,
+        reference=data.payment_reference,
+    )
     db.commit()
 
     # Build bill PDF — single line for the package
@@ -3819,11 +3989,12 @@ async def book_package(
         "items": bill_items,
         "subtotal": pkg.actual_price,
         "discount_amount": discount,
-        "amount_paid": net_payable,
-        "balance_due": 0,
         "prepared_by": f"{current_user.first_name} {current_user.last_name}",
         "package_name": pkg.name,
     }
+    _pay = _lab_pay_fields(db, orders)
+    bill_data.update(amount_paid=_pay["amount_paid"], balance_due=_pay["balance_due"],
+                     payment_status=_pay["payment_status"])
 
     try:
         order_ids = ",".join(str(o.id) for o in orders)

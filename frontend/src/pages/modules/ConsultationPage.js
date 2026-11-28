@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import WhatsAppPdfButton from '../../components/WhatsAppPdfButton';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -983,6 +984,13 @@ const ConsultationPage = () => {
                           <Button size="sm" variant="outline" onClick={() => window.open(rxPdfUrl, '_blank')}>
                             <Eye className="h-3 w-3 mr-1" /> View
                           </Button>
+                          <WhatsAppPdfButton
+                            kind="prescription"
+                            phone={savedPrescription?.patient_phone}
+                            patientName={savedPrescription?.patient_name}
+                            blobUrl={rxPdfUrl}
+                            filename={`prescription_${savedPrescription?.prescription_id}.pdf`}
+                          />
                           <Button size="sm" variant="outline" onClick={() => {
                             const a = document.createElement('a');
                             a.href = rxPdfUrl;

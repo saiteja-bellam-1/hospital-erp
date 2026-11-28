@@ -35,16 +35,34 @@ from app.services.audit_service import log_action
 from app.utils.auth import Modules
 from app.utils.dependencies import (
     get_current_user, require_feature_permission, require_feature_permission_any,
+    user_has_feature_permission,
 )
 from config.database import get_db
 
 router = APIRouter()
+
+MAX_DOC_SIZE = 10 * 1024 * 1024
+ALLOWED_DOC_MIME = {
+    "application/pdf", "image/jpeg", "image/png", "image/gif", "image/webp", "text/plain",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+ALLOWED_DOC_EXT = {".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".txt", ".doc", ".docx"}
 
 
 def _patient_name(patient: Optional[Patient]) -> Optional[str]:
     if not patient:
         return None
     return f"{patient.first_name} {patient.last_name}".strip()
+
+
+def _case_name(db: Session, case_id: int, cache: dict) -> Optional[str]:
+    if case_id not in cache:
+        case = db.query(ArtCase).filter(ArtCase.id == case_id).first()
+        cache[case_id] = None if not case else " and ".join(
+            n for n in (_patient_name(case.woman), _patient_name(case.partner)) if n
+        )
+    return cache[case_id]
 
 
 def _case_or_404(db: Session, case_id: int, hospital_id: int) -> ArtCase:
@@ -135,6 +153,7 @@ class BillingModeIn(BaseModel):
     billing_mode: str
     reason: str
     package_template_id: Optional[int] = None
+    agreed_price: Optional[float] = Field(None, ge=0)
 
 
 class ChargeIn(BaseModel):
@@ -146,6 +165,12 @@ class ChargeIn(BaseModel):
 
 class CancelIn(BaseModel):
     reason: str
+    refund_method: str = "cash"
+
+
+class PaymentIn(BaseModel):
+    amount: float = Field(..., gt=0)
+    payment_method: str = "cash"
 
 
 class StimIn(BaseModel):
@@ -194,7 +219,7 @@ class QueueIn(BaseModel):
 
 
 class WitnessBody(BaseModel):
-    operator_id: int
+    operator_id: Optional[int] = None  # defaults to the signed-in user; a different id is refused
     witness_id: int
 
 
@@ -240,6 +265,7 @@ class RenewIn(BaseModel):
 
 class ThawIn(WitnessBody):
     survived: bool = True
+    into_cycle_id: Optional[int] = None
     clinician_id: Optional[int] = None
     billing_mode: str = "itemised"
     package_template_id: Optional[int] = None
@@ -311,6 +337,15 @@ class ReceiveIn(WitnessBody):
     sample_type: str
     case_id: Optional[int] = None
     cycle_id: Optional[int] = None
+    tank: Optional[str] = None
+    canister: Optional[str] = None
+    cane: Optional[str] = None
+    position: Optional[str] = None
+
+
+class CaseStatusIn(BaseModel):
+    status: str
+    reason: Optional[str] = None
 
 
 class OutcomeIn(BaseModel):
@@ -374,7 +409,7 @@ def update_centre(
     user: User = Depends(require_feature_permission(Modules.ART, "manage_centre")),
 ):
     centre = get_centre(db, user.hospital_id)
-    for field, value in body.model_dump().items():
+    for field, value in body.model_dump(exclude_unset=True).items():
         setattr(centre, field, value)
     db.commit()
     _audit(db, user, "update_art_centre", "art_centre", centre.id, f"Level {centre.clinic_level}")
@@ -475,23 +510,71 @@ def create_case(
         raise HTTPException(status_code=404, detail="Woman patient was not found in this hospital.")
     if body.case_type == "couple" and not body.partner_patient_id:
         raise HTTPException(status_code=400, detail="A couple case needs the partner's patient record.")
+    if (woman.gender or "").strip().lower() in ("male", "m"):
+        raise HTTPException(status_code=400, detail="The woman on a case must be a female patient record.")
+    if body.case_type == "single_woman":
+        body.partner_patient_id = None
     if body.partner_patient_id:
+        if body.partner_patient_id == body.woman_patient_id:
+            raise HTTPException(status_code=400, detail="The partner must be a different patient.")
         partner = db.query(Patient).filter(Patient.id == body.partner_patient_id, Patient.hospital_id == user.hospital_id).first()
         if not partner:
             raise HTTPException(status_code=404, detail="Partner patient was not found in this hospital.")
-    from app.services.art_ops import _next_number
+        if (partner.gender or "").strip().lower() in ("female", "f"):
+            raise HTTPException(status_code=400, detail="The husband or partner must be a male patient record.")
+    existing = db.query(ArtCase).filter(
+        ArtCase.hospital_id == user.hospital_id,
+        ArtCase.woman_patient_id == body.woman_patient_id,
+        ArtCase.status == "open",
+    ).first()
+    if existing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"This woman already has an open case ({existing.case_number}). Use it, or close it first.",
+        )
+    from app.services.art_ops import assign_number, placeholder
     case = ArtCase(
         hospital_id=user.hospital_id,
-        case_number=_next_number(db, ArtCase, "case_number", user.hospital_id, f"ART-{user.hospital_id}-"),
+        case_number=placeholder(),
         case_type=body.case_type,
         woman_patient_id=body.woman_patient_id,
         partner_patient_id=body.partner_patient_id,
         opened_by_id=user.id,
     )
     db.add(case)
+    assign_number(db, case, "case_number", f"ART-{user.hospital_id}-")
     db.commit()
     db.refresh(case)
     _audit(db, user, "create_art_case", "art_case", case.id, case.case_number)
+    return _case_dict(case)
+
+
+@router.post("/cases/{case_id}/status")
+def set_case_status(
+    case_id: int,
+    body: CaseStatusIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_feature_permission(Modules.ART, "register_cases")),
+):
+    case = _case_or_404(db, case_id, user.hospital_id)
+    if body.status not in ("open", "closed"):
+        raise HTTPException(status_code=400, detail="Status must be open or closed.")
+    if body.status == "closed":
+        active = db.query(ArtCycle).filter(
+            ArtCycle.case_id == case.id, ArtCycle.status.notin_(("cancelled", "outcome")),
+        ).first()
+        if active:
+            raise HTTPException(status_code=400, detail=f"Finish or cancel {active.cycle_number} before closing the case.")
+    else:
+        other = db.query(ArtCase).filter(
+            ArtCase.hospital_id == case.hospital_id, ArtCase.woman_patient_id == case.woman_patient_id,
+            ArtCase.status == "open", ArtCase.id != case.id,
+        ).first()
+        if other:
+            raise HTTPException(status_code=400, detail=f"This woman already has an open case ({other.case_number}).")
+    case.status = body.status
+    db.commit()
+    _audit(db, user, f"art_case_{body.status}", "art_case", case.id, body.reason or case.case_number)
     return _case_dict(case)
 
 
@@ -526,7 +609,31 @@ def read_case(
         for c in consents
     ]
     data["cycles"] = [_cycle_dict(c) for c in cycles]
+    data["documents"] = _documents(db, case)
+    data["appointments"] = [
+        _appointment_dict(a) for a in db.query(ArtAppointment).filter(ArtAppointment.case_id == case.id)
+        .order_by(ArtAppointment.scheduled_date.desc(), ArtAppointment.id.desc()).all()
+    ]
     return data
+
+
+def _documents(db: Session, case: ArtCase) -> list:
+    rows = db.query(ArtDocument).filter(ArtDocument.case_id == case.id).order_by(ArtDocument.id.desc()).all()
+    return [
+        {"id": d.id, "document_name": d.document_name, "document_type": d.document_type,
+         "file_name": d.file_name, "file_size": d.file_size, "mime_type": d.mime_type,
+         "created_at": d.created_at.isoformat() if d.created_at else None}
+        for d in rows
+    ]
+
+
+@router.get("/cases/{case_id}/documents")
+def list_documents(
+    case_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_feature_permission(Modules.ART, "view_art")),
+):
+    return _documents(db, _case_or_404(db, case_id, user.hospital_id))
 
 
 @router.put("/cases/{case_id}/workup")
@@ -573,11 +680,19 @@ async def upload_document(
 ):
     from app.utils.paths import get_uploads_dir
     case = _case_or_404(db, case_id, user.hospital_id)
+    if file.content_type and file.content_type not in ALLOWED_DOC_MIME:
+        raise HTTPException(status_code=400, detail="File type not allowed. Use a PDF, an image, a Word file, or plain text.")
+    content = await file.read()
+    if len(content) > MAX_DOC_SIZE:
+        raise HTTPException(status_code=400, detail="File too large. The limit is 10 MB.")
+    original = os.path.basename((file.filename or "").replace("\\", "/")) or "document"
+    ext = os.path.splitext(original)[1].lower()
+    if ext not in ALLOWED_DOC_EXT:
+        ext = ".bin"
     folder = os.path.join(get_uploads_dir(), "art_docs")
     os.makedirs(folder, exist_ok=True)
-    stored = f"{uuid.uuid4().hex}_{file.filename}"
+    stored = f"art_{case.id}_{uuid.uuid4().hex}{ext}"
     full = os.path.join(folder, stored)
-    content = await file.read()
     with open(full, "wb") as handle:
         handle.write(content)
     row = ArtDocument(
@@ -585,7 +700,7 @@ async def upload_document(
         case_id=case.id,
         document_type=document_type,
         document_name=document_name,
-        file_name=file.filename or stored,
+        file_name=original[:255],
         file_path=os.path.join("art_docs", stored),
         file_size=len(content),
         mime_type=file.content_type,
@@ -658,10 +773,43 @@ def add_consent(
     user: User = Depends(require_feature_permission(Modules.ART, "record_consent")),
 ):
     case = _case_or_404(db, case_id, user.hospital_id)
+    if body.form_code == "withdrawal" and not user_has_feature_permission(db, user, Modules.ART, "withdraw_consent"):
+        raise HTTPException(status_code=403, detail="Permission 'withdraw_consent' required on art")
+    if body.cycle_id:
+        _cycle_in_case(db, body.cycle_id, case)
     row = record_consent(db, case, body.form_code, body.signed_by_name, user, body.cycle_id)
     db.commit()
     _audit(db, user, "record_art_consent", "art_consent", row.id, body.form_code)
     return {"id": row.id, "form_code": row.form_code, "withdrawn": row.withdrawn_at is not None}
+
+
+@router.post("/consents/{consent_id}/withdraw")
+def withdraw_one_consent(
+    consent_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_feature_permission(Modules.ART, "withdraw_consent")),
+):
+    row = (
+        db.query(ArtConsent)
+        .join(ArtCase, ArtCase.id == ArtConsent.case_id)
+        .filter(ArtConsent.id == consent_id, ArtCase.hospital_id == user.hospital_id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Consent not found.")
+    if row.withdrawn_at:
+        raise HTTPException(status_code=400, detail="This consent is already withdrawn.")
+    row.withdrawn_at = datetime.now()
+    db.commit()
+    _audit(db, user, "withdraw_art_consent", "art_consent", row.id, row.form_code)
+    return {"id": row.id, "withdrawn": True}
+
+
+def _cycle_in_case(db: Session, cycle_id: int, case: ArtCase) -> ArtCycle:
+    cycle = db.query(ArtCycle).filter(ArtCycle.id == cycle_id, ArtCycle.case_id == case.id).first()
+    if not cycle:
+        raise HTTPException(status_code=404, detail="Cycle not found on this case.")
+    return cycle
 
 
 def _cycle_dict(cycle: ArtCycle) -> dict:
@@ -686,9 +834,26 @@ def _cycle_dict(cycle: ArtCycle) -> dict:
         "cancel_reason": cycle.cancel_reason,
         "refund_bill_id": cycle.refund_bill_id,
         "culture_open": cycle.culture_open,
+        "culture_operator_id": cycle.culture_operator_id,
+        "protocol_change_reason": cycle.protocol_change_reason,
+        "package_template_id": cycle.package_template_id,
+        "medicine_limit": cycle.medicine_limit,
+        "medicine_consumed": cycle.medicine_consumed,
+        "retrieval_at": cycle.retrieval_at.isoformat() if cycle.retrieval_at else None,
+        "retrieval_follicles": cycle.retrieval_follicles,
         "retrieval_oocytes": cycle.retrieval_oocytes,
+        "retrieval_mii": cycle.retrieval_mii,
+        "retrieval_mi": cycle.retrieval_mi,
+        "retrieval_gv": cycle.retrieval_gv,
+        "fert_at": cycle.fert_at.isoformat() if cycle.fert_at else None,
         "fert_method": cycle.fert_method,
+        "fert_inseminated": cycle.fert_inseminated,
         "fert_normal": cycle.fert_normal,
+        "media_lots": cycle.media_lots or [],
+        "beta_hcg_value": cycle.beta_hcg_value,
+        "miscarriage": cycle.miscarriage,
+        "outcome_notes": cycle.outcome_notes,
+        "outcome_recorded_at": cycle.outcome_recorded_at.isoformat() if cycle.outcome_recorded_at else None,
         "linked_source_cycle_id": cycle.linked_source_cycle_id,
         "beta_hcg_positive": cycle.beta_hcg_positive,
         "clinical_pregnancy": cycle.clinical_pregnancy,
@@ -705,6 +870,8 @@ def open_cycle(
     user: User = Depends(require_feature_permission(Modules.ART, "start_cycle")),
 ):
     case = _case_or_404(db, case_id, user.hospital_id)
+    if body.collect_advance and not user_has_feature_permission(db, user, Modules.ART, "collect_advance"):
+        raise HTTPException(status_code=403, detail="Permission 'collect_advance' required on art")
     cycle = start_cycle(
         db, case, user,
         cycle_type=body.cycle_type, protocol=body.protocol, clinician_id=body.clinician_id,
@@ -727,7 +894,12 @@ def read_cycle(
     cycle = _cycle_or_404(db, cycle_id, user.hospital_id)
     days = db.query(ArtStimulationDay).filter(ArtStimulationDay.cycle_id == cycle.id).order_by(ArtStimulationDay.day_number).all()
     charges = db.query(ArtCharge).filter(ArtCharge.cycle_id == cycle.id).all()
-    specimens = db.query(ArtSpecimen).filter(ArtSpecimen.origin_cycle_id == cycle.id).all()
+    specimens = db.query(ArtSpecimen).filter(
+        (ArtSpecimen.origin_cycle_id == cycle.id) | (ArtSpecimen.thawed_into_cycle_id == cycle.id),
+    ).order_by(ArtSpecimen.id).all()
+    frozen = db.query(ArtSpecimen).filter(
+        ArtSpecimen.owner_case_id == cycle.case_id, ArtSpecimen.disposition == "frozen",
+    ).order_by(ArtSpecimen.id).all()
     data = _cycle_dict(cycle)
     data["stimulation"] = [
         {
@@ -743,13 +915,92 @@ def read_cycle(
          "covered_by_package": c.covered_by_package, "bill_id": c.bill_id, "status": c.status}
         for c in charges
     ]
-    data["specimens"] = [
-        {"id": s.id, "code": s.code, "sample_type": s.sample_type, "disposition": s.disposition,
-         "grades": s.grades or [], "tank": s.tank, "owner_case_id": s.owner_case_id,
-         "oncofertility": s.oncofertility, "renewal_due": s.renewal_due.isoformat() if s.renewal_due else None}
-        for s in specimens
+    data["specimens"] = [_specimen_dict(s) for s in specimens]
+    data["frozen_for_case"] = [_specimen_dict(s) for s in frozen]
+    data["appointments"] = [
+        _appointment_dict(a) for a in db.query(ArtAppointment).filter(ArtAppointment.cycle_id == cycle.id)
+        .order_by(ArtAppointment.scheduled_date, ArtAppointment.id).all()
     ]
     return data
+
+
+def _specimen_dict(s: ArtSpecimen) -> dict:
+    return {
+        "id": s.id, "code": s.code, "sample_type": s.sample_type, "disposition": s.disposition,
+        "grades": s.grades or [], "tank": s.tank, "canister": s.canister, "cane": s.cane, "position": s.position,
+        "owner_case_id": s.owner_case_id, "origin_cycle_id": s.origin_cycle_id,
+        "thawed_into_cycle_id": s.thawed_into_cycle_id, "thaw_survived": s.thaw_survived,
+        "oncofertility": s.oncofertility,
+        "storage_start": s.storage_start.isoformat() if s.storage_start else None,
+        "renewal_due": s.renewal_due.isoformat() if s.renewal_due else None,
+    }
+
+
+def _appointment_dict(a: ArtAppointment) -> dict:
+    return {
+        "id": a.id, "case_id": a.case_id, "cycle_id": a.cycle_id, "kind": a.kind, "status": a.status,
+        "scheduled_date": a.scheduled_date.isoformat() if a.scheduled_date else None,
+        "scheduled_time": a.scheduled_time.strftime("%H:%M") if a.scheduled_time else None,
+        "room": a.room, "clinician_id": a.clinician_id, "notes": a.notes,
+        "timeout_done": bool(a.timeout_at),
+    }
+
+
+class CycleDetailsIn(BaseModel):
+    protocol: Optional[str] = None
+    clinician_id: Optional[int] = None
+    protocol_change_reason: Optional[str] = None
+
+
+@router.patch("/cycles/{cycle_id}")
+def update_cycle_details(
+    cycle_id: int,
+    body: CycleDetailsIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_feature_permission_any(Modules.ART, "start_cycle", "record_stimulation")),
+):
+    from app.services.art_ops import require_open
+    cycle = _cycle_or_404(db, cycle_id, user.hospital_id)
+    require_open(cycle)
+    fields = body.model_dump(exclude_unset=True)
+    if "clinician_id" in fields and fields["clinician_id"]:
+        doctor = db.query(User).filter(User.id == fields["clinician_id"], User.hospital_id == user.hospital_id).first()
+        if not doctor:
+            raise HTTPException(status_code=404, detail="Doctor not found in this hospital.")
+        cycle.clinician_id = doctor.id
+    if "protocol" in fields:
+        new = (fields["protocol"] or "").strip() or None
+        if new != cycle.protocol:
+            reason = (fields.get("protocol_change_reason") or "").strip()
+            if cycle.protocol and cycle.status != "planned" and not reason:
+                raise HTTPException(status_code=400, detail="Give a reason for changing the protocol after the cycle has started.")
+            if reason:
+                cycle.protocol_change_reason = reason
+            cycle.protocol = new
+    db.commit()
+    _audit(db, user, "update_art_cycle", "art_cycle", cycle.id, cycle.protocol or "")
+    return _cycle_dict(cycle)
+
+
+@router.get("/staff")
+def staff(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_feature_permission(Modules.ART, "view_art")),
+):
+    """Active staff of this hospital, with who may witness lab and bank steps."""
+    from app.services.art_ops import BANK_WITNESS_PERMS, LAB_WITNESS_PERMS, _can_witness
+    rows = db.query(User).filter(User.hospital_id == user.hospital_id, User.is_active == True).all()  # noqa: E712
+    out = []
+    for person in rows:
+        out.append({
+            "id": person.id,
+            "name": f"{person.first_name or ''} {person.last_name or ''}".strip() or person.username,
+            "roles": sorted(person.role_names),
+            "can_witness_lab": _can_witness(db, person, LAB_WITNESS_PERMS),
+            "can_witness_bank": _can_witness(db, person, BANK_WITNESS_PERMS),
+        })
+    out.sort(key=lambda r: r["name"].lower())
+    return {"me": user.id, "staff": out}
 
 
 @router.post("/cycles/{cycle_id}/billing-mode")
@@ -763,6 +1014,7 @@ def update_billing_mode(
     change_billing_mode(
         db, cycle, billing_mode=body.billing_mode, reason=body.reason,
         package_template_id=body.package_template_id,
+        user=user, agreed_price=body.agreed_price,
     )
     db.commit()
     db.refresh(cycle)
@@ -783,10 +1035,69 @@ def add_charge(
         amount=body.amount, kind=body.kind,
     )
     db.commit()
+    _audit(db, user, "art_charge", "art_cycle", cycle.id, f"{charge.description} {charge.amount}")
     return {
         "id": charge.id, "covered_by_package": charge.covered_by_package,
         "bill_id": charge.bill_id, "amount": charge.amount, "status": charge.status,
     }
+
+
+def _bill_row(db: Session, bill) -> dict:
+    from app.services.art_ops import _paid_total
+    paid = _paid_total(db, bill.id)
+    return {
+        "id": bill.id,
+        "bill_number": bill.bill_number,
+        "bill_type": bill.bill_type,
+        "status": bill.status,
+        "total_amount": bill.total_amount,
+        "paid": paid,
+        "balance": round(float(bill.total_amount or 0) - paid, 2),
+        "notes": bill.notes,
+        "bill_date": bill.bill_date.isoformat() if bill.bill_date else None,
+    }
+
+
+@router.get("/cycles/{cycle_id}/bills")
+def cycle_bills(
+    cycle_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_feature_permission(Modules.ART, "view_art")),
+):
+    from app.models.billing import Bill
+    cycle = _cycle_or_404(db, cycle_id, user.hospital_id)
+    rows = db.query(Bill).filter(
+        Bill.hospital_id == user.hospital_id,
+        Bill.reference_id == cycle.id,
+        Bill.bill_type.in_(("art", "credit_note")),
+        Bill.bill_number.like("ART-%"),
+    ).order_by(Bill.id).all()
+    return [_bill_row(db, b) for b in rows]
+
+
+@router.post("/bills/{bill_id}/payments")
+def pay_bill(
+    bill_id: int,
+    body: PaymentIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_feature_permission(Modules.ART, "collect_advance")),
+):
+    from app.models.billing import Bill
+    bill = db.query(Bill).filter(
+        Bill.id == bill_id, Bill.hospital_id == user.hospital_id, Bill.bill_type == "art",
+        Bill.bill_number.like("ART-%"),
+    ).first()
+    if not bill:
+        raise HTTPException(status_code=404, detail="Fertility bill not found.")
+    if bill.status in ("cancelled", "paid"):
+        raise HTTPException(status_code=400, detail=f"This bill is {bill.status}.")
+    row = _bill_row(db, bill)
+    if body.amount > row["balance"] + 0.001:
+        raise HTTPException(status_code=400, detail=f"The balance on this bill is {row['balance']:.2f}.")
+    payment = collect_payment(db, bill, body.amount, body.payment_method, user)
+    db.commit()
+    _audit(db, user, "collect_art_payment", "bill", bill.id, payment.payment_number)
+    return _bill_row(db, bill)
 
 
 @router.post("/cycles/{cycle_id}/cancel")
@@ -797,7 +1108,7 @@ def cancel(
     user: User = Depends(require_feature_permission(Modules.ART, "issue_refunds")),
 ):
     cycle = _cycle_or_404(db, cycle_id, user.hospital_id)
-    cancel_cycle(db, cycle, user, body.reason)
+    cancel_cycle(db, cycle, user, body.reason, body.refund_method)
     db.commit()
     db.refresh(cycle)
     _audit(db, user, "cancel_art_cycle", "art_cycle", cycle.id, body.reason)
@@ -840,7 +1151,7 @@ def outcome(
     user: User = Depends(require_feature_permission(Modules.ART, "record_outcome")),
 ):
     cycle = _cycle_or_404(db, cycle_id, user.hospital_id)
-    record_outcome(db, cycle, body.model_dump())
+    record_outcome(db, cycle, body.model_dump(exclude_unset=True))
     db.commit()
     _audit(db, user, "art_outcome", "art_cycle", cycle.id, cycle.cycle_number)
     return _cycle_dict(cycle)
@@ -904,7 +1215,7 @@ def timeout(
     ).first()
     if not appt:
         raise HTTPException(status_code=404, detail="Appointment not found.")
-    record_timeout(db, appt, patient_name=body.patient_name, dob_confirmed=body.dob_confirmed, witness_id=body.witness_id)
+    record_timeout(db, appt, patient_name=body.patient_name, dob_confirmed=body.dob_confirmed, witness_id=body.witness_id, actor=user)
     db.commit()
     _audit(db, user, "art_timeout", "art_appointment", appt.id, appt.kind)
     return {"timeout_at": appt.timeout_at.isoformat()}
@@ -927,6 +1238,25 @@ def complete(
     return {"status": appt.status}
 
 
+@router.post("/appointments/{appointment_id}/cancel")
+def cancel_appointment(
+    appointment_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_feature_permission(Modules.ART, "schedule_procedures")),
+):
+    appt = db.query(ArtAppointment).filter(
+        ArtAppointment.id == appointment_id, ArtAppointment.hospital_id == user.hospital_id,
+    ).first()
+    if not appt:
+        raise HTTPException(status_code=404, detail="Appointment not found.")
+    if appt.status in ("done", "cancelled"):
+        raise HTTPException(status_code=400, detail="This appointment is already closed.")
+    appt.status = "cancelled"
+    db.commit()
+    _audit(db, user, "cancel_art_appointment", "art_appointment", appt.id, appt.kind)
+    return {"status": appt.status}
+
+
 @router.post("/queue")
 def queue_check_in(
     body: QueueIn,
@@ -934,9 +1264,38 @@ def queue_check_in(
     user: User = Depends(require_feature_permission(Modules.ART, "register_cases")),
 ):
     case = _case_or_404(db, body.case_id, user.hospital_id)
-    row = check_in_queue(db, case, body.queue_date or date.today())
+    on = body.queue_date or date.today()
+    already = db.query(ArtQueueEntry).filter(
+        ArtQueueEntry.case_id == case.id, ArtQueueEntry.queue_date == on, ArtQueueEntry.status != "done",
+    ).first()
+    if already:
+        raise HTTPException(status_code=400, detail=f"Already checked in today with token {already.token_no}.")
+    row = check_in_queue(db, case, on)
     db.commit()
     return {"id": row.id, "token_no": row.token_no, "queue_date": row.queue_date.isoformat()}
+
+
+class QueueStatusIn(BaseModel):
+    status: str
+
+
+@router.post("/queue/{entry_id}/status")
+def queue_status(
+    entry_id: int,
+    body: QueueStatusIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_feature_permission(Modules.ART, "register_cases")),
+):
+    if body.status not in ("waiting", "called", "done"):
+        raise HTTPException(status_code=400, detail="Status must be waiting, called, or done.")
+    row = db.query(ArtQueueEntry).filter(
+        ArtQueueEntry.id == entry_id, ArtQueueEntry.hospital_id == user.hospital_id,
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Queue entry not found.")
+    row.status = body.status
+    db.commit()
+    return {"id": row.id, "status": row.status}
 
 
 @router.get("/board")
@@ -946,6 +1305,7 @@ def board(
     user: User = Depends(require_feature_permission(Modules.ART, "view_art")),
 ):
     day = on or date.today()
+    names: dict = {}
     appointments = db.query(ArtAppointment).filter(
         ArtAppointment.hospital_id == user.hospital_id, ArtAppointment.scheduled_date == day,
     ).all()
@@ -959,15 +1319,23 @@ def board(
     soon = day.toordinal()
     renewals = []
     for specimen in db.query(ArtSpecimen).filter(ArtSpecimen.hospital_id == user.hospital_id, ArtSpecimen.disposition == "frozen").all():
-        if specimen.renewal_due and 0 <= (specimen.renewal_due.toordinal() - soon) <= 30:
-            renewals.append({"code": specimen.code, "renewal_due": specimen.renewal_due.isoformat()})
+        if specimen.renewal_due and (specimen.renewal_due.toordinal() - soon) <= 30:
+            renewals.append({
+                "code": specimen.code,
+                "renewal_due": specimen.renewal_due.isoformat(),
+                "overdue": specimen.renewal_due < day,
+            })
+    renewals.sort(key=lambda row: row["renewal_due"])
     return {
         "date": day.isoformat(),
-        "queue": [{"token_no": t.token_no, "case_id": t.case_id, "status": t.status} for t in tokens],
+        "queue": [
+            {"id": t.id, "token_no": t.token_no, "case_id": t.case_id, "status": t.status,
+             "name": _case_name(db, t.case_id, names)}
+            for t in tokens
+        ],
         "appointments": [
-            {"id": a.id, "kind": a.kind, "case_id": a.case_id, "cycle_id": a.cycle_id,
-             "status": a.status, "room": a.room, "timeout_done": bool(a.timeout_at)}
-            for a in appointments
+            {**_appointment_dict(a), "name": _case_name(db, a.case_id, names)}
+            for a in sorted(appointments, key=lambda a: (a.scheduled_time is None, a.scheduled_time or datetime.min.time()))
         ],
         "pending_art_bills": pending,
         "cryo_renewals": renewals,
@@ -983,6 +1351,7 @@ def culture_open(
     cycle = _cycle_or_404(db, cycle_id, user.hospital_id)
     open_culture(db, cycle, user)
     db.commit()
+    _audit(db, user, "art_culture_open", "art_cycle", cycle.id, cycle.cycle_number)
     return {"culture_open": True}
 
 
@@ -993,8 +1362,9 @@ def culture_close(
     user: User = Depends(require_feature_permission(Modules.ART, "record_lab")),
 ):
     cycle = _cycle_or_404(db, cycle_id, user.hospital_id)
-    close_culture(db, cycle)
+    close_culture(db, cycle, user)
     db.commit()
+    _audit(db, user, "art_culture_close", "art_cycle", cycle.id, cycle.cycle_number)
     return {"culture_open": False}
 
 
@@ -1020,7 +1390,7 @@ def fertilisation(
     user: User = Depends(require_feature_permission(Modules.ART, "record_lab")),
 ):
     cycle = _cycle_or_404(db, cycle_id, user.hospital_id)
-    record_fertilisation(db, cycle, body.model_dump())
+    record_fertilisation(db, cycle, body.model_dump(), actor=user)
     db.commit()
     _audit(db, user, "art_fertilisation", "art_cycle", cycle.id, body.method)
     return {"fert_method": cycle.fert_method, "fert_normal": cycle.fert_normal}
@@ -1036,6 +1406,7 @@ def create_specimen(
     cycle = _cycle_or_404(db, cycle_id, user.hospital_id)
     row = add_specimen(db, cycle, user, body.model_dump())
     db.commit()
+    _audit(db, user, "art_specimen_add", "art_specimen", row.id, row.code)
     return {"id": row.id, "code": row.code, "owner_case_id": row.owner_case_id}
 
 
@@ -1051,6 +1422,7 @@ def grade(
         raise HTTPException(status_code=404, detail="Specimen not found.")
     grade_specimen(db, specimen, day=body.day, grade=body.grade, stage=body.stage)
     db.commit()
+    _audit(db, user, "art_grade", "art_specimen", specimen.id, f"day {body.day} {body.grade}")
     return {"grades": specimen.grades}
 
 
@@ -1064,7 +1436,7 @@ def dispose(
     specimen = db.query(ArtSpecimen).filter(ArtSpecimen.id == specimen_id, ArtSpecimen.hospital_id == user.hospital_id).first()
     if not specimen:
         raise HTTPException(status_code=404, detail="Specimen not found.")
-    dispose_specimen(db, specimen, body.model_dump())
+    dispose_specimen(db, specimen, body.model_dump(), actor=user)
     db.commit()
     _audit(db, user, "art_dispose", "art_specimen", specimen.id, body.disposition)
     return {"disposition": specimen.disposition, "tank": specimen.tank}
@@ -1082,6 +1454,7 @@ def renew(
         raise HTTPException(status_code=404, detail="Specimen not found.")
     renew_storage(db, specimen, renewal_due=body.renewal_due, oncofertility=body.oncofertility)
     db.commit()
+    _audit(db, user, "art_renew_storage", "art_specimen", specimen.id, body.renewal_due.isoformat())
     return {"renewal_due": specimen.renewal_due.isoformat(), "oncofertility": specimen.oncofertility}
 
 
@@ -1124,7 +1497,96 @@ def tank_log(
     row = ArtTankLog(hospital_id=user.hospital_id, recorded_by_id=user.id, **body.model_dump())
     db.add(row)
     db.commit()
+    _audit(db, user, "art_tank_log", "art_tank_log", row.id, f"{row.tank_name}{' ALARM' if row.alarm else ''}")
     return {"id": row.id, "alarm": row.alarm}
+
+
+@router.get("/cryo/tank-logs")
+def tank_logs(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_feature_permission_any(Modules.ART, "manage_cryo", "record_lab")),
+):
+    rows = db.query(ArtTankLog).filter(ArtTankLog.hospital_id == user.hospital_id).order_by(ArtTankLog.id.desc()).limit(100).all()
+    people: dict = {}
+
+    def name(uid):
+        if uid not in people:
+            person = db.query(User).filter(User.id == uid).first()
+            people[uid] = f"{person.first_name} {person.last_name}".strip() if person else ""
+        return people[uid]
+
+    return [
+        {"id": r.id, "tank_name": r.tank_name, "nitrogen_level": r.nitrogen_level, "temperature_c": r.temperature_c,
+         "alarm": r.alarm, "recorded_by": name(r.recorded_by_id),
+         "recorded_at": r.recorded_at.isoformat() if r.recorded_at else None}
+        for r in rows
+    ]
+
+
+@router.get("/cryo/inventory")
+def cryo_inventory(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_feature_permission_any(Modules.ART, "manage_cryo", "record_lab")),
+):
+    """Everything in the tanks: patients' frozen eggs, sperm, and embryos, and stored bank straws.
+    Bank straws show the donor code only."""
+    cases: dict = {}
+
+    def case_label(case_id):
+        if case_id not in cases:
+            case = db.query(ArtCase).filter(ArtCase.id == case_id).first()
+            cases[case_id] = {"case_number": case.case_number, "name": _patient_name(case.woman)} if case else {}
+        return cases[case_id]
+
+    today = date.today()
+    specimens = db.query(ArtSpecimen).filter(
+        ArtSpecimen.hospital_id == user.hospital_id, ArtSpecimen.disposition == "frozen",
+    ).all()
+    rows = [
+        {
+            "kind": "patient", "id": s.id, "code": s.code, "sample_type": s.sample_type,
+            "tank": s.tank, "canister": s.canister, "cane": s.cane, "position": s.position,
+            "case_id": s.owner_case_id, **case_label(s.owner_case_id),
+            "storage_start": s.storage_start.isoformat() if s.storage_start else None,
+            "renewal_due": s.renewal_due.isoformat() if s.renewal_due else None,
+            "overdue": bool(s.renewal_due and s.renewal_due < today),
+            "oncofertility": s.oncofertility,
+        }
+        for s in specimens
+    ]
+    units = db.query(ArtBankUnit).filter(ArtBankUnit.hospital_id == user.hospital_id, ArtBankUnit.status == "stored").all()
+    for u in units:
+        rows.append({
+            "kind": "bank", "id": u.id, "code": u.sample_code, "sample_type": u.sample_type,
+            "tank": u.tank, "canister": u.canister, "cane": u.cane, "position": u.position,
+            "donor_code": u.donor.donor_code if u.donor else u.external_donor_code,
+        })
+    rows.sort(key=lambda r: (r["tank"] or "~", r["canister"] or "", r["cane"] or "", r["position"] or "", r["code"]))
+    return rows
+
+
+@router.get("/bank/units")
+def bank_units(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_feature_permission_any(
+        Modules.ART, "issue_gametes", "manage_donors", "receive_shipment", "manage_cryo",
+    )),
+):
+    partners = {p.id: p.name for p in db.query(ArtPartnerBank).filter(ArtPartnerBank.hospital_id == user.hospital_id)}
+    rows = db.query(ArtBankUnit).filter(ArtBankUnit.hospital_id == user.hospital_id).order_by(ArtBankUnit.id.desc()).all()
+    out = []
+    for u in rows:
+        case = db.query(ArtCase).filter(ArtCase.id == u.case_id).first() if u.case_id else None
+        out.append({
+            "id": u.id, "sample_code": u.sample_code, "sample_type": u.sample_type, "status": u.status,
+            "donor_code": u.donor.donor_code if u.donor else u.external_donor_code,
+            "partner_bank": partners.get(u.partner_bank_id),
+            "tank": u.tank, "canister": u.canister, "cane": u.cane, "position": u.position,
+            "case_number": case.case_number if case else None,
+            "external_clinic_name": u.external_clinic_name,
+            "issued_at": u.issued_at.isoformat() if u.issued_at else None,
+        })
+    return out
 
 
 @router.get("/partner-banks")
@@ -1145,6 +1607,7 @@ def create_partner(
     row = ArtPartnerBank(hospital_id=user.hospital_id, **body.model_dump())
     db.add(row)
     db.commit()
+    _audit(db, user, "create_art_partner_bank", "art_partner_bank", row.id, row.name)
     return {"id": row.id, "name": row.name}
 
 
@@ -1178,6 +1641,7 @@ def list_donors(
     user: User = Depends(require_feature_permission(Modules.ART, "view_donor_identity")),
 ):
     rows = db.query(ArtDonor).filter(ArtDonor.hospital_id == user.hospital_id).all()
+    _audit(db, user, "view_art_donor_identity", "art_donor", None, f"{len(rows)} donors")
     return [donor_private(r) for r in rows]
 
 
@@ -1204,9 +1668,11 @@ def screen_donor(
     donor = db.query(ArtDonor).filter(ArtDonor.id == donor_id, ArtDonor.hospital_id == user.hospital_id).first()
     if not donor:
         raise HTTPException(status_code=404, detail="Donor not found.")
-    donor.screening = body.model_dump()
+    from app.services.art_ops import set_screening
+    set_screening(db, donor, body.model_dump())
     db.commit()
-    return {"screening_complete": donor_public(donor)["screening_complete"]}
+    _audit(db, user, "screen_art_donor", "art_donor", donor.id, donor.donor_code)
+    return {"screening_complete": donor_public(donor)["screening_complete"], "status": donor.status}
 
 
 @router.post("/donors/{donor_id}/insurance")
@@ -1219,11 +1685,11 @@ def insure_donor(
     donor = db.query(ArtDonor).filter(ArtDonor.id == donor_id, ArtDonor.hospital_id == user.hospital_id).first()
     if not donor:
         raise HTTPException(status_code=404, detail="Donor not found.")
-    donor.insurance_policy_no = body.policy_no
-    donor.insurance_valid_until = body.valid_until
-    donor.insurance_amount = body.amount
+    from app.services.art_ops import set_insurance
+    set_insurance(db, donor, body.policy_no, body.valid_until, body.amount)
     db.commit()
-    return {"insurance_on_file": True}
+    _audit(db, user, "insure_art_donor", "art_donor", donor.id, donor.donor_code)
+    return {"insurance_on_file": True, "status": donor.status}
 
 
 @router.post("/donors/{donor_id}/clear")
@@ -1253,6 +1719,7 @@ def donor_retrieval(
         raise HTTPException(status_code=404, detail="Donor not found.")
     record_donor_retrieval(db, donor, body.oocytes_retrieved)
     db.commit()
+    _audit(db, user, "art_donor_retrieval", "art_donor", donor.id, str(body.oocytes_retrieved))
     return {"oocytes_retrieved": donor.oocytes_retrieved, "over_intended_cap": donor.over_intended_cap}
 
 
@@ -1264,6 +1731,7 @@ def create_unit(
 ):
     unit = store_bank_unit(db, user.hospital_id, body.model_dump())
     db.commit()
+    _audit(db, user, "store_art_unit", "art_bank_unit", unit.id, unit.sample_code)
     return {"id": unit.id, "sample_code": unit.sample_code, "status": unit.status}
 
 
@@ -1277,7 +1745,7 @@ def issue(
     unit = db.query(ArtBankUnit).filter(ArtBankUnit.id == unit_id, ArtBankUnit.hospital_id == user.hospital_id).first()
     if not unit:
         raise HTTPException(status_code=404, detail="Bank unit not found.")
-    issue_unit(db, unit, body.model_dump())
+    issue_unit(db, unit, body.model_dump(), actor=user)
     db.commit()
     cycle = db.query(ArtCycle).filter(ArtCycle.id == unit.cycle_id).first() if unit.cycle_id else None
     _audit(db, user, "issue_art_unit", "art_bank_unit", unit.id, unit.status)
@@ -1294,7 +1762,7 @@ def receive(
     db: Session = Depends(get_db),
     user: User = Depends(require_feature_permission(Modules.ART, "receive_shipment")),
 ):
-    unit = receive_external(db, user.hospital_id, body.model_dump())
+    unit = receive_external(db, user.hospital_id, body.model_dump(), actor=user)
     db.commit()
     _audit(db, user, "receive_art_shipment", "art_bank_unit", unit.id, unit.external_donor_code)
     return {"id": unit.id, "donor_code": unit.external_donor_code, "status": unit.status}
@@ -1353,7 +1821,7 @@ def list_equipment(
 ):
     rows = db.query(ArtEquipment).filter(ArtEquipment.hospital_id == user.hospital_id).all()
     return [
-        {"id": r.id, "name": r.name, "asset_code": r.asset_code, "status": r.status,
+        {"id": r.id, "name": r.name, "asset_code": r.asset_code, "status": r.status, "location": r.location,
          "installed_on": r.installed_on.isoformat() if r.installed_on else None,
          "last_change_on": r.last_change_on.isoformat() if r.last_change_on else None,
          "change_note": r.change_note}
@@ -1370,6 +1838,7 @@ def add_equipment(
     row = ArtEquipment(hospital_id=user.hospital_id, **body.model_dump())
     db.add(row)
     db.commit()
+    _audit(db, user, "create_art_equipment", "art_equipment", row.id, row.name)
     return {"id": row.id}
 
 
@@ -1383,9 +1852,10 @@ def patch_equipment(
     row = db.query(ArtEquipment).filter(ArtEquipment.id == equipment_id, ArtEquipment.hospital_id == user.hospital_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="Equipment not found.")
-    for field, value in body.model_dump().items():
+    for field, value in body.model_dump(exclude_unset=True).items():
         setattr(row, field, value)
     db.commit()
+    _audit(db, user, "update_art_equipment", "art_equipment", row.id, row.change_note or row.status)
     return {"id": row.id, "change_note": row.change_note}
 
 
@@ -1397,7 +1867,9 @@ def list_grievances(
     rows = db.query(ArtGrievance).filter(ArtGrievance.hospital_id == user.hospital_id).all()
     return [
         {"id": r.id, "reference": r.reference, "complainant_name": r.complainant_name,
-         "summary": r.summary, "status": r.status, "resolution": r.resolution}
+         "summary": r.summary, "status": r.status, "resolution": r.resolution,
+         "opened_on": r.opened_on.isoformat() if r.opened_on else None,
+         "closed_on": r.closed_on.isoformat() if r.closed_on else None}
         for r in rows
     ]
 
@@ -1408,16 +1880,18 @@ def add_grievance(
     db: Session = Depends(get_db),
     user: User = Depends(require_feature_permission(Modules.ART, "manage_grievances")),
 ):
-    from app.services.art_ops import _next_number
+    from app.services.art_ops import assign_number, placeholder
     row = ArtGrievance(
         hospital_id=user.hospital_id,
-        reference=_next_number(db, ArtGrievance, "reference", user.hospital_id, f"GRV-{user.hospital_id}-"),
+        reference=placeholder(),
         opened_on=body.opened_on or date.today(),
         complainant_name=body.complainant_name,
         summary=body.summary,
     )
     db.add(row)
+    assign_number(db, row, "reference", f"GRV-{user.hospital_id}-")
     db.commit()
+    _audit(db, user, "open_art_grievance", "art_grievance", row.id, row.reference)
     return {"id": row.id, "reference": row.reference, "status": row.status}
 
 
@@ -1431,8 +1905,13 @@ def close_grievance(
     row = db.query(ArtGrievance).filter(ArtGrievance.id == grievance_id, ArtGrievance.hospital_id == user.hospital_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="Grievance not found.")
+    if row.status == "closed":
+        raise HTTPException(status_code=400, detail="This grievance is already closed.")
+    if not (body.resolution or "").strip():
+        raise HTTPException(status_code=400, detail="Write how the grievance was resolved.")
     row.status = "closed"
-    row.resolution = body.resolution
+    row.resolution = body.resolution.strip()
     row.closed_on = date.today()
     db.commit()
+    _audit(db, user, "close_art_grievance", "art_grievance", row.id, row.reference)
     return {"status": row.status, "resolution": row.resolution}

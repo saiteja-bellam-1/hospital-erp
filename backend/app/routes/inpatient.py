@@ -14,6 +14,49 @@ def _now() -> datetime:
     return system_now()
 
 
+def _scoped_admission_query(db: Session, user):
+    """Admission query restricted to the caller's hospital (via patient.hospital_id).
+    Users with no hospital_id (platform-level) are unrestricted."""
+    q = db.query(Admission)
+    hid = getattr(user, "hospital_id", None)
+    if hid is not None:
+        q = q.join(Patient, Patient.id == Admission.patient_id).filter(Patient.hospital_id == hid)
+    return q
+
+
+def _row_snapshot(obj) -> dict:
+    """JSON-safe snapshot of an ORM row, for audit trails of deleted records."""
+    snap = {}
+    for c in obj.__table__.columns:
+        v = getattr(obj, c.name, None)
+        if isinstance(v, (datetime, date)):
+            v = v.isoformat()
+        elif not isinstance(v, (int, float, str, bool, type(None), list, dict)):
+            v = str(v)
+        snap[c.name] = v
+    return snap
+
+
+def _audited_delete(db: Session, user, obj, entity: str, *, guard_discharged: bool = False) -> None:
+    """Delete a clinical/operational row but leave a full snapshot in the audit log.
+
+    guard_discharged: refuse once the parent admission is discharged, so the
+    legal medical record is immutable after discharge."""
+    adm_id = getattr(obj, "admission_id", None)
+    if guard_discharged and adm_id:
+        adm = db.query(Admission).filter(Admission.id == adm_id).first()
+        if adm and adm.status == "discharged":
+            raise HTTPException(status_code=409,
+                detail=f"Cannot delete {entity} after the admission is discharged")
+    snap = _row_snapshot(obj)
+    obj_id = obj.id
+    db.delete(obj)
+    db.commit()
+    log_action(db, user, f"delete_{entity.lower()}", "inpatient", entity, obj_id,
+               f"Deleted {entity} #{obj_id}" + (f" (admission #{adm_id})" if adm_id else ""),
+               {"deleted_row": snap})
+
+
 def _as_naive(dt: Optional[datetime]) -> Optional[datetime]:
     """Normalize to naive local wall clock for stay-day math / SQLite storage.
 
@@ -175,6 +218,7 @@ from app.utils.dependencies import (
 from app.utils.auth import Modules
 from app.utils.pdf_service import pdf_service
 from app.services.audit_service import log_action
+from app.services.early_warning import compute_news2, escalation_text
 from app.services.admission_clinical_summary_service import build_admission_clinical_summary
 
 router = APIRouter()
@@ -1087,7 +1131,7 @@ def _list_staff_by_role(db: Session, hospital_id: int, role_name: str):
 
 
 @router.get("/doctors")
-async def list_inpatient_doctors(
+def list_inpatient_doctors(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
@@ -1098,7 +1142,7 @@ async def list_inpatient_doctors(
 
 
 @router.get("/nurses")
-async def list_inpatient_nurses(
+def list_inpatient_nurses(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
@@ -1109,7 +1153,7 @@ async def list_inpatient_nurses(
 # ============================================================
 # Room metadata helpers
 @router.get("/room-types")
-async def get_room_types(
+def get_room_types(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -1125,7 +1169,7 @@ async def get_room_types(
 
 
 @router.post("/room-types", status_code=status.HTTP_201_CREATED)
-async def create_room_type(
+def create_room_type(
     payload: dict = Body(...),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_beds")),
     db: Session = Depends(get_db),
@@ -1146,7 +1190,7 @@ async def create_room_type(
     return {"value": key, "label": room_type_labels(db, hospital.id).get(key, key)}
 
 @router.get("/amenity-options")
-async def get_amenity_options(current_user: User = Depends(get_current_user)):
+def get_amenity_options(current_user: User = Depends(get_current_user)):
     labels = {
         "ac": "Air Conditioning", "tv": "Television", "wifi": "Wi-Fi",
         "attached_bath": "Attached Bathroom", "refrigerator": "Refrigerator",
@@ -1162,7 +1206,7 @@ async def get_amenity_options(current_user: User = Depends(get_current_user)):
 # ============================================================
 
 @router.get("/rooms", response_model=List[RoomResponse])
-async def list_rooms(
+def list_rooms(
     room_type: Optional[str] = None,
     floor: Optional[str] = None,
     available_only: bool = False,
@@ -1180,7 +1224,7 @@ async def list_rooms(
 
 
 @router.get("/rooms/export")
-async def export_rooms(
+def export_rooms(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_beds")),
     db: Session = Depends(get_db),
 ):
@@ -1228,7 +1272,7 @@ async def import_rooms_file(
 
 
 @router.post("/rooms", response_model=RoomResponse, status_code=status.HTTP_201_CREATED)
-async def create_room(
+def create_room(
     room: RoomCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_beds")),
     db: Session = Depends(get_db),
@@ -1265,7 +1309,7 @@ async def create_room(
 
 
 @router.put("/rooms/{room_id}", response_model=RoomResponse)
-async def update_room(
+def update_room(
     room_id: int,
     room: RoomUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_beds")),
@@ -1304,7 +1348,7 @@ async def update_room(
 
 
 @router.delete("/rooms/{room_id}")
-async def delete_room(
+def delete_room(
     room_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_beds")),
     db: Session = Depends(get_db),
@@ -1319,7 +1363,7 @@ async def delete_room(
 
 
 @router.get("/rooms/availability")
-async def room_availability(
+def room_availability(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
@@ -1357,7 +1401,7 @@ async def room_availability(
 # frontends. Remove once no client reads them.
 
 @router.get("/rate-config", response_model=RateConfigResponse)
-async def get_rate_config(
+def get_rate_config(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
@@ -1377,7 +1421,7 @@ async def get_rate_config(
 
 
 @router.put("/rate-config", response_model=RateConfigResponse)
-async def update_rate_config(
+def update_rate_config(
     data: RateConfigUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "set_room_rates")),
     db: Session = Depends(get_db),
@@ -1407,7 +1451,7 @@ async def update_rate_config(
 # ============================================================
 
 @router.post("/maintenance", response_model=MaintenanceResponse, status_code=status.HTTP_201_CREATED)
-async def report_maintenance(
+def report_maintenance(
     data: MaintenanceCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_housekeeping")),
     db: Session = Depends(get_db),
@@ -1434,7 +1478,7 @@ async def report_maintenance(
 
 
 @router.get("/maintenance", response_model=List[MaintenanceResponse])
-async def list_maintenance(
+def list_maintenance(
     status_filter: Optional[str] = None,
     priority: Optional[str] = None,
     room_id: Optional[int] = None,
@@ -1463,7 +1507,7 @@ async def list_maintenance(
 
 
 @router.patch("/maintenance/{issue_id}", response_model=MaintenanceResponse)
-async def update_maintenance(
+def update_maintenance(
     issue_id: int,
     data: MaintenanceUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_housekeeping")),
@@ -1496,7 +1540,7 @@ async def update_maintenance(
 # ============================================================
 
 @router.get("/room-type-rates")
-async def get_room_type_rates(
+def get_room_type_rates(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "set_room_rates")),
     db: Session = Depends(get_db),
 ):
@@ -1525,7 +1569,7 @@ async def get_room_type_rates(
 
 
 @router.put("/room-type-rates/{room_type}")
-async def upsert_room_type_rate(
+def upsert_room_type_rate(
     room_type: str,
     data: RoomTypeRateUpsert,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "set_room_rates")),
@@ -1563,7 +1607,7 @@ async def upsert_room_type_rate(
 
 
 @router.get("/room-type-rates/export")
-async def export_room_type_config(
+def export_room_type_config(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "set_room_rates")),
     db: Session = Depends(get_db),
 ):
@@ -1616,7 +1660,7 @@ async def import_room_type_config(
 # ============================================================
 
 @router.get("/doctor-room-rates")
-async def get_doctor_room_rates(
+def get_doctor_room_rates(
     doctor_id: Optional[int] = Query(default=None),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_visits")),
     db: Session = Depends(get_db),
@@ -1645,7 +1689,7 @@ async def get_doctor_room_rates(
 
 
 @router.post("/doctor-room-rates", status_code=status.HTTP_201_CREATED)
-async def upsert_doctor_room_rate(
+def upsert_doctor_room_rate(
     data: DoctorRoomRateUpsert,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "set_room_rates")),
     db: Session = Depends(get_db),
@@ -1688,7 +1732,7 @@ async def upsert_doctor_room_rate(
 
 
 @router.delete("/doctor-room-rates/{rate_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_doctor_room_rate(
+def delete_doctor_room_rate(
     rate_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "set_room_rates")),
     db: Session = Depends(get_db),
@@ -1709,7 +1753,7 @@ async def delete_doctor_room_rate(
 # ============================================================
 
 @router.get("/rooms/{room_id}/beds", response_model=List[BedResponse])
-async def list_beds(
+def list_beds(
     room_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
@@ -1722,7 +1766,7 @@ async def list_beds(
 
 
 @router.post("/rooms/{room_id}/beds", response_model=BedResponse, status_code=status.HTTP_201_CREATED)
-async def create_bed(
+def create_bed(
     room_id: int,
     data: BedCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_beds")),
@@ -1746,7 +1790,7 @@ async def create_bed(
 
 
 @router.patch("/beds/{bed_id}", response_model=BedResponse)
-async def update_bed(
+def update_bed(
     bed_id: int,
     data: BedUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_beds")),
@@ -1776,7 +1820,7 @@ async def update_bed(
 
 
 @router.delete("/beds/{bed_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_bed(
+def delete_bed(
     bed_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_beds")),
     db: Session = Depends(get_db),
@@ -2170,13 +2214,13 @@ def _load_admission_response(db: Session, admission_id: int):
 
 
 @router.put("/admissions/{admission_id}/draft", response_model=AdmissionResponse)
-async def update_admission_draft(
+def update_admission_draft(
     admission_id: int,
     data: AdmissionDraftUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "admit_patients")),
     db: Session = Depends(get_db),
 ):
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     if admission.status != "draft":
@@ -2225,14 +2269,14 @@ async def update_admission_draft(
 
 
 @router.post("/admissions/{admission_id}/activate", response_model=AdmissionResponse)
-async def activate_admission_draft(
+def activate_admission_draft(
     admission_id: int,
     data: AdmissionActivateRequest,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "admit_patients")),
     db: Session = Depends(get_db),
 ):
     """Wizard step 3 — claim bed, record deposit, keep status as draft until declarations."""
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     if admission.status != "draft":
@@ -2329,13 +2373,13 @@ def _case_sheet_response(
 
 
 @router.get("/admissions/{admission_id}/admission-case-sheet", response_model=AdmissionCaseSheetResponse)
-async def get_admission_case_sheet(
+def get_admission_case_sheet(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "admit_patients")),
     db: Session = Depends(get_db),
 ):
     """Return clinical case-sheet fields for the admit wizard (or empty defaults)."""
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     summary = db.query(AdmissionDischargeSummary).filter(
@@ -2345,7 +2389,7 @@ async def get_admission_case_sheet(
 
 
 @router.put("/admissions/{admission_id}/admission-case-sheet", response_model=AdmissionCaseSheetResponse)
-async def upsert_admission_case_sheet(
+def upsert_admission_case_sheet(
     admission_id: int,
     data: AdmissionCaseSheetUpsert,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "admit_patients")),
@@ -2356,7 +2400,7 @@ async def upsert_admission_case_sheet(
     Allowed while admission is still draft (post-activate) or already admitted.
     Uses admit_patients so reception staff can fill the case sheet.
     """
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     if admission.status not in ("draft", "admitted"):
@@ -2396,7 +2440,7 @@ async def upsert_admission_case_sheet(
 
 
 @router.get("/admissions/{admission_id}/admission-case-sheet/pdf")
-async def get_admission_case_sheet_pdf(
+def get_admission_case_sheet_pdf(
     admission_id: int,
     include_header: Optional[bool] = Query(None),
     current_user: User = Depends(require_feature_permission_any(
@@ -2507,13 +2551,13 @@ async def get_admission_case_sheet_pdf(
 
 
 @router.post("/admissions/{admission_id}/complete-admission", response_model=AdmissionResponse)
-async def complete_admission_draft(
+def complete_admission_draft(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "admit_patients")),
     db: Session = Depends(get_db),
 ):
     """Wizard final step — after admission/consent forms signed, promote draft to admitted."""
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     if admission.status != "draft":
@@ -2527,13 +2571,13 @@ async def complete_admission_draft(
 
 
 @router.post("/admissions/{admission_id}/cancel", response_model=AdmissionResponse)
-async def cancel_admission(
+def cancel_admission(
     admission_id: int,
     data: AdmissionCancelRequest,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "admit_patients")),
     db: Session = Depends(get_db),
 ):
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     if admission.status != "draft":
@@ -2641,7 +2685,7 @@ async def quick_admit(
 
 
 @router.get("/admissions/triage-queue")
-async def list_triage_queue(
+def list_triage_queue(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
@@ -2675,7 +2719,7 @@ async def list_triage_queue(
 
 
 @router.get("/admissions", response_model=PaginatedAdmissionResponse)
-async def list_admissions(
+def list_admissions(
     status_filter: Optional[str] = Query(None, alias="status"),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
@@ -2705,7 +2749,7 @@ async def list_admissions(
 
 
 @router.get("/admissions/{admission_id}", response_model=AdmissionResponse)
-async def get_admission(
+def get_admission(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
@@ -2725,13 +2769,13 @@ async def get_admission(
 
 
 @router.put("/admissions/{admission_id}", response_model=AdmissionResponse)
-async def update_admission(
+def update_admission(
     admission_id: int,
     data: AdmissionUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "update_admission")),
     db: Session = Depends(get_db),
 ):
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     if admission.status != "admitted":
@@ -2914,7 +2958,7 @@ async def update_admission(
 
 
 @router.get("/admissions/patient/{patient_id}", response_model=List[AdmissionResponse])
-async def get_patient_admissions(
+def get_patient_admissions(
     patient_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
@@ -3013,7 +3057,7 @@ def _build_census_payload(db: Session) -> dict:
 
 
 @router.get("/reports/census")
-async def get_census(
+def get_census(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
@@ -3022,7 +3066,7 @@ async def get_census(
 
 
 @router.get("/reports/census/pdf")
-async def get_census_pdf(
+def get_census_pdf(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
@@ -3072,7 +3116,7 @@ def _loa_to_response(loa: LeaveOfAbsence, db: Session) -> dict:
 
 
 @router.post("/admissions/{admission_id}/loa", status_code=status.HTTP_201_CREATED)
-async def create_loa(
+def create_loa(
     admission_id: int,
     data: LOACreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "update_admission")),
@@ -3080,7 +3124,7 @@ async def create_loa(
 ):
     """Start a Leave-of-Absence window. Patient is not discharged; the bed is
     optionally held. Days fully covered by the LOA are excluded from room rent."""
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     if admission.status != "admitted":
@@ -3118,7 +3162,7 @@ async def create_loa(
 
 
 @router.get("/admissions/{admission_id}/loa")
-async def list_loas(
+def list_loas(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
@@ -3131,7 +3175,7 @@ async def list_loas(
 
 
 @router.patch("/loa/{loa_id}/return")
-async def mark_loa_returned(
+def mark_loa_returned(
     loa_id: int,
     data: LOAReturn,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "update_admission")),
@@ -3156,7 +3200,7 @@ async def mark_loa_returned(
 
 
 @router.patch("/loa/{loa_id}/cancel")
-async def cancel_loa(
+def cancel_loa(
     loa_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "update_admission")),
     db: Session = Depends(get_db),
@@ -3175,7 +3219,7 @@ async def cancel_loa(
 
 
 @router.patch("/loa/{loa_id}/no-show")
-async def mark_loa_no_show(
+def mark_loa_no_show(
     loa_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "update_admission")),
     db: Session = Depends(get_db),
@@ -3197,7 +3241,7 @@ async def mark_loa_no_show(
 
 
 @router.get("/loa/active")
-async def list_active_loas(
+def list_active_loas(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
@@ -3246,7 +3290,7 @@ def _handover_to_response(h: ShiftHandover, db: Session) -> dict:
 
 
 @router.post("/admissions/{admission_id}/handover", status_code=status.HTTP_201_CREATED)
-async def create_shift_handover(
+def create_shift_handover(
     admission_id: int,
     data: ShiftHandoverCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_nursing_notes")),
@@ -3255,7 +3299,7 @@ async def create_shift_handover(
     """File the outgoing nurse's handover note for the current shift."""
     if data.from_shift not in VALID_SHIFTS_HANDOVER:
         raise HTTPException(status_code=400, detail=f"from_shift must be one of {sorted(VALID_SHIFTS_HANDOVER)}")
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     hospital = _get_hospital(db, current_user)
@@ -3283,7 +3327,7 @@ async def create_shift_handover(
 
 
 @router.patch("/handover/{handover_id}/acknowledge")
-async def acknowledge_handover(
+def acknowledge_handover(
     handover_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_nursing_notes")),
     db: Session = Depends(get_db),
@@ -3306,7 +3350,7 @@ async def acknowledge_handover(
 
 
 @router.get("/admissions/{admission_id}/handovers")
-async def list_handovers(
+def list_handovers(
     admission_id: int,
     limit: int = Query(default=20, ge=1, le=100),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
@@ -3319,7 +3363,7 @@ async def list_handovers(
 
 
 @router.get("/handover/{handover_id}/pdf")
-async def get_handover_pdf(
+def get_handover_pdf(
     handover_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
@@ -3398,7 +3442,7 @@ def _code_blue_to_response(c: CodeBlueEvent, db: Session) -> dict:
 
 
 @router.post("/code-blue", status_code=status.HTTP_201_CREATED)
-async def create_code_blue(
+def create_code_blue(
     data: CodeBlueCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "report_incident")),
     db: Session = Depends(get_db),
@@ -3434,7 +3478,7 @@ async def create_code_blue(
 
 
 @router.get("/code-blue")
-async def list_code_blue(
+def list_code_blue(
     days: int = Query(default=30, ge=1, le=365),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
@@ -3449,7 +3493,7 @@ async def list_code_blue(
 
 
 @router.get("/reports/code-blue")
-async def code_blue_monthly_stats(
+def code_blue_monthly_stats(
     days: int = Query(default=30, ge=1, le=365),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
@@ -3491,14 +3535,14 @@ VALID_CLAIM_TRANSITIONS = {
 }
 
 @router.put("/admissions/{admission_id}/claim-status", response_model=AdmissionResponse)
-async def update_claim_status(
+def update_claim_status(
     admission_id: int,
     data: ClaimStatusUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "update_claim_status")),
     db: Session = Depends(get_db),
 ):
     """Update insurance claim status with workflow validation: none → draft → submitted → approved/rejected."""
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
 
@@ -3532,10 +3576,9 @@ async def update_claim_status(
 
     db.commit()
 
-    await log_action(
-        db, current_user.id,
-        f"insurance_claim_{new_status}",
-        "admission", admission_id,
+    log_action(
+        db, current_user, f"insurance_claim_{new_status}", "inpatient", "Admission", admission_id,
+        f"Claim status {current_status} -> {new_status} for {admission.admission_number}",
         {"admission_number": admission.admission_number, "claim_status": new_status,
          "claim_amount": data.claim_amount, "previous_status": current_status}
     )
@@ -3555,7 +3598,7 @@ async def update_claim_status(
 # ============================================================
 
 @router.post("/admissions/{admission_id}/visits", response_model=VisitResponse, status_code=status.HTTP_201_CREATED)
-async def create_visit(
+def create_visit(
     admission_id: int,
     data: VisitCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_visits")),
@@ -3712,7 +3755,7 @@ async def create_visit(
 
 
 @router.post("/admissions/{admission_id}/auto-post-today")
-async def auto_post_today(
+def auto_post_today(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_visits")),
     db: Session = Depends(get_db),
@@ -3720,7 +3763,7 @@ async def auto_post_today(
     """Manually trigger today's auto-post for one admission. Idempotent — if a
     doctor_visit already exists today for this admission, this is a no-op."""
     from app.services.inpatient_daily_charges import auto_post_daily_visits_for_admission
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     if admission.status != "admitted":
@@ -3733,7 +3776,7 @@ async def auto_post_today(
 
 
 @router.post("/admissions/auto-post-today/all")
-async def auto_post_today_all(
+def auto_post_today_all(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_visits")),
     db: Session = Depends(get_db),
 ):
@@ -3747,7 +3790,7 @@ async def auto_post_today_all(
 
 
 @router.get("/admissions/{admission_id}/visits", response_model=List[VisitResponse])
-async def list_visits(
+def list_visits(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
@@ -3767,7 +3810,7 @@ async def list_visits(
 
 
 @router.put("/visits/{visit_id}", response_model=VisitResponse)
-async def update_visit(
+def update_visit(
     visit_id: int,
     data: VisitUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_visits")),
@@ -3792,7 +3835,7 @@ async def update_visit(
 
 
 @router.delete("/visits/{visit_id}")
-async def delete_visit(
+def delete_visit(
     visit_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_visits")),
     db: Session = Depends(get_db),
@@ -3802,8 +3845,7 @@ async def delete_visit(
         raise HTTPException(status_code=404, detail="Visit not found")
     if visit.billed:
         raise HTTPException(status_code=400, detail="Cannot delete a billed visit")
-    db.delete(visit)
-    db.commit()
+    _audited_delete(db, current_user, visit, "PatientVisit", guard_discharged=True)
     return {"message": "Visit deleted successfully"}
 
 
@@ -4157,7 +4199,7 @@ def _apply_summary_to_discharge_create(summary: AdmissionDischargeSummary, data:
 
 
 @router.get("/admissions/{admission_id}/discharge-summary", response_model=DischargeSummaryResponse)
-async def get_discharge_summary(
+def get_discharge_summary(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_discharge_summary")),
     db: Session = Depends(get_db),
@@ -4177,13 +4219,13 @@ async def get_discharge_summary(
 
 
 @router.put("/admissions/{admission_id}/discharge-summary", response_model=DischargeSummaryResponse)
-async def upsert_discharge_summary(
+def upsert_discharge_summary(
     admission_id: int,
     data: DischargeSummaryUpsert,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "write_discharge_summary")),
     db: Session = Depends(get_db),
 ):
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     if admission.status != "admitted":
@@ -4246,12 +4288,12 @@ def _validate_summary_identity(summary: AdmissionDischargeSummary) -> Optional[s
 
 
 @router.post("/admissions/{admission_id}/discharge-summary/finalize", response_model=DischargeSummaryResponse)
-async def finalize_discharge_summary(
+def finalize_discharge_summary(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "write_discharge_summary")),
     db: Session = Depends(get_db),
 ):
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     if admission.status != "admitted":
@@ -4284,13 +4326,13 @@ async def finalize_discharge_summary(
 
 
 @router.post("/admissions/{admission_id}/discharge-summary/reopen", response_model=DischargeSummaryResponse)
-async def reopen_discharge_summary(
+def reopen_discharge_summary(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "write_discharge_summary")),
     db: Session = Depends(get_db),
 ):
     """Return a submitted (ready) summary to draft so the doctor can edit before discharge."""
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     if admission.status != "admitted":
@@ -4311,12 +4353,12 @@ async def reopen_discharge_summary(
 
 
 @router.get("/admissions/{admission_id}/discharge-summary/ot-import")
-async def get_discharge_summary_ot_import(
+def get_discharge_summary_ot_import(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "write_discharge_summary")),
     db: Session = Depends(get_db),
 ):
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     text = _ot_import_text(db, admission_id)
@@ -4328,7 +4370,7 @@ async def get_discharge_summary_ot_import(
 
 
 @router.get("/admissions/{admission_id}/discharge-summary/pdf/preview")
-async def preview_discharge_summary_pdf(
+def preview_discharge_summary_pdf(
     admission_id: int,
     include_header: Optional[bool] = Query(None),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "write_discharge_summary")),
@@ -4377,7 +4419,7 @@ async def preview_discharge_summary_pdf(
 
 
 @router.get("/admissions/{admission_id}/discharge-summary/pdf")
-async def get_discharge_summary_pdf(
+def get_discharge_summary_pdf(
     admission_id: int,
     include_header: Optional[bool] = Query(None),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_discharge_summary")),
@@ -4432,13 +4474,13 @@ async def get_discharge_summary_pdf(
 # ============================================================
 
 @router.post("/admissions/{admission_id}/discharge", response_model=DischargeResponse, status_code=status.HTTP_201_CREATED)
-async def discharge_patient(
+def discharge_patient(
     admission_id: int,
     data: DischargeCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "discharge_patients")),
     db: Session = Depends(get_db),
 ):
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     if admission.status != "admitted":
@@ -4636,6 +4678,9 @@ async def discharge_patient(
 
     # Update admission status
     admission.status = "discharged"
+    # No more doses are due once the patient has left
+    from app.services.mar_service import purge_future_scheduled_doses
+    purge_future_scheduled_doses(db, admission_id=admission.id, from_time=datetime.now())
 
     # Release structured bed if assigned — move to 'cleaning' so housekeeping can take over
     if admission.bed_id:
@@ -4693,7 +4738,7 @@ async def discharge_patient(
 
 
 @router.get("/admissions/{admission_id}/discharge", response_model=DischargeResponse)
-async def get_discharge(
+def get_discharge(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
@@ -4707,7 +4752,7 @@ async def get_discharge(
 
 
 @router.get("/admissions/{admission_id}/discharge/pdf")
-async def get_discharge_pdf(
+def get_discharge_pdf(
     admission_id: int,
     include_header: Optional[bool] = Query(None),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
@@ -4802,13 +4847,13 @@ async def get_discharge_pdf(
 
 
 @router.get("/admissions/{admission_id}/admission-detail/pdf")
-async def get_admission_detail_pdf(
+def get_admission_detail_pdf(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
     """Detailed Admission Summary — full clinical dossier for active or discharged stays."""
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
 
@@ -4840,13 +4885,13 @@ async def get_admission_detail_pdf(
 
 
 @router.get("/admissions/{admission_id}/ot")
-async def list_admission_ot_schedules(
+def list_admission_ot_schedules(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
     """OT schedules linked to a specific admission."""
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
 
@@ -4878,13 +4923,13 @@ async def list_admission_ot_schedules(
 # ============================================================
 
 @router.get("/admissions/{admission_id}/prescriptions")
-async def get_admission_prescriptions(
+def get_admission_prescriptions(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
     """Get all prescriptions linked to an admission (both full and simple)"""
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
 
@@ -5887,13 +5932,13 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
 
 
 @router.get("/admissions/{admission_id}/bill")
-async def get_admission_bill(
+def get_admission_bill(
     admission_id: int,
     unbilled_only: bool = Query(default=False, description="Show only items not yet attached to a finalised/interim bill"),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
     db: Session = Depends(get_db),
 ):
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     patient = db.query(Patient).filter(Patient.id == admission.patient_id).first()
@@ -5993,7 +6038,7 @@ async def get_admission_bill(
 
 
 @router.get("/admissions/{admission_id}/bills")
-async def list_admission_bills(
+def list_admission_bills(
     admission_id: int,
     include_cancelled: bool = False,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
@@ -6055,7 +6100,7 @@ def _payer_split_for_payment(db: Session, payment_id: int):
 
 
 @router.post("/admissions/{admission_id}/bills/{bill_id}/cancel")
-async def cancel_admission_bill(
+def cancel_admission_bill(
     admission_id: int,
     bill_id: int,
     data: CancelAdmissionBillRequest,
@@ -6674,13 +6719,13 @@ def _create_admission_bill_record_inner(
 
 
 @router.post("/admissions/{admission_id}/bill/finalize")
-async def finalize_bill(
+def finalize_bill(
     admission_id: int,
     data: Optional[FinalizeBillRequest] = None,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "finalize_bill")),
     db: Session = Depends(get_db),
 ):
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     patient = db.query(Patient).filter(Patient.id == admission.patient_id).first()
@@ -6771,7 +6816,7 @@ async def finalize_bill(
 
 
 @router.post("/admissions/{admission_id}/bill/finalize-and-settle")
-async def finalize_and_settle_bill(
+def finalize_and_settle_bill(
     admission_id: int,
     data: FinalizeAndSettleRequest,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "finalize_bill")),
@@ -6784,7 +6829,7 @@ async def finalize_and_settle_bill(
     Kept for API compatibility. Prefer finalize then collect/refund separately
     (discharge checkout settle step).
     """
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     patient = db.query(Patient).filter(Patient.id == admission.patient_id).first()
@@ -6923,7 +6968,7 @@ async def finalize_and_settle_bill(
 
 
 @router.post("/admissions/{admission_id}/bill/interim")
-async def create_interim_bill(
+def create_interim_bill(
     admission_id: int,
     data: Optional[FinalizeBillRequest] = None,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "generate_interim_bill")),
@@ -6941,7 +6986,7 @@ async def create_interim_bill(
 
 
 @router.get("/admissions/{admission_id}/bill/pdf")
-async def get_bill_pdf(
+def get_bill_pdf(
     admission_id: int,
     bill_id: Optional[int] = Query(default=None, description="Specific bill row to render (any status). Defaults to the latest non-cancelled bill."),
     as_interim: bool = Query(
@@ -6963,7 +7008,7 @@ async def get_bill_pdf(
     ``as_interim=true`` prints live charges up to now (no Bill create/stamp)
     with a NOT FINAL watermark — used by Print charges to date.
     """
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
 
@@ -7410,7 +7455,7 @@ async def get_bill_pdf(
 # ============================================================
 
 @router.get("/dashboard")
-async def inpatient_dashboard(
+def inpatient_dashboard(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
@@ -7479,7 +7524,7 @@ def _user_inpatient_fee(user: Optional[User]) -> float:
 
 
 @router.post("/ot", response_model=OTScheduleResponse, status_code=status.HTTP_201_CREATED)
-async def create_ot_schedule(
+def create_ot_schedule(
     data: OTScheduleCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "schedule_ot")),
     db: Session = Depends(get_db),
@@ -7529,7 +7574,7 @@ async def create_ot_schedule(
 
 
 @router.get("/ot", response_model=List[OTScheduleResponse])
-async def list_ot_schedules(
+def list_ot_schedules(
     schedule_date: Optional[date] = None,
     surgeon_id: Optional[int] = None,
     ot_status: Optional[str] = Query(None, alias="status"),
@@ -7564,7 +7609,7 @@ def _ot_to_response(ot: OTSchedule) -> dict:
 
 
 @router.put("/ot/{ot_id}", response_model=OTScheduleResponse)
-async def update_ot_schedule(
+def update_ot_schedule(
     ot_id: int,
     data: OTScheduleUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "schedule_ot")),
@@ -7588,7 +7633,7 @@ async def update_ot_schedule(
 
 
 @router.put("/ot/{ot_id}/charges", response_model=OTScheduleResponse)
-async def update_ot_charges(
+def update_ot_charges(
     ot_id: int,
     data: OTChargesUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_ot_charges")),
@@ -7618,7 +7663,7 @@ async def update_ot_charges(
 
 
 @router.patch("/ot/{ot_id}/status")
-async def update_ot_status(
+def update_ot_status(
     ot_id: int,
     new_status: str = Query(..., alias="status", pattern="^(scheduled|in_progress|completed|cancelled|postponed)$"),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "schedule_ot")),
@@ -7633,7 +7678,7 @@ async def update_ot_status(
 
 
 @router.get("/ot/today", response_model=List[OTScheduleResponse])
-async def today_ot_schedules(
+def today_ot_schedules(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
@@ -7654,13 +7699,13 @@ async def today_ot_schedules(
 # ============================================================
 
 @router.get("/admissions/{admission_id}/lab-orders")
-async def get_admission_lab_orders(
+def get_admission_lab_orders(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
     """Get all lab orders linked to an admission."""
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
 
@@ -7697,13 +7742,13 @@ async def get_admission_lab_orders(
 
 
 @router.get("/admissions/{admission_id}/lab-tests-available")
-async def get_available_lab_tests(
+def get_available_lab_tests(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
     """Get available lab tests for ordering from inpatient context."""
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
 
@@ -7733,7 +7778,7 @@ async def get_available_lab_tests(
 
 
 @router.get("/admissions/{admission_id}/medicines-lookup")
-async def lookup_medicines_for_admission(
+def lookup_medicines_for_admission(
     admission_id: int,
     q: Optional[str] = Query(None, min_length=1),
     limit: int = Query(20, ge=1, le=50),
@@ -7748,7 +7793,7 @@ async def lookup_medicines_for_admission(
     from sqlalchemy import or_
     from app.utils.pharmacy_pricing import medicine_sale_rate
 
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
 
@@ -7804,7 +7849,7 @@ async def upload_admission_document(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "upload_documents")),
     db: Session = Depends(get_db),
 ):
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
 
@@ -7855,12 +7900,12 @@ async def upload_admission_document(
 
 
 @router.get("/admissions/{admission_id}/documents", response_model=List[DocumentResponse])
-async def list_admission_documents(
+def list_admission_documents(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_documents")),
     db: Session = Depends(get_db),
 ):
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
 
@@ -7879,7 +7924,7 @@ async def list_admission_documents(
 
 
 @router.get("/documents/{document_id}/download")
-async def download_document(
+def download_document(
     document_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_documents")),
     db: Session = Depends(get_db),
@@ -7901,7 +7946,7 @@ async def download_document(
 
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_document(
+def delete_document(
     document_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "delete_documents")),
     db: Session = Depends(get_db),
@@ -7916,8 +7961,7 @@ async def delete_document(
     if os.path.exists(full_path):
         os.remove(full_path)
 
-    db.delete(doc)
-    db.commit()
+    _audited_delete(db, current_user, doc, "AdmissionDocument")
 
 
 # ============================================================
@@ -7925,14 +7969,14 @@ async def delete_document(
 # ============================================================
 
 @router.post("/admissions/{admission_id}/nursing-notes", response_model=NursingNoteResponse, status_code=status.HTTP_201_CREATED)
-async def create_nursing_note(
+def create_nursing_note(
     admission_id: int,
     data: NursingNoteCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_nursing_notes")),
     db: Session = Depends(get_db),
 ):
     hospital = _get_hospital(db, current_user)
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
 
@@ -7955,14 +7999,14 @@ async def create_nursing_note(
 
 
 @router.get("/admissions/{admission_id}/nursing-notes", response_model=List[NursingNoteResponse])
-async def list_nursing_notes(
+def list_nursing_notes(
     admission_id: int,
     shift: Optional[str] = Query(default=None, pattern="^(morning|afternoon|night)$"),
     note_type: Optional[str] = Query(default=None),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_nursing_notes")),
     db: Session = Depends(get_db),
 ):
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
 
@@ -7984,7 +8028,7 @@ async def list_nursing_notes(
 
 
 @router.put("/nursing-notes/{note_id}", response_model=NursingNoteResponse)
-async def update_nursing_note(
+def update_nursing_note(
     note_id: int,
     data: NursingNoteUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_nursing_notes")),
@@ -8008,7 +8052,7 @@ async def update_nursing_note(
 
 
 @router.delete("/nursing-notes/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_nursing_note(
+def delete_nursing_note(
     note_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_nursing_notes")),
     db: Session = Depends(get_db),
@@ -8016,8 +8060,7 @@ async def delete_nursing_note(
     note = db.query(NursingNote).filter(NursingNote.id == note_id).first()
     if not note:
         raise HTTPException(status_code=404, detail="Nursing note not found")
-    db.delete(note)
-    db.commit()
+    _audited_delete(db, current_user, note, "NursingNote", guard_discharged=True)
 
 
 # ============================================================
@@ -8066,6 +8109,8 @@ class VitalSignsCreate(BaseModel):
     blood_glucose: Optional[float] = Field(default=None, ge=10, le=1000)
     pain_score: Optional[int] = Field(default=None, ge=0, le=10)
     gcs_score: Optional[int] = Field(default=None, ge=3, le=15)
+    consciousness: Optional[str] = Field(default=None, pattern="^(alert|confusion|voice|pain|unresponsive)$")
+    on_supplemental_o2: Optional[bool] = None
     weight_kg: Optional[float] = Field(default=None, ge=0.5, le=500)
     height_cm: Optional[float] = Field(default=None, ge=20, le=250)
     position: Optional[str] = Field(default=None, max_length=30)
@@ -8082,6 +8127,8 @@ class VitalSignsUpdate(BaseModel):
     blood_glucose: Optional[float] = None
     pain_score: Optional[int] = None
     gcs_score: Optional[int] = None
+    consciousness: Optional[str] = Field(default=None, pattern="^(alert|confusion|voice|pain|unresponsive)$")
+    on_supplemental_o2: Optional[bool] = None
     weight_kg: Optional[float] = None
     height_cm: Optional[float] = None
     position: Optional[str] = None
@@ -8106,6 +8153,11 @@ class VitalSignsResponse(BaseModel):
     blood_glucose: Optional[float]
     pain_score: Optional[int]
     gcs_score: Optional[int]
+    consciousness: Optional[str] = None
+    on_supplemental_o2: Optional[bool] = None
+    news2_score: Optional[int] = None
+    news2_risk: Optional[str] = None
+    news2_escalation: Optional[str] = None
     weight_kg: Optional[float]
     height_cm: Optional[float]
     position: Optional[str]
@@ -8121,25 +8173,27 @@ def _vital_to_response(v, db) -> dict:
     rec = db.query(User).filter(User.id == v.recorded_by_id).first()
     return {
         **{c.name: getattr(v, c.name) for c in v.__table__.columns},
+        "news2_escalation": escalation_text(v.news2_risk) if v.news2_risk else None,
         "recorded_by_name": f"{rec.first_name} {rec.last_name}" if rec else None,
     }
 
 
 @router.post("/admissions/{admission_id}/vitals", response_model=VitalSignsResponse, status_code=status.HTTP_201_CREATED)
-async def record_vitals(
+def record_vitals(
     admission_id: int,
     data: VitalSignsCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_vitals")),
     db: Session = Depends(get_db),
 ):
     hospital = _get_hospital(db, current_user)
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     _require_accepted(admission)
 
     payload = data.dict(exclude_unset=True)
     is_abnormal, flags = _evaluate_vitals(payload)
+    news = compute_news2(payload)
 
     vitals = VitalSigns(
         admission_id=admission_id,
@@ -8148,6 +8202,8 @@ async def record_vitals(
         recorded_at=payload.pop("recorded_at", None) or _now(),
         is_abnormal=is_abnormal,
         abnormal_flags=flags or None,
+        news2_score=news["score"],
+        news2_risk=news["risk"],
         hospital_id=hospital.id,
         **payload,
     )
@@ -8158,13 +8214,22 @@ async def record_vitals(
     log_action(
         db, current_user, "record_vitals", "inpatient", "VitalSigns", vitals.id,
         f"Recorded vitals for admission {admission.admission_number}",
-        {"abnormal": is_abnormal, "flags": flags},
+        {"abnormal": is_abnormal, "flags": flags,
+         "news2_score": news["score"], "news2_risk": news["risk"]},
     )
+    if news["risk"] in ("medium", "high"):
+        # Distinct audit event so escalations are searchable / reportable
+        log_action(
+            db, current_user, "news2_escalation", "inpatient", "VitalSigns", vitals.id,
+            f"NEWS2 {news['score']} ({news['risk']}) for admission {admission.admission_number}: "
+            f"{escalation_text(news['risk'])}",
+            {"components": news["components"], "partial": news["partial"]},
+        )
     return _vital_to_response(vitals, db)
 
 
 @router.get("/admissions/{admission_id}/vitals", response_model=List[VitalSignsResponse])
-async def list_vitals(
+def list_vitals(
     admission_id: int,
     limit: int = Query(default=100, ge=1, le=500),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_vitals")),
@@ -8181,7 +8246,7 @@ async def list_vitals(
 
 
 @router.get("/admissions/{admission_id}/vitals/latest", response_model=Optional[VitalSignsResponse])
-async def latest_vitals(
+def latest_vitals(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_vitals")),
     db: Session = Depends(get_db),
@@ -8196,7 +8261,7 @@ async def latest_vitals(
 
 
 @router.put("/vitals/{vital_id}", response_model=VitalSignsResponse)
-async def update_vitals(
+def update_vitals(
     vital_id: int,
     data: VitalSignsUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_vitals")),
@@ -8206,22 +8271,73 @@ async def update_vitals(
     if not v:
         raise HTTPException(status_code=404, detail="Vitals record not found")
 
+    adm = db.query(Admission).filter(Admission.id == v.admission_id).first()
+    if adm and adm.status == "discharged":
+        raise HTTPException(status_code=409, detail="Cannot edit vitals after the admission is discharged")
+
+    changes = {}
     for field, value in data.dict(exclude_unset=True).items():
+        old = getattr(v, field, None)
+        if old != value:
+            changes[field] = {"from": str(old) if old is not None else None,
+                              "to": str(value) if value is not None else None}
         setattr(v, field, value)
 
-    # Re-evaluate abnormal status with merged values
+    # Re-evaluate abnormal status + NEWS2 with merged values
     merged = {col.name: getattr(v, col.name) for col in v.__table__.columns}
     is_abnormal, flags = _evaluate_vitals(merged)
     v.is_abnormal = is_abnormal
     v.abnormal_flags = flags or None
+    news = compute_news2(merged)
+    v.news2_score, v.news2_risk = news["score"], news["risk"]
 
     db.commit()
     db.refresh(v)
+    if changes:
+        log_action(db, current_user, "update_vitals", "inpatient", "VitalSigns", v.id,
+                   f"Edited vitals #{v.id} (admission #{v.admission_id})", {"changes": changes})
     return _vital_to_response(v, db)
 
 
+@router.get("/early-warnings")
+def list_early_warnings(
+    min_score: int = Query(default=5, ge=0, le=20),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_vitals")),
+    db: Session = Depends(get_db),
+):
+    """Admitted patients whose most recent vitals have NEWS2 >= ``min_score``
+    (default 5 = medium/high), worst first. Drives the nurse-station alert board."""
+    latest = (
+        db.query(VitalSigns.admission_id, sqlfunc.max(VitalSigns.recorded_at).label("t"))
+        .group_by(VitalSigns.admission_id).subquery()
+    )
+    rows = (
+        _scoped_admission_query(db, current_user)
+        .join(VitalSigns, VitalSigns.admission_id == Admission.id)
+        .join(latest, (latest.c.admission_id == VitalSigns.admission_id) & (latest.c.t == VitalSigns.recorded_at))
+        .filter(Admission.status == "admitted", VitalSigns.news2_score >= min_score)
+        .with_entities(Admission, VitalSigns)
+        .order_by(VitalSigns.news2_score.desc())
+        .all()
+    )
+    out = []
+    for adm, v in rows:
+        p = adm.patient
+        out.append({
+            "admission_id": adm.id,
+            "admission_number": adm.admission_number,
+            "patient_name": f"{p.first_name} {p.last_name}" if p else None,
+            "room_id": adm.room_id,
+            "news2_score": v.news2_score,
+            "news2_risk": v.news2_risk,
+            "escalation": escalation_text(v.news2_risk),
+            "recorded_at": v.recorded_at,
+        })
+    return out
+
+
 @router.delete("/vitals/{vital_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_vitals(
+def delete_vitals(
     vital_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_vitals")),
     db: Session = Depends(get_db),
@@ -8229,8 +8345,7 @@ async def delete_vitals(
     v = db.query(VitalSigns).filter(VitalSigns.id == vital_id).first()
     if not v:
         raise HTTPException(status_code=404, detail="Vitals record not found")
-    db.delete(v)
-    db.commit()
+    _audited_delete(db, current_user, v, "VitalSigns", guard_discharged=True)
 
 
 # ============================================================
@@ -8347,7 +8462,7 @@ def _mar_to_response(m: MedicationAdministration, db: Session) -> dict:
 
 
 @router.post("/admissions/{admission_id}/mar/generate")
-async def generate_mar(
+def generate_mar(
     admission_id: int,
     horizon_hours: int = Query(default=24, ge=1, le=168),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "administer_medications")),
@@ -8356,7 +8471,7 @@ async def generate_mar(
     """Materialise scheduled doses for the next `horizon_hours` for this admission's
     active prescriptions. Idempotent — skips dose slots that already exist."""
     hospital = _get_hospital(db, current_user)
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     _require_accepted(admission)
@@ -8381,6 +8496,14 @@ async def generate_mar(
             if not times:
                 continue
 
+            # Stop at the end of the ordered course (start of order + duration_days)
+            course_end = None
+            if item.duration_days and pres.created_at:
+                course_end = datetime.combine(
+                    pres.created_at.date() + timedelta(days=int(item.duration_days)),
+                    datetime.min.time(),
+                )
+
             # Generate dose timestamps from now → horizon_end at each scheduled HH:MM
             day = now.date()
             while True:
@@ -8394,6 +8517,8 @@ async def generate_mar(
                         continue
                     slot = day_dt.replace(hour=hh, minute=mm)
                     if slot < now or slot > horizon_end:
+                        continue
+                    if course_end and slot >= course_end:
                         continue
 
                     existing = db.query(MedicationAdministration).filter(
@@ -8425,7 +8550,7 @@ async def generate_mar(
 
 
 @router.get("/admissions/{admission_id}/mar", response_model=List[MARResponse])
-async def list_mar_today(
+def list_mar_today(
     admission_id: int,
     target_date: Optional[date] = Query(default=None, description="Defaults to today"),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_mar")),
@@ -8455,7 +8580,7 @@ async def list_mar_today(
 
 
 @router.get("/admissions/{admission_id}/mar/history", response_model=List[MARResponse])
-async def list_mar_history(
+def list_mar_history(
     admission_id: int,
     limit: int = Query(default=200, ge=1, le=1000),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_mar")),
@@ -8575,7 +8700,7 @@ def _run_mar_safety_checks(db: Session, m: "MedicationAdministration", data: MAR
 
 
 @router.post("/mar/{mar_id}/administer", response_model=MARResponse)
-async def administer_dose(
+def administer_dose(
     mar_id: int,
     data: MARAdministerRequest,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "administer_medications")),
@@ -8621,14 +8746,14 @@ async def administer_dose(
 
 
 @router.post("/admissions/{admission_id}/mar/prn", response_model=MARResponse, status_code=status.HTTP_201_CREATED)
-async def record_prn_dose(
+def record_prn_dose(
     admission_id: int,
     data: MARPRNRequest,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "administer_medications")),
     db: Session = Depends(get_db),
 ):
     hospital = _get_hospital(db, current_user)
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     _require_accepted(admission)
@@ -8672,7 +8797,7 @@ async def record_prn_dose(
 
 
 @router.delete("/mar/{mar_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_mar(
+def delete_mar(
     mar_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "administer_medications")),
     db: Session = Depends(get_db),
@@ -8682,8 +8807,7 @@ async def delete_mar(
         raise HTTPException(status_code=404, detail="MAR entry not found")
     if m.status == "given":
         raise HTTPException(status_code=409, detail="Cannot delete an administered dose; record an amendment in nursing notes instead")
-    db.delete(m)
-    db.commit()
+    _audited_delete(db, current_user, m, "MedicationAdministration", guard_discharged=True)
 
 
 # ============================================================
@@ -9138,14 +9262,14 @@ def _deposit_to_response(d: AdmissionDeposit, db: Session) -> dict:
 
 
 @router.post("/admissions/{admission_id}/deposits", response_model=DepositResponse, status_code=status.HTTP_201_CREATED)
-async def create_deposit(
+def create_deposit(
     admission_id: int,
     data: DepositCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "receive_deposits")),
     db: Session = Depends(get_db),
 ):
     hospital = _get_hospital(db, current_user)
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
 
@@ -9172,7 +9296,7 @@ async def create_deposit(
 
 
 @router.get("/admissions/{admission_id}/deposits", response_model=List[DepositResponse])
-async def list_deposits(
+def list_deposits(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
     db: Session = Depends(get_db),
@@ -9184,26 +9308,26 @@ async def list_deposits(
 
 
 @router.get("/admissions/{admission_id}/balance")
-async def get_admission_balance(
+def get_admission_balance(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
     db: Session = Depends(get_db),
 ):
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     return _admission_balance_summary(db, admission)
 
 
 @router.post("/admissions/{admission_id}/refund", response_model=DepositResponse, status_code=status.HTTP_201_CREATED)
-async def create_refund(
+def create_refund(
     admission_id: int,
     data: RefundCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "issue_refunds")),
     db: Session = Depends(get_db),
 ):
     hospital = _get_hospital(db, current_user)
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
 
@@ -9237,7 +9361,7 @@ async def create_refund(
 
 
 @router.delete("/deposits/{deposit_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_deposit(
+def delete_deposit(
     deposit_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "receive_deposits")),
     db: Session = Depends(get_db),
@@ -9315,7 +9439,7 @@ class TPAResponse(BaseModel):
 
 
 @router.get("/tpa", response_model=List[TPAResponse])
-async def list_tpa(
+def list_tpa(
     active_only: bool = True,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
@@ -9327,7 +9451,7 @@ async def list_tpa(
 
 
 @router.post("/tpa", response_model=TPAResponse, status_code=status.HTTP_201_CREATED)
-async def create_tpa(
+def create_tpa(
     data: TPACreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_tpa")),
     db: Session = Depends(get_db),
@@ -9341,7 +9465,7 @@ async def create_tpa(
 
 
 @router.put("/tpa/{tpa_id}", response_model=TPAResponse)
-async def update_tpa(
+def update_tpa(
     tpa_id: int,
     data: TPAUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_tpa")),
@@ -9358,7 +9482,7 @@ async def update_tpa(
 
 
 @router.delete("/tpa/{tpa_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_tpa(
+def delete_tpa(
     tpa_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_tpa")),
     db: Session = Depends(get_db),
@@ -9406,7 +9530,7 @@ class PayerSchemeResponse(BaseModel):
 
 
 @router.get("/payer-schemes", response_model=List[PayerSchemeResponse])
-async def list_payer_schemes(
+def list_payer_schemes(
     active_only: bool = True,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
@@ -9420,7 +9544,7 @@ async def list_payer_schemes(
 
 @router.post("/payer-schemes", response_model=PayerSchemeResponse,
              status_code=status.HTTP_201_CREATED)
-async def create_payer_scheme(
+def create_payer_scheme(
     data: PayerSchemeCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_payer_schemes")),
     db: Session = Depends(get_db),
@@ -9442,7 +9566,7 @@ async def create_payer_scheme(
 
 
 @router.put("/payer-schemes/{scheme_id}", response_model=PayerSchemeResponse)
-async def update_payer_scheme(
+def update_payer_scheme(
     scheme_id: int,
     data: PayerSchemeUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_payer_schemes")),
@@ -9461,7 +9585,7 @@ async def update_payer_scheme(
 
 
 @router.delete("/payer-schemes/{scheme_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_payer_scheme(
+def delete_payer_scheme(
     scheme_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_payer_schemes")),
     db: Session = Depends(get_db),
@@ -9491,7 +9615,7 @@ class PayerChangeRequest(BaseModel):
 
 
 @router.patch("/admissions/{admission_id}/payer")
-async def convert_admission_payer(
+def convert_admission_payer(
     admission_id: int,
     data: PayerChangeRequest,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "convert_payer")),
@@ -9500,7 +9624,7 @@ async def convert_admission_payer(
     """Switch an admission from one payer scheme to another mid-stay (e.g.,
     Aarogyasri rejected → Cash). Already-finalised bill splits remain
     immutable; subsequent charges go to the new payer."""
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     new_scheme = db.query(PayerScheme).filter(PayerScheme.id == data.payer_scheme_id).first()
@@ -9582,7 +9706,7 @@ async def convert_admission_payer(
 
 
 @router.get("/admissions/{admission_id}/payer-history")
-async def list_payer_changes(
+def list_payer_changes(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
     db: Session = Depends(get_db),
@@ -9644,13 +9768,13 @@ def _scheme_approval_to_response(row: AdmissionSchemeApproval, db: Session) -> d
 
 
 @router.get("/admissions/{admission_id}/scheme-approvals")
-async def list_scheme_approvals(
+def list_scheme_approvals(
     admission_id: int,
     include_voided: bool = Query(False),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
     db: Session = Depends(get_db),
 ):
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
 
@@ -9686,7 +9810,7 @@ async def add_scheme_approval(
     db: Session = Depends(get_db),
 ):
     """Add another approved amount (e.g. expansion). Optional PDF/image upload."""
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     if admission.status not in ("admitted", "draft"):
@@ -9766,7 +9890,7 @@ async def add_scheme_approval(
 
 
 @router.get("/scheme-approvals/{approval_id}/document")
-async def download_scheme_approval_document(
+def download_scheme_approval_document(
     approval_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_documents")),
     db: Session = Depends(get_db),
@@ -9787,7 +9911,7 @@ async def download_scheme_approval_document(
 
 
 @router.post("/scheme-approvals/{approval_id}/void")
-async def void_scheme_approval(
+def void_scheme_approval(
     approval_id: int,
     data: SchemeApprovalVoidRequest,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "convert_payer")),
@@ -9875,13 +9999,13 @@ def _can_act_on_acceptance(db: Session, user: User, admission: Admission) -> boo
 
 
 @router.post("/admissions/{admission_id}/accept")
-async def accept_admission(
+def accept_admission(
     admission_id: int,
     data: AcceptanceDecision,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     if not _can_act_on_acceptance(db, current_user, admission):
@@ -9905,13 +10029,13 @@ async def accept_admission(
 
 
 @router.post("/admissions/{admission_id}/reject")
-async def reject_admission(
+def reject_admission(
     admission_id: int,
     data: RejectionDecision,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     if not _can_act_on_acceptance(db, current_user, admission):
@@ -9954,7 +10078,7 @@ class GatePassCreate(BaseModel):
 
 
 @router.post("/admissions/{admission_id}/gate-pass", status_code=status.HTTP_201_CREATED)
-async def create_gate_pass(
+def create_gate_pass(
     admission_id: int,
     data: GatePassCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "issue_gate_pass")),
@@ -9963,7 +10087,7 @@ async def create_gate_pass(
     """Issue a printable gate pass for security at the exit. Requires that
     the patient is discharged and the bill balance is zero — or that an
     override reason is provided (e.g., 'insurance pending')."""
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     discharge = db.query(DischargeRecord).filter(
@@ -10052,7 +10176,7 @@ async def create_gate_pass(
 
 
 @router.get("/admissions/{admission_id}/gate-pass")
-async def get_gate_pass(
+def get_gate_pass(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
@@ -10077,7 +10201,7 @@ async def get_gate_pass(
 
 
 @router.get("/admissions/{admission_id}/gate-pass/pdf")
-async def gate_pass_pdf(
+def gate_pass_pdf(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
@@ -10085,7 +10209,7 @@ async def gate_pass_pdf(
     gp = db.query(GatePass).filter(GatePass.admission_id == admission_id).first()
     if not gp:
         raise HTTPException(status_code=404, detail="Gate pass not yet issued")
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     patient = db.query(Patient).filter(Patient.id == admission.patient_id).first() if admission else None
     hospital = _get_hospital(db, current_user)
     hospital_info = {
@@ -10165,7 +10289,7 @@ def _split_to_response(s: BillSplit, db: Session) -> dict:
 
 
 @router.post("/bills/{bill_id}/split", response_model=List[BillSplitResponse])
-async def set_bill_split(
+def set_bill_split(
     bill_id: int,
     data: BillSplitCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_bill_splits")),
@@ -10229,7 +10353,7 @@ async def set_bill_split(
 
 
 @router.get("/bills/{bill_id}/split", response_model=List[BillSplitResponse])
-async def get_bill_split(
+def get_bill_split(
     bill_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
     db: Session = Depends(get_db),
@@ -10249,7 +10373,7 @@ def _next_payment_number(db: Session) -> str:
 
 
 @router.patch("/bill-splits/{split_id}/payment")
-async def record_split_payment(
+def record_split_payment(
     split_id: int,
     payment_reference: Optional[str] = None,
     notes: Optional[str] = None,
@@ -10347,7 +10471,7 @@ async def record_split_payment(
 
 
 @router.patch("/bill-splits/{split_id}/reverse")
-async def reverse_split_payment(
+def reverse_split_payment(
     split_id: int,
     reason: Optional[str] = None,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_bill_splits")),
@@ -10418,7 +10542,7 @@ async def reverse_split_payment(
 
 
 @router.get("/tpa/outstanding")
-async def tpa_outstanding(
+def tpa_outstanding(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
     db: Session = Depends(get_db),
 ):
@@ -10535,7 +10659,7 @@ def _preauth_to_response(p: InsurancePreAuth, db: Session) -> dict:
 
 
 @router.post("/preauth", response_model=PreAuthResponse, status_code=status.HTTP_201_CREATED)
-async def create_preauth(
+def create_preauth(
     data: PreAuthCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_preauth")),
     db: Session = Depends(get_db),
@@ -10570,7 +10694,7 @@ async def create_preauth(
 
 
 @router.get("/preauth", response_model=List[PreAuthResponse])
-async def list_preauths(
+def list_preauths(
     status_filter: Optional[str] = Query(default=None, alias="status"),
     admission_id: Optional[int] = None,
     patient_id: Optional[int] = None,
@@ -10589,7 +10713,7 @@ async def list_preauths(
 
 
 @router.get("/preauth/{preauth_id}", response_model=PreAuthResponse)
-async def get_preauth(
+def get_preauth(
     preauth_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
@@ -10601,7 +10725,7 @@ async def get_preauth(
 
 
 @router.post("/preauth/{preauth_id}/decision", response_model=PreAuthResponse)
-async def record_preauth_decision(
+def record_preauth_decision(
     preauth_id: int,
     data: PreAuthDecision,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_preauth")),
@@ -10656,7 +10780,7 @@ async def upload_preauth_document(
 
 
 @router.get("/preauth/{preauth_id}/document")
-async def download_preauth_document(
+def download_preauth_document(
     preauth_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
@@ -10675,7 +10799,7 @@ async def download_preauth_document(
 
 
 @router.post("/preauth/{preauth_id}/expansion-request", response_model=PreAuthExpansionResponse, status_code=status.HTTP_201_CREATED)
-async def request_preauth_expansion(
+def request_preauth_expansion(
     preauth_id: int,
     data: PreAuthExpansionCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_preauth")),
@@ -10702,7 +10826,7 @@ async def request_preauth_expansion(
 
 
 @router.post("/preauth/expansions/{expansion_id}/decision", response_model=PreAuthExpansionResponse)
-async def record_expansion_decision(
+def record_expansion_decision(
     expansion_id: int,
     data: PreAuthExpansionDecision,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_preauth")),
@@ -10729,7 +10853,7 @@ async def record_expansion_decision(
 
 
 @router.delete("/preauth/{preauth_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_preauth(
+def delete_preauth(
     preauth_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_preauth")),
     db: Session = Depends(get_db),
@@ -10835,7 +10959,7 @@ def _validate_lab_coverage(
 
 
 @router.get("/packages", response_model=List[PackageResponse])
-async def list_packages(
+def list_packages(
     active_only: bool = True,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
@@ -10847,7 +10971,7 @@ async def list_packages(
 
 
 @router.post("/packages", response_model=PackageResponse, status_code=status.HTTP_201_CREATED)
-async def create_package(
+def create_package(
     data: PackageCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_surgery_packages")),
     db: Session = Depends(get_db),
@@ -10872,7 +10996,7 @@ async def create_package(
 
 
 @router.put("/packages/{package_id}", response_model=PackageResponse)
-async def update_package(
+def update_package(
     package_id: int,
     data: PackageUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_surgery_packages")),
@@ -10906,7 +11030,7 @@ async def update_package(
 
 
 @router.delete("/packages/{package_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_package(
+def delete_package(
     package_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_surgery_packages")),
     db: Session = Depends(get_db),
@@ -10939,13 +11063,13 @@ class AdmissionPackageResponse(BaseModel):
 
 
 @router.post("/admissions/{admission_id}/package", response_model=AdmissionPackageResponse, status_code=status.HTTP_201_CREATED)
-async def apply_package(
+def apply_package(
     admission_id: int,
     data: ApplyPackageRequest,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_packages")),
     db: Session = Depends(get_db),
 ):
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
 
@@ -10973,7 +11097,7 @@ async def apply_package(
 
 
 @router.get("/admissions/{admission_id}/package", response_model=Optional[AdmissionPackageResponse])
-async def get_admission_package(
+def get_admission_package(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
     db: Session = Depends(get_db),
@@ -10986,7 +11110,7 @@ async def get_admission_package(
 
 
 @router.delete("/admissions/{admission_id}/package", status_code=status.HTTP_204_NO_CONTENT)
-async def remove_admission_package(
+def remove_admission_package(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_packages")),
     db: Session = Depends(get_db),
@@ -11066,7 +11190,7 @@ class AncillaryServiceResponse(BaseModel):
 
 
 @router.get("/ancillary-services", response_model=List[AncillaryServiceResponse])
-async def list_ancillary_services(
+def list_ancillary_services(
     active_only: bool = True,
     category: Optional[str] = None,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
@@ -11084,7 +11208,7 @@ async def list_ancillary_services(
 
 
 @router.post("/ancillary-services", response_model=AncillaryServiceResponse, status_code=status.HTTP_201_CREATED)
-async def create_ancillary_service(
+def create_ancillary_service(
     data: AncillaryServiceCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_ancillary_catalog")),
     db: Session = Depends(get_db),
@@ -11098,7 +11222,7 @@ async def create_ancillary_service(
 
 
 @router.put("/ancillary-services/{service_id}", response_model=AncillaryServiceResponse)
-async def update_ancillary_service(
+def update_ancillary_service(
     service_id: int,
     data: AncillaryServiceUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_ancillary_catalog")),
@@ -11119,7 +11243,7 @@ async def update_ancillary_service(
 
 
 @router.delete("/ancillary-services/{service_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_ancillary_service(
+def delete_ancillary_service(
     service_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_ancillary_catalog")),
     db: Session = Depends(get_db),
@@ -11164,7 +11288,7 @@ class ProcedureResponse(BaseModel):
 
 
 @router.get("/procedures", response_model=List[ProcedureResponse])
-async def list_procedures(
+def list_procedures(
     active_only: bool = True,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_procedures")),
     db: Session = Depends(get_db),
@@ -11176,7 +11300,7 @@ async def list_procedures(
 
 
 @router.post("/procedures", response_model=ProcedureResponse, status_code=status.HTTP_201_CREATED)
-async def create_procedure(
+def create_procedure(
     data: ProcedureCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_procedures")),
     db: Session = Depends(get_db),
@@ -11197,7 +11321,7 @@ async def create_procedure(
 
 
 @router.put("/procedures/{procedure_id}", response_model=ProcedureResponse)
-async def update_procedure(
+def update_procedure(
     procedure_id: int,
     data: ProcedureUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_procedures")),
@@ -11224,7 +11348,7 @@ async def update_procedure(
 
 
 @router.delete("/procedures/{procedure_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_procedure(
+def delete_procedure(
     procedure_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_procedures")),
     db: Session = Depends(get_db),
@@ -11285,14 +11409,14 @@ def _ancillary_to_response(c: AdmissionAncillaryCharge, db: Session) -> dict:
 
 
 @router.post("/admissions/{admission_id}/ancillary-charges", response_model=AncillaryChargeResponse, status_code=status.HTTP_201_CREATED)
-async def create_ancillary_charge(
+def create_ancillary_charge(
     admission_id: int,
     data: AncillaryChargeCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_ancillary_charges")),
     db: Session = Depends(get_db),
 ):
     hospital = _get_hospital(db, current_user)
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     svc = db.query(AncillaryServiceCatalog).filter(
@@ -11328,14 +11452,14 @@ async def create_ancillary_charge(
 
 
 @router.get("/admissions/{admission_id}/ancillary-charges", response_model=List[AncillaryChargeResponse])
-async def list_ancillary_charges(
+def list_ancillary_charges(
     admission_id: int,
     unbilled_only: bool = False,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
     db: Session = Depends(get_db),
 ):
     hospital = _get_hospital(db, current_user)
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     q = db.query(AdmissionAncillaryCharge).filter(
@@ -11349,7 +11473,7 @@ async def list_ancillary_charges(
 
 
 @router.put("/ancillary-charges/{charge_id}", response_model=AncillaryChargeResponse)
-async def update_ancillary_charge(
+def update_ancillary_charge(
     charge_id: int,
     data: AncillaryChargeUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_ancillary_charges")),
@@ -11376,7 +11500,7 @@ async def update_ancillary_charge(
 
 
 @router.delete("/ancillary-charges/{charge_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_ancillary_charge(
+def delete_ancillary_charge(
     charge_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_ancillary_charges")),
     db: Session = Depends(get_db),
@@ -11390,12 +11514,11 @@ async def delete_ancillary_charge(
         raise HTTPException(status_code=404, detail="Charge not found")
     if c.billed:
         raise HTTPException(status_code=409, detail="Cannot delete a charge already on a bill")
-    db.delete(c)
-    db.commit()
+    _audited_delete(db, current_user, c, "AdmissionAncillaryCharge", guard_discharged=False)
 
 
 @router.get("/deposits/{deposit_id}/receipt/pdf")
-async def get_deposit_receipt_pdf(
+def get_deposit_receipt_pdf(
     deposit_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
     db: Session = Depends(get_db),
@@ -11506,7 +11629,7 @@ def _transfer_to_response(t: BedTransferHistory, db: Session) -> dict:
 
 
 @router.get("/admissions/{admission_id}/transfers", response_model=List[TransferHistoryResponse])
-async def list_admission_transfers(
+def list_admission_transfers(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
@@ -11527,7 +11650,7 @@ class WardTransferRequest(BaseModel):
 
 
 @router.post("/admissions/{admission_id}/transfer-ward", response_model=TransferHistoryResponse, status_code=status.HTTP_201_CREATED)
-async def initiate_ward_transfer(
+def initiate_ward_transfer(
     admission_id: int,
     data: WardTransferRequest,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "initiate_ward_transfer")),
@@ -11537,7 +11660,7 @@ async def initiate_ward_transfer(
     doctor on the receiving ward must accept it before the bed/room actually
     changes on the admission."""
     hospital = _get_hospital(db, current_user)
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     if admission.status != "admitted":
@@ -11585,7 +11708,7 @@ async def initiate_ward_transfer(
 
 
 @router.patch("/transfers/{transfer_id}/accept", response_model=TransferHistoryResponse)
-async def accept_ward_transfer(
+def accept_ward_transfer(
     transfer_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "accept_ward_transfer")),
     db: Session = Depends(get_db),
@@ -11676,7 +11799,7 @@ async def accept_ward_transfer(
 
 
 @router.patch("/transfers/{transfer_id}/cancel", response_model=TransferHistoryResponse)
-async def cancel_pending_transfer(
+def cancel_pending_transfer(
     transfer_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "accept_ward_transfer")),
     db: Session = Depends(get_db),
@@ -11693,7 +11816,7 @@ async def cancel_pending_transfer(
 
 
 @router.get("/transfers/pending", response_model=List[TransferHistoryResponse])
-async def list_pending_transfers(
+def list_pending_transfers(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
@@ -11743,7 +11866,7 @@ def _log_bed_status_change(db: Session, bed: Bed, new_status: str, user: User, n
 
 
 @router.patch("/beds/{bed_id}/status")
-async def change_bed_status(
+def change_bed_status(
     bed_id: int,
     data: BedStatusChange,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_housekeeping")),
@@ -11764,7 +11887,7 @@ async def change_bed_status(
 
 
 @router.get("/beds/needs-cleaning")
-async def beds_needing_cleaning(
+def beds_needing_cleaning(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_housekeeping")),
     db: Session = Depends(get_db),
 ):
@@ -11786,7 +11909,7 @@ async def beds_needing_cleaning(
 
 
 @router.get("/beds/turnover-stats")
-async def bed_turnover_stats(
+def bed_turnover_stats(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
@@ -11818,7 +11941,7 @@ async def bed_turnover_stats(
 
 
 @router.get("/beds/{bed_id}/turnover-log", response_model=List[TurnoverLogResponse])
-async def bed_turnover_log(
+def bed_turnover_log(
     bed_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
@@ -11889,7 +12012,7 @@ def _reservation_to_response(r: BedReservation, db: Session) -> dict:
 
 
 @router.post("/reservations", response_model=ReservationResponse, status_code=status.HTTP_201_CREATED)
-async def create_reservation(
+def create_reservation(
     data: ReservationCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_reservations")),
     db: Session = Depends(get_db),
@@ -11917,7 +12040,7 @@ async def create_reservation(
 
 
 @router.get("/reservations", response_model=List[ReservationResponse])
-async def list_reservations(
+def list_reservations(
     active_only: bool = True,
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
@@ -11937,7 +12060,7 @@ async def list_reservations(
 
 
 @router.patch("/reservations/{reservation_id}/cancel", response_model=ReservationResponse)
-async def cancel_reservation(
+def cancel_reservation(
     reservation_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_reservations")),
     db: Session = Depends(get_db),
@@ -11961,7 +12084,7 @@ class ReservationConvertRequest(BaseModel):
 
 
 @router.post("/reservations/{reservation_id}/convert")
-async def convert_reservation_to_admission(
+def convert_reservation_to_admission(
     reservation_id: int,
     data: ReservationConvertRequest,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_reservations")),
@@ -12105,14 +12228,14 @@ def _assignment_to_response(a: NurseAssignment, db: Session) -> dict:
 
 
 @router.post("/admissions/{admission_id}/assign-nurse", response_model=NurseAssignmentResponse, status_code=status.HTTP_201_CREATED)
-async def assign_nurse(
+def assign_nurse(
     admission_id: int,
     data: NurseAssignmentCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "assign_nurses")),
     db: Session = Depends(get_db),
 ):
     hospital = _get_hospital(db, current_user)
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
 
@@ -12158,7 +12281,7 @@ async def assign_nurse(
 
 
 @router.get("/admissions/{admission_id}/nurse-assignments", response_model=List[NurseAssignmentResponse])
-async def list_nurse_assignments(
+def list_nurse_assignments(
     admission_id: int,
     assignment_date: Optional[date] = None,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
@@ -12172,7 +12295,7 @@ async def list_nurse_assignments(
 
 
 @router.delete("/nurse-assignments/{assignment_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_nurse_assignment(
+def delete_nurse_assignment(
     assignment_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "assign_nurses")),
     db: Session = Depends(get_db),
@@ -12180,12 +12303,11 @@ async def delete_nurse_assignment(
     a = db.query(NurseAssignment).filter(NurseAssignment.id == assignment_id).first()
     if not a:
         raise HTTPException(status_code=404, detail="Assignment not found")
-    db.delete(a)
-    db.commit()
+    _audited_delete(db, current_user, a, "NurseAssignment")
 
 
 @router.get("/nurses/my-patients")
-async def my_assigned_patients(
+def my_assigned_patients(
     shift: Optional[str] = None,
     assignment_date: Optional[date] = None,
     current_user: User = Depends(get_current_user),
@@ -12238,7 +12360,7 @@ class DischargeSummaryTemplateBody(BaseModel):
 
 
 @router.get("/discharge-summary-template")
-async def get_discharge_summary_template(
+def get_discharge_summary_template(
     current_user: User = Depends(require_feature_permission_any(
         Modules.INPATIENT,
         "manage_discharge_summary_template",
@@ -12259,7 +12381,7 @@ async def get_discharge_summary_template(
 
 
 @router.put("/discharge-summary-template")
-async def put_discharge_summary_template(
+def put_discharge_summary_template(
     data: DischargeSummaryTemplateBody,
     current_user: User = Depends(require_feature_permission(
         Modules.INPATIENT, "manage_discharge_summary_template")),
@@ -12279,7 +12401,7 @@ async def put_discharge_summary_template(
 
 
 @router.post("/discharge-summary-template/reset")
-async def reset_discharge_summary_template(
+def reset_discharge_summary_template(
     current_user: User = Depends(require_feature_permission(
         Modules.INPATIENT, "manage_discharge_summary_template")),
     db: Session = Depends(get_db),
@@ -12294,7 +12416,7 @@ async def reset_discharge_summary_template(
 
 
 @router.post("/discharge-summary-template/preview")
-async def preview_discharge_summary_template(
+def preview_discharge_summary_template(
     data: Optional[DischargeSummaryTemplateBody] = Body(None),
     include_header: Optional[bool] = Query(None),
     current_user: User = Depends(require_feature_permission(
@@ -12386,7 +12508,7 @@ class ConsentTemplateResponse(BaseModel):
 
 
 @router.get("/consent-templates", response_model=List[ConsentTemplateResponse])
-async def list_consent_templates(
+def list_consent_templates(
     active_only: bool = True,
     consent_type: Optional[str] = None,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
@@ -12401,7 +12523,7 @@ async def list_consent_templates(
 
 
 @router.post("/consent-templates", response_model=ConsentTemplateResponse, status_code=status.HTTP_201_CREATED)
-async def create_consent_template(
+def create_consent_template(
     data: ConsentTemplateCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_consent_templates")),
     db: Session = Depends(get_db),
@@ -12415,7 +12537,7 @@ async def create_consent_template(
 
 
 @router.put("/consent-templates/{template_id}", response_model=ConsentTemplateResponse)
-async def update_consent_template(
+def update_consent_template(
     template_id: int,
     data: ConsentTemplateUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_consent_templates")),
@@ -12432,7 +12554,7 @@ async def update_consent_template(
 
 
 @router.delete("/consent-templates/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_consent_template(
+def delete_consent_template(
     template_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_consent_templates")),
     db: Session = Depends(get_db),
@@ -12510,7 +12632,7 @@ def _consent_to_response(c: Consent, db: Session) -> dict:
 
 
 @router.post("/admissions/{admission_id}/consents", response_model=ConsentResponse, status_code=status.HTTP_201_CREATED)
-async def create_consent(
+def create_consent(
     admission_id: int,
     data: ConsentCreate,
     current_user: User = Depends(get_current_user),
@@ -12533,7 +12655,7 @@ async def create_consent(
         )
 
     hospital = _get_hospital(db, current_user)
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     if data.template_id:
@@ -12581,7 +12703,7 @@ async def create_consent(
 
 
 @router.get("/admissions/{admission_id}/consents", response_model=List[ConsentResponse])
-async def list_admission_consents(
+def list_admission_consents(
     admission_id: int,
     active_only: bool = False,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
@@ -12595,7 +12717,7 @@ async def list_admission_consents(
 
 
 @router.post("/consents/{consent_id}/withdraw", response_model=ConsentResponse)
-async def withdraw_consent(
+def withdraw_consent(
     consent_id: int,
     data: ConsentWithdraw,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "withdraw_consent")),
@@ -12622,7 +12744,7 @@ class ConsentReserveRequest(BaseModel):
 
 
 @router.post("/consents/reserve-doc-number")
-async def reserve_consent_doc_number(
+def reserve_consent_doc_number(
     data: ConsentReserveRequest,
     current_user: User = Depends(require_feature_permission_any(
         Modules.INPATIENT, "admit_patients", "record_consent"
@@ -12672,7 +12794,7 @@ async def reserve_consent_doc_number(
 
 
 @router.get("/consents/preview-pdf")
-async def preview_consent_pdf(
+def preview_consent_pdf(
     patient_id: str,
     template_id: int,
     room_id: Optional[int] = None,
@@ -12709,7 +12831,7 @@ async def preview_consent_pdf(
 
     admission = None
     if admission_id is not None:
-        admission = db.query(Admission).filter(Admission.id == admission_id).first()
+        admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
         if not admission:
             raise HTTPException(status_code=404, detail="Admission not found")
         if admission.patient_id != patient.id:
@@ -12843,7 +12965,7 @@ async def preview_consent_pdf(
 
 
 @router.get("/consents/{consent_id}/pdf")
-async def get_consent_pdf(
+def get_consent_pdf(
     consent_id: int,
     include_header: Optional[bool] = Query(None),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
@@ -12969,7 +13091,7 @@ async def get_consent_pdf(
 # ============================================================
 
 @router.get("/reports/readmissions")
-async def list_readmissions(
+def list_readmissions(
     within_days: int = Query(default=30, ge=1, le=365),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_readmissions")),
     db: Session = Depends(get_db),
@@ -13043,7 +13165,7 @@ def _dama_to_response(d: DAMARecord, db: Session) -> dict:
 
 
 @router.post("/admissions/{admission_id}/dama", status_code=status.HTTP_201_CREATED)
-async def record_dama(
+def record_dama(
     admission_id: int,
     data: DAMACreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "discharge_patients")),
@@ -13060,7 +13182,7 @@ async def record_dama(
     if data.signed_by == "guardian" and not (data.guardian_name and data.guardian_name.strip()):
         raise HTTPException(status_code=400, detail="guardian_name is required when signed_by='guardian'")
 
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     discharge = db.query(DischargeRecord).filter(DischargeRecord.admission_id == admission_id).first()
@@ -13109,7 +13231,7 @@ async def record_dama(
 
 
 @router.get("/admissions/{admission_id}/dama")
-async def get_dama(
+def get_dama(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
@@ -13121,7 +13243,7 @@ async def get_dama(
 
 
 @router.get("/admissions/{admission_id}/dama/pdf")
-async def get_dama_pdf(
+def get_dama_pdf(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
@@ -13129,7 +13251,7 @@ async def get_dama_pdf(
     rec = db.query(DAMARecord).filter(DAMARecord.admission_id == admission_id).first()
     if not rec:
         raise HTTPException(status_code=404, detail="DAMA record not found")
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     patient = db.query(Patient).filter(Patient.id == rec.patient_id).first()
     doctor = db.query(User).filter(User.id == rec.attending_doctor_id).first()
     discharge = db.query(DischargeRecord).filter(DischargeRecord.id == rec.discharge_id).first()
@@ -13180,13 +13302,13 @@ async def get_dama_pdf(
 
 
 @router.get("/admissions/{admission_id}/mlc/pdf")
-async def get_mlc_register_pdf(
+def get_mlc_register_pdf(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
     """B7.5 — MLC register entry / police intimation PDF."""
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     if not admission.is_mlc:
@@ -13234,7 +13356,7 @@ async def get_mlc_register_pdf(
 
 
 @router.put("/admissions/{admission_id}/discharge/mortality")
-async def update_mortality_details(
+def update_mortality_details(
     admission_id: int,
     data: MortalityUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_mortality")),
@@ -13265,7 +13387,7 @@ async def update_mortality_details(
 
 
 @router.get("/reports/mortality")
-async def list_mortality(
+def list_mortality(
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_mortality")),
@@ -13522,7 +13644,7 @@ def _build_monthly_outcomes(db: Session, month_str: Optional[str]) -> dict:
 
 
 @router.get("/reports/monthly-outcomes")
-async def get_monthly_outcomes(
+def get_monthly_outcomes(
     month: Optional[str] = Query(default=None, description="YYYY-MM; defaults to last completed month"),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_mortality")),
     db: Session = Depends(get_db),
@@ -13533,7 +13655,7 @@ async def get_monthly_outcomes(
 
 
 @router.get("/reports/monthly-outcomes/pdf")
-async def get_monthly_outcomes_pdf(
+def get_monthly_outcomes_pdf(
     month: Optional[str] = Query(default=None),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_mortality")),
     db: Session = Depends(get_db),
@@ -13720,7 +13842,7 @@ def _validate_date_range(date_from: date, date_to: date):
 
 
 @router.get("/reports/doctor-productivity")
-async def get_doctor_productivity(
+def get_doctor_productivity(
     date_from: date = Query(...),
     date_to: date = Query(...),
     doctor_id: Optional[int] = Query(default=None),
@@ -13740,7 +13862,7 @@ async def get_doctor_productivity(
 
 
 @router.get("/reports/doctor-productivity/csv")
-async def get_doctor_productivity_csv(
+def get_doctor_productivity_csv(
     date_from: date = Query(...),
     date_to: date = Query(...),
     doctor_id: Optional[int] = Query(default=None),
@@ -13771,7 +13893,7 @@ async def get_doctor_productivity_csv(
 
 
 @router.get("/reports/doctor-productivity/pdf")
-async def get_doctor_productivity_pdf(
+def get_doctor_productivity_pdf(
     date_from: date = Query(...),
     date_to: date = Query(...),
     doctor_id: Optional[int] = Query(default=None),
@@ -13796,7 +13918,7 @@ async def get_doctor_productivity_pdf(
 
 
 @router.get("/admissions/{admission_id}/death-certificate/pdf")
-async def death_certificate_pdf(
+def death_certificate_pdf(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_mortality")),
     db: Session = Depends(get_db),
@@ -13898,14 +14020,14 @@ def _io_to_response(e: FluidBalance, db: Session) -> dict:
 
 
 @router.post("/admissions/{admission_id}/io", response_model=FluidBalanceResponse, status_code=status.HTTP_201_CREATED)
-async def record_io(
+def record_io(
     admission_id: int,
     data: FluidBalanceCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_io")),
     db: Session = Depends(get_db),
 ):
     hospital = _get_hospital(db, current_user)
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     _require_accepted(admission)
@@ -13933,7 +14055,7 @@ async def record_io(
 
 
 @router.get("/admissions/{admission_id}/io", response_model=List[FluidBalanceResponse])
-async def list_io(
+def list_io(
     admission_id: int,
     target_date: Optional[date] = None,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_io")),
@@ -13952,7 +14074,7 @@ async def list_io(
 
 
 @router.get("/admissions/{admission_id}/io/balance")
-async def io_balance_summary(
+def io_balance_summary(
     admission_id: int,
     target_date: Optional[date] = None,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_io")),
@@ -13991,7 +14113,7 @@ async def io_balance_summary(
 
 
 @router.delete("/io/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_io(
+def delete_io(
     entry_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_io")),
     db: Session = Depends(get_db),
@@ -13999,8 +14121,7 @@ async def delete_io(
     e = db.query(FluidBalance).filter(FluidBalance.id == entry_id).first()
     if not e:
         raise HTTPException(status_code=404, detail="I/O entry not found")
-    db.delete(e)
-    db.commit()
+    _audited_delete(db, current_user, e, "FluidBalance", guard_discharged=True)
 
 
 # ============================================================
@@ -14104,7 +14225,7 @@ def scan_and_create_critical_alerts(db: Session, lab_order, results_by_parameter
 
 
 @router.post("/lab-parameters/{parameter_id}/critical-thresholds")
-async def set_critical_thresholds(
+def set_critical_thresholds(
     parameter_id: int,
     data: ThresholdUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "set_critical_thresholds")),
@@ -14122,7 +14243,7 @@ async def set_critical_thresholds(
 
 
 @router.post("/lab-orders/{lab_order_id}/scan-critical")
-async def scan_lab_order_for_critical(
+def scan_lab_order_for_critical(
     lab_order_id: int,
     results: dict,  # {parameter_id: value}
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "order_labs")),
@@ -14145,7 +14266,7 @@ async def scan_lab_order_for_critical(
 
 
 @router.get("/critical-alerts", response_model=List[CriticalAlertResponse])
-async def list_critical_alerts(
+def list_critical_alerts(
     status_filter: Optional[str] = Query(default=None, alias="status"),
     admission_id: Optional[int] = None,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
@@ -14161,7 +14282,7 @@ async def list_critical_alerts(
 
 
 @router.patch("/critical-alerts/{alert_id}/acknowledge", response_model=CriticalAlertResponse)
-async def acknowledge_critical_alert(
+def acknowledge_critical_alert(
     alert_id: int,
     data: CriticalAlertAcknowledge,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "acknowledge_critical_alert")),
@@ -14249,7 +14370,7 @@ def _roster_to_response(r: NurseShiftRoster, db: Session) -> dict:
 
 
 @router.post("/roster", response_model=RosterEntryResponse, status_code=status.HTTP_201_CREATED)
-async def create_roster_entry(
+def create_roster_entry(
     data: RosterEntryCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_roster")),
     db: Session = Depends(get_db),
@@ -14290,7 +14411,7 @@ async def create_roster_entry(
 
 
 @router.post("/roster/bulk")
-async def bulk_assign_roster(
+def bulk_assign_roster(
     data: RosterBulkAssign,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_roster")),
     db: Session = Depends(get_db),
@@ -14355,7 +14476,7 @@ async def bulk_assign_roster(
 
 
 @router.get("/roster", response_model=List[RosterEntryResponse])
-async def list_roster_entries(
+def list_roster_entries(
     from_date: date,
     to_date: date,
     nurse_id: Optional[int] = None,
@@ -14382,7 +14503,7 @@ async def list_roster_entries(
 
 
 @router.get("/roster/grid")
-async def roster_grid(
+def roster_grid(
     from_date: date,
     to_date: date,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_roster")),
@@ -14455,7 +14576,7 @@ async def roster_grid(
 
 
 @router.get("/roster/coverage")
-async def roster_coverage(
+def roster_coverage(
     from_date: date,
     to_date: date,
     min_per_shift: int = Query(default=DEFAULT_MIN_PER_SHIFT, ge=0),
@@ -14502,7 +14623,7 @@ async def roster_coverage(
 
 
 @router.get("/roster/on-duty")
-async def on_duty_nurses(
+def on_duty_nurses(
     target_date: date,
     shift: str = Query(..., pattern="^(morning|afternoon|night)$"),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_roster")),
@@ -14531,7 +14652,7 @@ async def on_duty_nurses(
 
 
 @router.put("/roster/{entry_id}", response_model=RosterEntryResponse)
-async def update_roster_entry(
+def update_roster_entry(
     entry_id: int,
     data: RosterEntryUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_roster")),
@@ -14548,7 +14669,7 @@ async def update_roster_entry(
 
 
 @router.delete("/roster/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_roster_entry(
+def delete_roster_entry(
     entry_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_roster")),
     db: Session = Depends(get_db),
@@ -14639,7 +14760,7 @@ def _doctor_roster_to_response(r: DoctorDutyRoster, db: Session) -> dict:
 
 @router.post("/doctor-roster", response_model=DoctorRosterResponse,
              status_code=status.HTTP_201_CREATED)
-async def create_doctor_roster_entry(
+def create_doctor_roster_entry(
     data: DoctorRosterEntryCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_roster")),
     db: Session = Depends(get_db),
@@ -14671,7 +14792,7 @@ async def create_doctor_roster_entry(
 
 
 @router.get("/doctor-roster", response_model=List[DoctorRosterResponse])
-async def list_doctor_roster(
+def list_doctor_roster(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     doctor_id: Optional[int] = None,
@@ -14695,7 +14816,7 @@ async def list_doctor_roster(
 
 
 @router.put("/doctor-roster/{entry_id}", response_model=DoctorRosterResponse)
-async def update_doctor_roster_entry(
+def update_doctor_roster_entry(
     entry_id: int,
     data: DoctorRosterEntryUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_roster")),
@@ -14712,7 +14833,7 @@ async def update_doctor_roster_entry(
 
 
 @router.delete("/doctor-roster/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_doctor_roster_entry(
+def delete_doctor_roster_entry(
     entry_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_roster")),
     db: Session = Depends(get_db),
@@ -14725,7 +14846,7 @@ async def delete_doctor_roster_entry(
 
 
 @router.get("/duty-doctor/on-duty")
-async def duty_doctors_on_duty(
+def duty_doctors_on_duty(
     at: Optional[datetime] = Query(default=None,
         description="Timestamp to check; defaults to now"),
     ward: Optional[str] = None,
@@ -14857,7 +14978,7 @@ def _get_or_create_body_release(db: Session, admission: Admission) -> BodyReleas
 
 
 @router.get("/admissions/{admission_id}/body-release")
-async def get_body_release(
+def get_body_release(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_mortality")),
     db: Session = Depends(get_db),
@@ -14873,7 +14994,7 @@ async def get_body_release(
 
 
 @router.put("/admissions/{admission_id}/body-release")
-async def update_body_release(
+def update_body_release(
     admission_id: int,
     data: BodyReleaseUpsert,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_mortality")),
@@ -14906,7 +15027,7 @@ async def update_body_release(
 
 
 @router.post("/admissions/{admission_id}/body-release/release")
-async def release_body(
+def release_body(
     admission_id: int,
     data: BodyReleaseAction,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_mortality")),
@@ -14966,7 +15087,7 @@ async def release_body(
 
 
 @router.get("/admissions/{admission_id}/body-release/pdf")
-async def get_body_release_pdf(
+def get_body_release_pdf(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_mortality")),
     db: Session = Depends(get_db),
@@ -15058,7 +15179,7 @@ class MealPlanBulkUpdate(BaseModel):
 
 
 @router.get("/meal-plans")
-async def list_meal_plans(
+def list_meal_plans(
     room_type: Optional[str] = None,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_food_orders")),
     db: Session = Depends(get_db),
@@ -15109,7 +15230,7 @@ async def list_meal_plans(
 
 
 @router.put("/meal-plans")
-async def upsert_meal_plans(
+def upsert_meal_plans(
     data: MealPlanBulkUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_meal_plans")),
     db: Session = Depends(get_db),
@@ -15145,7 +15266,7 @@ async def upsert_meal_plans(
 
 
 @router.delete("/meal-plans/{plan_id}")
-async def delete_meal_plan(
+def delete_meal_plan(
     plan_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_meal_plans")),
     db: Session = Depends(get_db),
@@ -15201,7 +15322,7 @@ def _food_order_to_response(o: FoodOrder) -> dict:
 
 
 @router.get("/admissions/{admission_id}/food-orders")
-async def list_food_orders(
+def list_food_orders(
     admission_id: int,
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
@@ -15209,7 +15330,7 @@ async def list_food_orders(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_food_orders")),
     db: Session = Depends(get_db),
 ):
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     q = db.query(FoodOrder).filter(FoodOrder.admission_id == admission_id)
@@ -15224,7 +15345,7 @@ async def list_food_orders(
 
 
 @router.post("/admissions/{admission_id}/food-orders", status_code=201)
-async def create_food_orders(
+def create_food_orders(
     admission_id: int,
     data: FoodOrderBulkCreate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "order_food")),
@@ -15234,7 +15355,7 @@ async def create_food_orders(
     MealPlan row for the admission's current room_type + meal_type. Duplicate
     (admission, date, meal_type) rows are silently skipped — already-ordered
     cells are a UX no-op."""
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = _scoped_admission_query(db, current_user).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     if admission.status not in ("admitted", "active"):
@@ -15308,7 +15429,7 @@ async def create_food_orders(
 
 
 @router.patch("/food-orders/{order_id}")
-async def update_food_order(
+def update_food_order(
     order_id: int,
     data: FoodOrderUpdate,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "order_food")),
@@ -15355,7 +15476,7 @@ async def update_food_order(
 
 
 @router.post("/food-orders/{order_id}/cancel")
-async def cancel_food_order(
+def cancel_food_order(
     order_id: int,
     data: FoodOrderCancel,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "order_food")),

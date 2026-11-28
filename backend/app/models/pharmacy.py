@@ -471,6 +471,7 @@ class PharmacySale(Base):
     sale_number = Column(String(30), unique=True, nullable=False, index=True)
     sale_date = Column(DateTime, nullable=False, default=system_now)
     payment_type = Column(String(20), default="cash")  # cash | credit
+    amount_paid = Column(Float, nullable=True)  # running total from service_payments; NULL = legacy row
 
     # Patient info (free text, not FK-linked)
     patient_phone = Column(String(20))

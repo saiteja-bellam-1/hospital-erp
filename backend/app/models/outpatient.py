@@ -46,6 +46,7 @@ class Appointment(Base):
     payment_method = Column(String(50))  # cash, card, insurance, online, bank_transfer
     payment_date = Column(DateTime)
     payment_notes = Column(Text)
+    amount_paid = Column(Float, nullable=True)  # running total from service_payments; NULL = legacy row
     discount_amount = Column(Float, default=0.0)
     final_amount = Column(Float, default=0.0)
     referred_by = Column(String(100))

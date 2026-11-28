@@ -22,6 +22,17 @@ import {
 import axios from 'axios';
 
 const ROLE_META = {
+  all: {
+    label: 'All users',
+    icon: Users,
+    description:
+      'Works with the file from "Export" on the Users page. Required: username, email, first_name, ' +
+      'last_name, role. Optional: password (blank = a temporary password is generated and shown once), ' +
+      'phone, additional_roles (semicolon-separated). Doctor rows also need specialization and ' +
+      'license_number. super_admin rows are rejected; extra columns (status, created_at, ...) are ignored.',
+    endpoint: '/api/admin/users/bulk-import',
+    sampleFile: 'users_sample.csv',
+  },
   doctor: {
     label: 'Doctors',
     icon: Stethoscope,
@@ -56,7 +67,7 @@ const ROLE_META = {
 
 const BulkUserImportDialog = ({ open, onOpenChange, onImported }) => {
   const { toast } = useToast();
-  const [role, setRole] = useState('doctor');
+  const [role, setRole] = useState('all');
   const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
@@ -223,6 +234,23 @@ const BulkUserImportDialog = ({ open, onOpenChange, onImported }) => {
                 <CheckCircle2 className="h-4 w-4" />
                 Created {result.created} {meta.label.toLowerCase()}.
               </div>
+              {result.generated_passwords && Object.keys(result.generated_passwords).length > 0 && (
+                <div className="mt-2 rounded border border-amber-300 bg-amber-50 p-2 text-amber-900">
+                  <div className="text-xs font-medium mb-1">
+                    Temporary passwords (shown once — copy them now; users must change them at first login):
+                  </div>
+                  <table className="text-xs font-mono">
+                    <tbody>
+                      {Object.entries(result.generated_passwords).map(([u, pw]) => (
+                        <tr key={u}>
+                          <td className="pr-4">{u}</td>
+                          <td>{pw}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
               {result.usernames?.length > 0 && (
                 <div className="mt-2 text-xs">
                   Usernames: {result.usernames.join(', ')}

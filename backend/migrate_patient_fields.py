@@ -10,6 +10,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config.database import engine
 
 NEW_COLUMNS = [
+    ("vital_signs", "consciousness", "VARCHAR(20)"),
+    ("vital_signs", "on_supplemental_o2", "BOOLEAN"),
+    ("vital_signs", "news2_score", "INTEGER"),
+    ("vital_signs", "news2_risk", "VARCHAR(20)"),
     ("patients", "marital_status", "VARCHAR(20)"),
     ("patients", "abha_id", "VARCHAR(30)"),
     ("patients", "aadhaar_number", "VARCHAR(12)"),
@@ -325,6 +329,14 @@ NEW_COLUMNS = [
     ("admission_discharge_summaries", "transfer_contact", "VARCHAR(200)"),
     # Front-desk expenses saved before categories were a hospital list
     ("front_desk_expenses", "category_id", "INTEGER REFERENCES front_desk_expense_categories(id)"),
+    # Partial payments: running total collected via service_payments.
+    # NULL = row predates the ledger; collection derives from payment_status.
+    ("appointments", "amount_paid", "FLOAT"),
+    ("patient_lab_orders", "amount_paid", "FLOAT"),
+    # Share of a reception bill discount allocated to this order (NULL = none)
+    ("patient_lab_orders", "discount_amount", "FLOAT"),
+    ("pharmacy_sales", "amount_paid", "FLOAT"),
+    ("canteen_sales", "amount_paid", "FLOAT"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.
@@ -401,6 +413,41 @@ def _migrate_appointments_time_nullable(conn):
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_appointments_id ON appointments (id)"))
     conn.execute(text("PRAGMA foreign_keys=ON"))
     print("  appointments.appointment_time is now nullable")
+
+
+def _ensure_inpatient_integrity_indexes(conn):
+    """Idempotent: dedupe then enforce one MAR slot per (order item, time), plus
+    read-path indexes for high-traffic inpatient lookups."""
+    from sqlalchemy import text
+    def has_table(t):
+        return conn.execute(text("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:n"), {"n": t}).first() is not None
+    try:
+        if has_table("medication_administrations"):
+            # Remove duplicate untouched slots (keep the lowest id) before the unique index
+            conn.execute(text(
+                "DELETE FROM medication_administrations WHERE status='scheduled' AND administered_at IS NULL "
+                "AND prescription_item_id IS NOT NULL AND scheduled_time IS NOT NULL AND id NOT IN ("
+                "SELECT MIN(id) FROM medication_administrations WHERE prescription_item_id IS NOT NULL "
+                "AND scheduled_time IS NOT NULL GROUP BY prescription_item_id, scheduled_time)"))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_mar_item_slot "
+                "ON medication_administrations (prescription_item_id, scheduled_time)"))
+    except Exception as e:
+        print(f"  Note (MAR unique slot index): {e}")
+    for tbl, name, cols in [
+        ("medication_administrations", "ix_mar_adm_sched", "admission_id, scheduled_time"),
+        ("vital_signs", "ix_vitals_adm_time", "admission_id, recorded_at"),
+        ("nursing_notes", "ix_nursing_notes_adm", "admission_id"),
+        ("fluid_balance_entries", "ix_fluid_balance_adm", "admission_id"),
+        ("patient_visits", "ix_patient_visits_adm", "admission_id"),
+        ("admissions", "ix_admissions_status", "status"),
+        ("admissions", "ix_admissions_patient", "patient_id"),
+    ]:
+        try:
+            if has_table(tbl):
+                conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {tbl} ({cols})"))
+        except Exception as e:
+            print(f"  Note (index {name}): {e}")
 
 
 def migrate():
@@ -538,6 +585,8 @@ def migrate():
                     break
         except Exception as e:
             print(f"  Note (sample_id index): {e}")
+
+        _ensure_inpatient_integrity_indexes(conn)
 
         conn.commit()
 

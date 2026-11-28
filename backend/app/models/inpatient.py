@@ -573,6 +573,10 @@ class VitalSigns(Base):
     blood_glucose = Column(Float, nullable=True)        # mg/dL
     pain_score = Column(Integer, nullable=True)         # 0-10
     gcs_score = Column(Integer, nullable=True)          # 3-15
+    consciousness = Column(String(20), nullable=True)   # AVPU: alert, confusion, voice, pain, unresponsive
+    on_supplemental_o2 = Column(Boolean, nullable=True)
+    news2_score = Column(Integer, nullable=True)        # computed server-side (RCP NEWS2)
+    news2_risk = Column(String(20), nullable=True)      # low, low_medium, medium, high
     weight_kg = Column(Float, nullable=True)
     height_cm = Column(Float, nullable=True)
 
@@ -591,6 +595,9 @@ class VitalSigns(Base):
 
 class MedicationAdministration(Base):
     __tablename__ = "medication_administrations"
+    __table_args__ = (
+        UniqueConstraint("prescription_item_id", "scheduled_time", name="uq_mar_item_slot"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False)

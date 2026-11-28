@@ -6,6 +6,7 @@ from typing import Optional
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func as sql_func
 
+from app.services import service_payments as _svc_pay
 from app.models.patient import Patient
 from app.models.user import User
 from app.models.outpatient import Appointment
@@ -45,8 +46,11 @@ def opd_activity(db: Session, hospital_id: int, d_from: date, d_to: date) -> dic
         by_type[(a.appointment_type or "consultation")] += 1
         amt = float(a.final_amount or ((a.consultation_fee or 0) + (a.registration_fee or 0)))
         billed += amt
-        if pay == "paid":
-            collected += amt
+        got = (
+            0.0 if pay in ("cancelled", "refunded", "deleted", "consolidated")
+            else _svc_pay.effective_paid(_svc_pay.APPOINTMENT, a)
+        )
+        collected += got
         if st in ("no_show", "noshow"):
             no_show += 1
         elif st == "cancelled":
@@ -63,8 +67,7 @@ def opd_activity(db: Session, hospital_id: int, d_from: date, d_to: date) -> dic
         })
         row["count"] += 1
         row["billed"] += amt
-        if pay == "paid":
-            row["collected"] += amt
+        row["collected"] += got
         if st in ("no_show", "noshow"):
             row["no_show"] += 1
         elif st == "cancelled":

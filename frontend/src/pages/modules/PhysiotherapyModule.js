@@ -19,8 +19,15 @@ import {
   CheckCircle2, Play, UserX, XCircle, Loader2, Download,
   Paperclip, Upload, Trash2, Activity, Banknote, AlertTriangle, Layers,
 } from 'lucide-react';
+import PaymentCollectionFields, {
+  defaultPaymentValue, validatePayment, paymentRequestFields,
+} from '../../components/billing/PaymentCollectionFields';
 import ActionKpiCard from '../../components/dashboard/ActionKpiCard';
 import DashboardDrillDialog from '../../components/dashboard/DashboardDrillDialog';
+
+const PHYSIO_PAYMENT_METHODS = [
+  { value: 'cash', label: 'Cash' }, { value: 'upi', label: 'UPI' }, { value: 'card', label: 'Card' },
+];
 
 function errMsg(e) {
   const d = e?.response?.data?.detail;
@@ -341,7 +348,7 @@ function SellPackageDialog({ open, onOpenChange, onSold }) {
   useEffect(() => {
     if (!open) return;
     setPatient(null);
-    setSellForm({ template_id: '', payment_method: 'cash', notes: '' });
+    setSellForm({ template_id: '', payment_method: 'cash', notes: '', payment: defaultPaymentValue('cash') });
     axios.get('/api/physiotherapy/package-templates')
       .then((r) => setTemplates((r.data || []).filter((t) => t.is_active !== false)))
       .catch(() => setTemplates([]));
@@ -356,12 +363,21 @@ function SellPackageDialog({ open, onOpenChange, onSold }) {
       toast({ title: 'Select a package template', variant: 'destructive' });
       return;
     }
+    const tmpl = templates.find((t) => String(t.id) === String(sellForm.template_id));
+    const payErr = validatePayment(sellForm.payment, Number(tmpl?.price) || 0);
+    if (payErr) {
+      toast({ title: 'Check payment', description: payErr, variant: 'destructive' });
+      return;
+    }
+    const pay = paymentRequestFields(sellForm.payment);
     setLoading(true);
     try {
       const res = await axios.post('/api/physiotherapy/packages/sell', {
         patient_id: patient.id,
         template_id: Number(sellForm.template_id),
-        payment_method: sellForm.payment_method,
+        payment_method: pay.payment_method,
+        // Omitted = full price; 0 = pay later; otherwise part payment.
+        ...(pay.amount_paid !== undefined ? { amount_paid: pay.amount_paid } : {}),
         notes: sellForm.notes || null,
       });
       onOpenChange(false);
@@ -397,17 +413,14 @@ function SellPackageDialog({ open, onOpenChange, onSold }) {
               </SelectContent>
             </Select>
           </div>
-          <div>
-            <Label>Payment</Label>
-            <Select value={sellForm.payment_method} onValueChange={(v) => setSellForm({ ...sellForm, payment_method: v })}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="cash">Cash</SelectItem>
-                <SelectItem value="upi">UPI</SelectItem>
-                <SelectItem value="card">Card</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+          {sellForm.template_id && (
+            <PaymentCollectionFields
+              total={Number(templates.find((t) => String(t.id) === String(sellForm.template_id))?.price) || 0}
+              value={sellForm.payment}
+              methods={PHYSIO_PAYMENT_METHODS}
+              onChange={(payment) => setSellForm({ ...sellForm, payment, payment_method: payment.method })}
+            />
+          )}
         </div>
         <DialogFooter>
           <Button onClick={sell} disabled={loading}>
@@ -818,7 +831,7 @@ function BookDialog({ open, onOpenChange, onSaved, therapists, services, initial
     therapist_id: '', service_id: '', appointment_date: todayISO(),
     appointment_time: '10:00', session_type: 'treatment', referral_source: '', chief_complaint: '',
     is_walk_in: false, package_id: '',
-    billing_mode: 'a_la_carte', payment_method: 'cash', mark_paid: true, unit_price: '',
+    billing_mode: 'a_la_carte', payment_method: 'cash', mark_paid: true, unit_price: '', amount_received: '',
   });
   const [packages, setPackages] = useState([]);
 
@@ -843,6 +856,7 @@ function BookDialog({ open, onOpenChange, onSaved, therapists, services, initial
       payment_method: 'cash',
       mark_paid: true,
       unit_price: '',
+      amount_received: '',
     }));
   }, [open, initialPackage, initialPatient]);
 
@@ -901,6 +915,9 @@ function BookDialog({ open, onOpenChange, onSaved, therapists, services, initial
         unit_price: form.billing_mode === 'a_la_carte' && form.unit_price !== '' ? Number(form.unit_price) : null,
         payment_method: form.payment_method,
         mark_paid: form.billing_mode === 'a_la_carte' ? form.mark_paid : false,
+        // Blank = collect the full price; a smaller figure leaves a balance.
+        ...(form.billing_mode === 'a_la_carte' && form.mark_paid && form.amount_received !== ''
+          ? { amount_paid: Number(form.amount_received) } : {}),
       });
       onOpenChange(false);
       setPatient(null);
@@ -1018,6 +1035,13 @@ function BookDialog({ open, onOpenChange, onSaved, therapists, services, initial
                 <input type="checkbox" checked={form.mark_paid} onChange={(e) => setForm({ ...form, mark_paid: e.target.checked })} />
                 Collect payment now
               </label>
+              {form.mark_paid && (
+                <div>
+                  <Label className="text-xs">Amount received (₹) <span className="text-gray-400">— leave blank for full price</span></Label>
+                  <Input type="number" min="0" step="0.01" value={form.amount_received}
+                    onChange={(e) => setForm({ ...form, amount_received: e.target.value })} placeholder="Full amount" />
+                </div>
+              )}
             </>
           )}
           <div className="grid grid-cols-2 gap-2">
@@ -1073,12 +1097,14 @@ function CompleteDialog({ appt, open, onOpenChange, onDone }) {
   const [markPaid, setMarkPaid] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [unitPrice, setUnitPrice] = useState('');
+  const [amountReceived, setAmountReceived] = useState('');
 
   const prepaid = !!(appt?.package_id || appt?.bill_id);
 
   useEffect(() => {
     if (!appt?.patient_id) return;
     setNote('');
+    setAmountReceived('');
     setPackageId(appt.package_id ? String(appt.package_id) : '');
     setUsePackage(!!appt.package_id);
     if (appt.package_id || appt.bill_id) {
@@ -1099,6 +1125,7 @@ function CompleteDialog({ appt, open, onOpenChange, onDone }) {
         mark_paid: prepaid ? false : markPaid,
         payment_method: (!prepaid && markPaid) ? paymentMethod : null,
         unit_price: (!prepaid && unitPrice !== '') ? Number(unitPrice) : null,
+        ...((!prepaid && markPaid && amountReceived !== '') ? { amount_paid: Number(amountReceived) } : {}),
       });
       onOpenChange(false);
       onDone?.();
@@ -1156,14 +1183,19 @@ function CompleteDialog({ appt, open, onOpenChange, onDone }) {
                 Collect payment now
               </label>
               {markPaid && (
-                <Select value={paymentMethod} onValueChange={setPaymentMethod}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="cash">Cash</SelectItem>
-                    <SelectItem value="upi">UPI</SelectItem>
-                    <SelectItem value="card">Card</SelectItem>
-                  </SelectContent>
-                </Select>
+                <>
+                  <Select value={paymentMethod} onValueChange={setPaymentMethod}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="cash">Cash</SelectItem>
+                      <SelectItem value="upi">UPI</SelectItem>
+                      <SelectItem value="card">Card</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Input type="number" min="0" step="0.01" value={amountReceived}
+                    onChange={(e) => setAmountReceived(e.target.value)}
+                    placeholder="Amount received (blank = full price)" />
+                </>
               )}
             </>
           )}

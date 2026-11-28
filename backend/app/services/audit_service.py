@@ -21,6 +21,13 @@ def log_action(
     details: dict = None,
 ):
     """Log an audit event with local system time. Safe to call — never raises."""
+    # Many callers pass `details` as the 8th positional arg, which is actually
+    # `ip_address`. Accept that form instead of silently dropping the audit row
+    # (a dict can't bind to the string column and the except below swallowed it).
+    if isinstance(ip_address, (dict, list)):
+        if details is None:
+            details = ip_address
+        ip_address = ""
     try:
         entry = AuditLog(
             timestamp=datetime.now(),  # Local system time

@@ -241,3 +241,21 @@ def test_paths_keep_legacy_db_path_until_a_folder_move(tmp_path, monkeypatch):
 
     assert paths.get_configured_data_dir() == ""
     assert paths.get_db_path() == str(db)
+
+
+def test_describe_storage_analytics(tmp_path):
+    from app.services.data_folder import describe_storage
+    root = tmp_path / "data"
+    (root / "uploads").mkdir(parents=True)
+    (root / "uploads" / "a.pdf").write_bytes(b"x" * 300)
+    (root / "uploads" / "b.png").write_bytes(b"x" * 100)
+    (root / "kthealth_erp.db").write_bytes(b"x" * 1000)
+    report = describe_storage(str(root), str(root / "kthealth_erp.db"))
+    analytics = report["analytics"]
+    types = {t["type"]: t for t in analytics["by_type"]}
+    assert types["PDF documents"]["bytes"] == 300
+    assert types["Images"]["file_count"] == 1
+    assert types["Database"]["bytes"] == 1000
+    assert analytics["largest_files"][0]["name"] == "kthealth_erp.db"
+    assert analytics["modified_last_30_days"] == 3
+    assert sum(t["bytes"] for t in analytics["by_type"]) == report["total_bytes"]

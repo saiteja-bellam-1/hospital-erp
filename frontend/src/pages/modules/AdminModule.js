@@ -25,12 +25,14 @@ import axios from 'axios';
 import BulkUserImportDialog from './admin/BulkUserImport';
 import ModuleConfigForm from './ModuleConfigForm';
 import RolePermissionsEditor from './admin/RolePermissionsEditor';
+import WhatsAppSettings from './admin/WhatsAppSettings';
 
 const ADMIN_PAGE_TITLES = {
   users: 'Users',
   roles: 'Roles & Permissions',
   modules: 'Modules',
   'module-settings': 'Module Settings',
+  whatsapp: 'WhatsApp',
 };
 
 const AdminModule = () => {
@@ -147,14 +149,25 @@ const AdminModule = () => {
       const stamp = new Date().toISOString().slice(0, 10);
       a.href = url;
       a.download = `users_${stamp}.xlsx`;
+      document.body.appendChild(a); // Firefox needs the link in the DOM
       a.click();
-      URL.revokeObjectURL(url);
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000); // don't abort the download
       toast({ title: 'Exported', description: 'User list downloaded as Excel.' });
     } catch (error) {
+      // responseType 'blob' turns the JSON error body into a Blob — decode it.
+      let detail = error.message;
+      try {
+        const body = error.response?.data;
+        const text = body instanceof Blob ? await body.text() : null;
+        const parsed = text ? JSON.parse(text) : body;
+        if (typeof parsed?.detail === 'string') detail = parsed.detail;
+      } catch (_) { /* keep fallback */ }
+      const status = error.response?.status;
       toast({
         variant: 'destructive',
         title: 'Export failed',
-        description: 'Could not export users to Excel.',
+        description: `Could not export users to Excel${status ? ` (HTTP ${status})` : ''}: ${detail}`,
       });
     } finally {
       setExportingUsers(false);
@@ -489,8 +502,8 @@ const AdminModule = () => {
 
   const defaultTab = hasRole('super_admin') ? 'modules' : 'users';
   const allowedTabs = hasRole('super_admin')
-    ? ['users', 'roles', 'modules', 'module-settings']
-    : ['users', 'roles'];
+    ? ['users', 'roles', 'modules', 'module-settings', 'whatsapp']
+    : ['users', 'roles', 'whatsapp'];
   const lastSegment = location.pathname.replace(/\/+$/, '').split('/').pop();
   if (lastSegment === 'admin' || !allowedTabs.includes(lastSegment)) {
     return <Navigate to={`/dashboard/admin/${defaultTab}`} replace />;
@@ -549,6 +562,8 @@ const AdminModule = () => {
         </Card>
         </div>
       )}
+
+      {activeTab === 'whatsapp' && <WhatsAppSettings />}
 
       {/* Module Settings Tab — per-module configuration (lab / pharmacy) */}
       {activeTab === 'module-settings' && (

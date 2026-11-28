@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import WhatsAppPdfButton from './WhatsAppPdfButton';
 import axios from 'axios';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -33,6 +34,11 @@ import {
 import { localDateString } from '../utils/localDate';
 import { patientReferralName } from '../utils/patientReferral';
 import PatientFileLabelDialog from './PatientFileLabelDialog';
+import PaymentCollectionFields, {
+  defaultPaymentValue, validatePayment, DEFAULT_PAYMENT_METHODS,
+} from './billing/PaymentCollectionFields';
+
+const APPOINTMENT_PAYMENT_METHODS = [...DEFAULT_PAYMENT_METHODS, { value: 'insurance', label: 'Insurance' }];
 
 const EMPTY_APPOINTMENT = {
   doctor_id: '',
@@ -44,6 +50,7 @@ const EMPTY_APPOINTMENT = {
   priority: 'normal',
   payment_status: 'paid',
   payment_method: 'cash',
+  payment: defaultPaymentValue('cash'),
   discount_amount: 0,
   payment_notes: '',
   referred_by: '',
@@ -273,9 +280,10 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
 
   const handleBook = async () => {
     if (!selectedPatient) return;
-    const validationError = validateAppointmentBooking(appointmentForm, { selectedPatient: true });
+    const validationError = validateAppointmentBooking(appointmentForm, { selectedPatient: true })
+      || validatePayment(appointmentForm.payment, feeTotal);
     if (validationError) {
-      toast({ variant: 'destructive', title: 'Missing fields', description: validationError });
+      toast({ variant: 'destructive', title: 'Check the form', description: validationError });
       return;
     }
 
@@ -390,6 +398,31 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
             </div>
             <div className="flex items-center gap-3">
               <Button variant="outline" onClick={closeBillPreview} className="flex-1">Close</Button>
+              <WhatsAppPdfButton
+                size="default"
+                className="flex-1 h-10"
+                kind="consultation_confirmation"
+                label="Confirm"
+                phone={selectedPatient?.primary_phone}
+                patientName={currentBill?.patient_name || `${selectedPatient?.first_name || ''} ${selectedPatient?.last_name || ''}`.trim()}
+                patientId={selectedPatient?.patient_id}
+                context={{
+                  date: appointmentForm.appointment_date,
+                  time: appointmentForm.appointment_time,
+                  doctor_name: currentBill?.doctor_name,
+                }}
+              />
+              <WhatsAppPdfButton
+                size="default"
+                className="flex-1 h-10"
+                kind="consultation_invoice"
+                label="Invoice"
+                phone={selectedPatient?.primary_phone}
+                patientName={currentBill?.patient_name || `${selectedPatient?.first_name || ''} ${selectedPatient?.last_name || ''}`.trim()}
+                patientId={selectedPatient?.patient_id}
+                blobUrl={billPdfUrl}
+                filename="consultation-invoice.pdf"
+              />
               <Button
                 onClick={() => printPdfFromUrl(billPdfUrl)}
                 className="flex-1 bg-blue-600 hover:bg-blue-700"
@@ -538,20 +571,6 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
                 </SelectContent>
               </Select>
             </div>
-            <div>
-              <Label>Payment method</Label>
-              <Select
-                value={appointmentForm.payment_method}
-                onValueChange={(v) => setAppointmentForm({ ...appointmentForm, payment_method: v })}
-              >
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {['cash', 'card', 'upi', 'online', 'insurance', 'cheque'].map((m) => (
-                    <SelectItem key={m} value={m}>{m.charAt(0).toUpperCase() + m.slice(1)}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
 
             <AppointmentAvailabilityOverride
               className="col-span-2 md:col-span-3 lg:col-span-4"
@@ -580,33 +599,60 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
             </div>
 
             {appointmentForm.doctor_id && (
-              <div className="col-span-2 md:col-span-3 lg:col-span-4 bg-gray-50 rounded-lg p-3 border text-sm space-y-1">
-                <p className="font-medium">Fee summary</p>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                  {regFee > 0 && <p>Registration: ₹{regFee.toFixed(2)}</p>}
-                  <p className={isEmergency ? 'text-red-700 font-medium' : ''}>
-                    {isEmergency ? 'Emergency' : 'Consultation'}: ₹{consultFee.toFixed(2)}
-                  </p>
-                  <div className="flex items-center gap-1">
-                    <span>Discount ₹</span>
-                    <Input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={appointmentForm.discount_amount || ''}
-                      onChange={(e) => setAppointmentForm({
-                        ...appointmentForm,
-                        discount_amount: parseFloat(e.target.value) || 0,
-                      })}
-                      placeholder="0"
-                      className="w-24 h-7 text-right text-sm"
-                    />
+              <div className="col-span-2 md:col-span-3 lg:col-span-4 bg-gray-50 rounded-lg p-4 border text-sm">
+                <div className="grid gap-5 md:grid-cols-2">
+                  <div>
+                    <h4 className="font-medium mb-2">Fee Summary</h4>
+                    <div className="space-y-1.5">
+                      <div className={`flex justify-between ${isEmergency ? 'text-red-700 font-medium' : ''}`}>
+                        <span>{isEmergency ? 'Emergency consultation' : 'Consultation'}</span>
+                        <span>₹{consultFee.toFixed(2)}</span>
+                      </div>
+                      {regFee > 0 && (
+                        <div className="flex justify-between text-blue-600">
+                          <span>Registration</span>
+                          <span>₹{regFee.toFixed(2)}</span>
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between">
+                        <span>Discount</span>
+                        <div className="flex items-center gap-1">
+                          <span className="text-gray-400">₹</span>
+                          <Input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={appointmentForm.discount_amount || ''}
+                            onChange={(e) => setAppointmentForm({
+                              ...appointmentForm,
+                              discount_amount: parseFloat(e.target.value) || 0,
+                            })}
+                            placeholder="0"
+                            className="w-24 h-7 text-right text-sm bg-white"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex justify-between border-t pt-2 text-base font-semibold">
+                        <span>Total</span>
+                        <span>₹{Math.max(0, feeTotal).toFixed(2)}</span>
+                      </div>
+                      {isEmergency && emergencyFee === 0 && baseFee > 0 && (
+                        <p className="text-xs text-amber-600">No emergency rate set for this doctor — regular fee applied.</p>
+                      )}
+                    </div>
                   </div>
-                  <p className="font-semibold">Total: ₹{feeTotal.toFixed(2)}</p>
+                  {feeTotal > 0 ? (
+                    <PaymentCollectionFields
+                      className="md:border-l md:pl-5"
+                      total={feeTotal}
+                      value={appointmentForm.payment}
+                      methods={APPOINTMENT_PAYMENT_METHODS}
+                      onChange={(payment) => setAppointmentForm({ ...appointmentForm, payment, payment_method: payment.method })}
+                    />
+                  ) : (
+                    <p className="text-xs text-gray-500 md:border-l md:pl-5 self-center">No payment due for this visit.</p>
+                  )}
                 </div>
-                {isEmergency && emergencyFee === 0 && baseFee > 0 && (
-                  <p className="text-xs text-amber-600">No emergency rate set for this doctor — regular fee applied.</p>
-                )}
               </div>
             )}
           </div>

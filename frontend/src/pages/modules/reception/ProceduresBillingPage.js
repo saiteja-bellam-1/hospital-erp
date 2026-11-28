@@ -19,6 +19,10 @@ import {
 import PatientSearchPicker from '../../../components/PatientSearchPicker';
 import ReferralSelectWithCreate from '../../../components/ReferralSelectWithCreate';
 import { patientReferralName } from '../../../utils/patientReferral';
+import PaymentCollectionFields, {
+  defaultPaymentValue, validatePayment, paymentRequestFields,
+} from '../../../components/billing/PaymentCollectionFields';
+import CollectPaymentDialog, { billCollectProps } from '../../../components/billing/CollectPaymentDialog';
 
 const fmt = (n) => `₹${Number(n || 0).toFixed(2)}`;
 
@@ -48,6 +52,8 @@ const ProceduresBillingPage = () => {
   const [discount, setDiscount] = useState('');
   const [taxPct, setTaxPct] = useState('');
   const [notes, setNotes] = useState('');
+  const [payment, setPayment] = useState(defaultPaymentValue('cash'));
+  const [collectBillId, setCollectBillId] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
   // Catalog dialog
@@ -112,6 +118,7 @@ const ProceduresBillingPage = () => {
     setPatient(null);
     setLines([{ kind: 'catalog', procedure_id: '', item_name: '', quantity: 1, unit_price: '' }]);
     setDiscount(''); setTaxPct(''); setNotes(''); setReferredBy('');
+    setPayment(defaultPaymentValue('cash'));
   };
 
   const submitBill = async (print = true) => {
@@ -137,6 +144,11 @@ const ProceduresBillingPage = () => {
       toast({ variant: 'destructive', title: 'Add at least one line' });
       return;
     }
+    const payErr = validatePayment(payment, total);
+    if (payErr) {
+      toast({ variant: 'destructive', title: 'Check payment', description: payErr });
+      return;
+    }
     setSubmitting(true);
     try {
       const r = await axios.post('/api/outpatient/procedure-bills', {
@@ -146,8 +158,13 @@ const ProceduresBillingPage = () => {
         tax_percentage: parseFloat(taxPct) || 0,
         notes: notes || null,
         referred_by: referredBy ? referredBy.trim() : null,
+        ...paymentRequestFields(payment),
       });
-      toast({ title: 'Bill created', description: `${r.data.bill_number} — ${fmt(r.data.total_amount)}` });
+      toast({
+        title: 'Bill created',
+        description: `${r.data.bill_number} — ${fmt(r.data.total_amount)}`
+          + (r.data.balance_due > 0 ? ` · balance ${fmt(r.data.balance_due)}` : ''),
+      });
       if (print && r.data.bill_id) {
         try {
           const pdf = await axios.get(
@@ -343,12 +360,20 @@ const ProceduresBillingPage = () => {
                   <div className="flex gap-3"><span className="text-gray-500 w-20">Tax:</span><span className="font-semibold">{fmt(taxVal)}</span></div>
                   <div className="flex gap-3 text-lg"><span className="text-gray-700 w-20">Total:</span><span className="font-bold">{fmt(total)}</span></div>
                 </div>
+                {total > 0 && (
+                  <PaymentCollectionFields
+                    className="w-full sm:w-80"
+                    total={total}
+                    value={payment}
+                    onChange={setPayment}
+                  />
+                )}
                 <div className="flex gap-2">
                   <Button variant="outline" onClick={resetBuilder}>Reset</Button>
-                  <Button variant="outline" disabled={submitting || total <= 0 || !patient} onClick={() => submitBill(false)}>
+                  <Button variant="outline" disabled={submitting || total <= 0 || !patient || !!validatePayment(payment, total)} onClick={() => submitBill(false)}>
                     Save only
                   </Button>
-                  <Button disabled={submitting || total <= 0 || !patient} onClick={() => submitBill(true)}>
+                  <Button disabled={submitting || total <= 0 || !patient || !!validatePayment(payment, total)} onClick={() => submitBill(true)}>
                     {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Printer className="h-4 w-4 mr-1" /> Create &amp; Print</>}
                   </Button>
                 </div>
@@ -359,6 +384,12 @@ const ProceduresBillingPage = () => {
 
         {/* --- Recent --- */}
         <TabsContent value="recent" className="space-y-3 mt-4">
+          <CollectPaymentDialog
+            open={!!collectBillId}
+            onOpenChange={(o) => { if (!o) setCollectBillId(null); }}
+            {...billCollectProps(collectBillId)}
+            onSuccess={() => { toast({ title: 'Payment recorded' }); fetchRecent(); }}
+          />
           <div className="flex justify-end">
             <Button variant="outline" size="sm" onClick={fetchRecent}>
               <RefreshCw className="h-3.5 w-3.5 mr-1" /> Refresh
@@ -389,7 +420,13 @@ const ProceduresBillingPage = () => {
                           <td className="py-2 pr-3 text-right font-semibold">{fmt(b.total_amount)}</td>
                           <td className="py-2 pr-3 text-right">{b.balance_due > 0 ? fmt(b.balance_due) : '—'}</td>
                           <td className="py-2 pr-3"><Badge variant="outline" className="text-xs capitalize">{b.status}</Badge></td>
-                          <td className="py-2 pr-3 text-right">
+                          <td className="py-2 pr-3 text-right whitespace-nowrap">
+                            {b.balance_due > 0.009 && b.status !== 'cancelled' && (
+                              <Button variant="ghost" size="sm" className="text-green-700"
+                                onClick={() => setCollectBillId(b.bill_id)}>
+                                Collect
+                              </Button>
+                            )}
                             <Button variant="ghost" size="sm" onClick={() => printBill(b.bill_id)}>
                               <Printer className="h-3.5 w-3.5" />
                             </Button>
