@@ -48,6 +48,7 @@ def db_engine():
     import app.models.settlement    # noqa: F401
     import app.models.art           # noqa: F401
     import app.models.expense       # noqa: F401
+    import app.models.whatsapp      # noqa: F401
 
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()

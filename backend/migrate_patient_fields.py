@@ -337,6 +337,8 @@ NEW_COLUMNS = [
     ("patient_lab_orders", "discount_amount", "FLOAT"),
     ("pharmacy_sales", "amount_paid", "FLOAT"),
     ("canteen_sales", "amount_paid", "FLOAT"),
+    # WhatsApp failover: which linked number sent the message
+    ("whatsapp_message_log", "sent_via", "VARCHAR(20)"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.

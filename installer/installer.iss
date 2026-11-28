@@ -67,6 +67,10 @@ Source: "..\backend\assets\icon.ico";    DestDir: "{app}\assets"; Flags: ignorev
 ; copy into {app} so an admin can re-run checks later from the install dir.
 Source: "bin\{#DbCheckExe}"; Flags: dontcopy
 Source: "bin\{#DbCheckExe}"; DestDir: "{app}"; Flags: ignoreversion
+; WhatsApp runtime: portable Node.js + sidecar (with node_modules). Staged by
+; installer\build_whatsapp_runtime.bat so customers never install Node themselves.
+Source: "bin\node\*";              DestDir: "{app}\node";              Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "bin\whatsapp-sidecar\*";  DestDir: "{app}\whatsapp-sidecar";  Flags: ignoreversion recursesubdirs createallsubdirs
 ; data\ is intentionally NOT shipped — it is created by the wizard / launcher
 ; so backups and DBs survive reinstall/upgrade.
 
@@ -87,6 +91,10 @@ Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName} now"; Flags: no
 ; is fully written and unlocked (avoids PyInstaller PermissionError on boot).
 Filename: "{cmd}"; Parameters: "/C ping 127.0.0.1 -n 6 > nul && start """" /D ""{app}"" ""{app}\{#AppExeName}"""; Flags: nowait postinstall; Check: GetIsUpgrade
 
+[InstallDelete]
+; Drop the previous sidecar tree first so removed/renamed dependencies don't linger.
+Type: filesandordirs; Name: "{app}\whatsapp-sidecar"
+
 [UninstallRun]
 Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""KT HEALTH ERP"""; Flags: runhidden
 
@@ -94,6 +102,8 @@ Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""KT HEALT
 ; Leave data\ behind by default — it contains the customer DB, uploads,
 ; and config.json. The uninstaller asks the operator before wiping.
 Type: files; Name: "{app}\assets\icon.ico"
+Type: filesandordirs; Name: "{app}\node"
+Type: filesandordirs; Name: "{app}\whatsapp-sidecar"
 
 [Code]
 // ============================================================================

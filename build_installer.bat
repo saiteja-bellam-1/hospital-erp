@@ -26,6 +26,16 @@ if not exist "installer\bin\dbcheck.exe" (
     )
 )
 
+:: Portable Node.js + WhatsApp sidecar (bundled so customers need no Node install).
+if not exist "installer\bin\node\node.exe" (
+    echo WhatsApp runtime not staged — building...
+    call installer\build_whatsapp_runtime.bat
+    if errorlevel 1 (
+        echo ERROR: WhatsApp runtime staging failed
+        pause & exit /b 1
+    )
+)
+
 set ISCC=
 where ISCC.exe >nul 2>&1 && set ISCC=ISCC.exe
 if "%ISCC%"=="" if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set ISCC="%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"

@@ -5,7 +5,8 @@ The ERP never talks to WhatsApp directly. A small Node sidecar
 (QR scan once) and exposes a localhost-only HTTP API. This module:
 
 * stores the admin on/off switch + message templates in ``hospital_settings``
-* talks to the sidecar (status / QR / send / logout)
+* talks to the sidecar (status / QR / send / logout), one session per slot
+* sends through the primary number and fails over to the secondary
 * starts the sidecar process on demand when WhatsApp is enabled
 * normalises phone numbers and renders message templates
 
@@ -43,6 +44,11 @@ SIDECAR_HOST = "127.0.0.1"
 SIDECAR_PORT = int(os.environ.get("WHATSAPP_SIDECAR_PORT", "9100"))
 SIDECAR_URL = f"http://{SIDECAR_HOST}:{SIDECAR_PORT}"
 SEND_TIMEOUT_S = 60
+
+# Linked-number slots, in failover order. The first is the primary.
+SLOTS = ("primary", "secondary")
+PRIMARY = SLOTS[0]
+SLOT_LABELS = {"primary": "Primary", "secondary": "Secondary"}
 
 # kind -> default template. Placeholders: {patient_name} {hospital_name}
 # plus whatever the caller passes in ``context`` (doctor_name, date, ...).
@@ -273,7 +279,7 @@ def ensure_sidecar_running() -> tuple[bool, str]:
             return True, "starting"
         node = _find_node()
         if not node:
-            return False, "Node.js was not found. Install Node 18+ or set WHATSAPP_NODE_BIN."
+            return False, "Node.js was not found. Install Node 20+ (22 LTS recommended) or set WHATSAPP_NODE_BIN."
         sdir = _sidecar_dir()
         if not os.path.isfile(os.path.join(sdir, "index.js")):
             return False, f"WhatsApp sidecar not found at {sdir}"
@@ -288,6 +294,8 @@ def ensure_sidecar_running() -> tuple[bool, str]:
                 "WA_HOST": SIDECAR_HOST,
                 "WA_TOKEN": _get_token(),
                 "WA_AUTH_DIR": auth_dir,
+                "WA_SLOTS": ",".join(SLOTS),
+                "WA_PARENT_PID": str(os.getpid()),
             }
         )
         kwargs: dict[str, Any] = {}
@@ -322,7 +330,16 @@ def stop_sidecar() -> None:
 # Sidecar HTTP client
 # --------------------------------------------------------------------------- #
 class WhatsAppError(Exception):
-    pass
+    """Sidecar failure. ``status`` is the sidecar HTTP code (None = unreachable)."""
+
+    def __init__(self, message: str, status: Optional[int] = None):
+        super().__init__(message)
+        self.status = status
+
+    @property
+    def is_recipient_problem(self) -> bool:
+        # 422 = invalid number / not on WhatsApp: another sender would fail too.
+        return self.status == 422
 
 
 def _request(method: str, path: str, body: Optional[dict] = None, timeout: float = 5) -> dict:
@@ -341,7 +358,7 @@ def _request(method: str, path: str, body: Optional[dict] = None, timeout: float
             detail = json.loads(exc.read().decode("utf-8")).get("error")
         except Exception:
             detail = None
-        raise WhatsAppError(detail or f"WhatsApp service error ({exc.code})") from exc
+        raise WhatsAppError(detail or f"WhatsApp service error ({exc.code})", exc.code) from exc
     except (urllib.error.URLError, OSError, ValueError) as exc:
         raise WhatsAppError("WhatsApp service is not running") from exc
 
@@ -355,20 +372,76 @@ def _ping() -> bool:
 
 
 def get_connection() -> dict:
-    """{state: stopped|starting|qr|connecting|connected, qr?: dataURL, phone?: str}"""
+    """Primary state at top level plus ``sessions`` for every slot.
+
+    {state: stopped|starting|qr|connecting|connected|off, qr?, phone?,
+     sessions: {slot: {slot, state, qr, phone}}}
+    """
     try:
-        return _request("GET", "/status")
+        conn = _request("GET", "/status")
     except WhatsAppError:
-        return {"state": "stopped"}
+        return {"state": "stopped", "sessions": {s: {"slot": s, "state": "stopped"} for s in SLOTS}}
+    if "sessions" not in conn:  # sidecar from an older build: primary only
+        conn["sessions"] = {PRIMARY: {"slot": PRIMARY, **{k: conn.get(k) for k in ("state", "qr", "phone")}}}
+    for s in SLOTS:
+        conn["sessions"].setdefault(s, {"slot": s, "state": "off"})
+    return conn
 
 
-def logout() -> None:
-    _request("POST", "/logout", {}, timeout=15)
+def connected_slots(conn: Optional[dict] = None) -> list[str]:
+    conn = conn or get_connection()
+    sessions = conn.get("sessions")
+    if not sessions:  # single-session shape: top-level fields are the primary
+        return [PRIMARY] if conn.get("state") == "connected" else []
+    return [s for s in SLOTS if (sessions.get(s) or {}).get("state") == "connected"]
+
+
+def start_slot(slot: str) -> dict:
+    """Begin linking a slot (shows a QR). The primary starts automatically."""
+    if slot not in SLOTS:
+        raise WhatsAppError(f"Unknown WhatsApp slot {slot}", 422)
+    return _request("POST", "/start", {"slot": slot}, timeout=15)
+
+
+def logout(slot: str = PRIMARY) -> None:
+    if slot not in SLOTS:
+        raise WhatsAppError(f"Unknown WhatsApp slot {slot}", 422)
+    _request("POST", "/logout", {"slot": slot}, timeout=15)
+
+
+def send_with_failover(phone: str, text: str, file_bytes: Optional[bytes] = None,
+                       filename: Optional[str] = None, mimetype: Optional[str] = None,
+                       prefer: Optional[str] = None) -> str:
+    """Send through the first working number. Returns the slot that sent it.
+
+    Order: ``prefer`` (the slot that sent the previous part of this message)
+    then the primary, then the rest. A slot is skipped when it is not linked,
+    unreachable or the send errors; a recipient problem (bad / non-WhatsApp
+    number) stops immediately because every sender would hit it.
+    """
+    order = list(SLOTS)
+    if prefer in order:
+        order.remove(prefer)
+        order.insert(0, prefer)
+    errors: list[str] = []
+    for slot in order:
+        try:
+            send(phone, text, file_bytes, filename, mimetype, slot=slot)
+            return slot
+        except WhatsAppError as exc:
+            if exc.is_recipient_problem:
+                raise
+            if exc.status is None:  # sidecar down: no slot can work
+                raise
+            errors.append(f"{SLOT_LABELS.get(slot, slot)}: {exc}")
+            logger.warning("WhatsApp send via %s failed, trying next number: %s", slot, exc)
+    raise WhatsAppError("; ".join(errors) or "No linked WhatsApp number is available", 409)
 
 
 def send(phone: str, text: str, file_bytes: Optional[bytes] = None,
-         filename: Optional[str] = None, mimetype: Optional[str] = None) -> dict:
-    payload: dict[str, Any] = {"phone": phone, "text": text}
+         filename: Optional[str] = None, mimetype: Optional[str] = None,
+         slot: str = PRIMARY) -> dict:
+    payload: dict[str, Any] = {"phone": phone, "text": text, "slot": slot}
     if file_bytes:
         payload["file_base64"] = base64.b64encode(file_bytes).decode("ascii")
         payload["filename"] = filename or "document.pdf"

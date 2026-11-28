@@ -149,3 +149,19 @@ Run on a clean Windows VM after every meaningful change to the wizard:
   are bundled into `KTHEALTHERP.exe` by PyInstaller.
 - It does **not** support Mac. The Mac source install path
   (`install_and_setup.py` + manual run) still works for development.
+
+
+## WhatsApp runtime (bundled Node.js)
+
+WhatsApp messaging runs through a small Node sidecar. Customers do **not**
+install Node: `installer\build_whatsapp_runtime.bat` stages a SHA-256-verified
+portable Node 22 (`node.exe` only) and the sidecar with production
+`node_modules` into `installer\bin\`, and the installer copies them to
+`{app}\node` and `{app}\whatsapp-sidecar`. `build_installer.bat` and the CI
+workflow run the staging step automatically.
+
+- Needs internet + npm on the **build** machine only.
+- Pin a version with `set NODE_VERSION=22.x.y` (default: newest Node 22.x).
+- Node 22 supports Windows 10 (the installer's `MinVersion` is already 1809) and newer, 64-bit only.
+- The WhatsApp login session lives in `<data folder>\whatsapp\auth`, so upgrades keep it.
+- The sidecar exits on its own when the backend stops, so upgrades are not blocked by a lingering `node.exe`.

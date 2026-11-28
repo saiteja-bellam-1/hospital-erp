@@ -50,6 +50,7 @@ from app.models.art import (  # noqa: F401
     ArtBankUnit, ArtEquipment, ArtGrievance,
 )
 from app.models.settlement import Settlement, SettlementConfig  # noqa: F401
+from app.models.whatsapp import WhatsAppMessageLog  # noqa: F401
 from app.models.expense import FrontDeskExpense  # noqa: F401
 
 # Import route modules

@@ -101,8 +101,13 @@ const WhatsAppSendDialog = ({
           form.append('files', a.file, a.name);
         }
       }
-      await axios.post('/api/whatsapp/send', form);
-      toast({ title: 'Sent on WhatsApp', description: `Message delivered to ${number}` });
+      const res = await axios.post('/api/whatsapp/send', form);
+      toast({
+        title: 'Sent on WhatsApp',
+        description: res.data?.failover
+          ? `Message delivered to ${number} from the backup number (primary unavailable)`
+          : `Message delivered to ${number}`,
+      });
       onClose && onClose();
     } catch (e) {
       toast({ title: 'WhatsApp failed', description: e.message === 'no-file' ? 'PDF is not ready yet' : errText(e), variant: 'destructive' });

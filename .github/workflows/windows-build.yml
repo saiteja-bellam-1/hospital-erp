@@ -115,6 +115,10 @@ jobs:
         shell: cmd
         run: installer\build_dbcheck.bat
 
+      - name: Stage portable Node.js + WhatsApp sidecar
+        shell: cmd
+        run: installer\build_whatsapp_runtime.bat
+
       - name: Build Windows installer
         shell: cmd
         env:
